@@ -45,7 +45,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .ph-title{font-size:15px;font-weight:700;color:var(--bright);}
 .ph-sub{font-size:11px;color:var(--muted);margin-top:2px;}
 .add-btn{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:7px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);color:var(--purple);font-size:12px;font-weight:600;cursor:pointer;}
-.content-area{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow:hidden;}
+.content-area{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow-y:auto;}
 .section{border-right:1px solid var(--border);padding:18px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;}
 .section:last-child{border-right:none;}
 .sec-title{font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;display:flex;align-items:center;gap:8px;}
@@ -116,7 +116,39 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
   <div class="page">
     <div class="page-header">
       <div class="ph-left"><div class="ph-dot"></div><div><div class="ph-title">전략 관리</div><div class="ph-sub">매매 전략 ON/OFF 및 파라미터 설정</div></div></div>
-      <div class="add-btn">＋ 전략 추가</div>
+      <div class="add-btn" onclick="showAddForm()">＋ 전략 추가</div>
+    </div>
+    <!-- 전략 추가 폼 (기본 숨김) -->
+    <div id="add-form" style="display:none;border-bottom:1px solid var(--border);background:var(--panel);padding:16px 20px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;align-items:end;">
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">봇 선택</div>
+          <select id="af-bot" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+            <option value="stock_trader">주식 (stock-trader)</option>
+            <option value="crypto_trader">코인 (crypto-trader)</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">전략명</div>
+          <input id="af-name" type="text" placeholder="예: 볼린저밴드" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">손절선 (%)</div>
+          <input id="af-stop" type="number" value="-2" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">익절선 (%)</div>
+          <input id="af-profit" type="number" value="5" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">1회 매수금액 (원)</div>
+          <input id="af-amount" type="number" value="500000" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-end;">
+          <div onclick="submitAddForm()" style="flex:1;padding:7px 0;border-radius:6px;background:var(--purple);color:white;font-size:12px;font-weight:600;cursor:pointer;text-align:center;">저장</div>
+          <div onclick="hideAddForm()" style="flex:1;padding:7px 0;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);font-size:12px;cursor:pointer;text-align:center;">취소</div>
+        </div>
+      </div>
     </div>
     <div class="content-area">
       <!-- 주식 -->
@@ -377,4 +409,65 @@ function showToast(msg, type) {
 }
 
 loadStrategies();
+</script>
+
+<script>
+// ── 전략 추가 폼 ──
+function showAddForm() {
+  const form = document.getElementById('add-form');
+  form.style.display = 'block';
+  form.scrollIntoView({ behavior: 'smooth' });
+}
+
+function hideAddForm() {
+  document.getElementById('add-form').style.display = 'none';
+}
+
+async function submitAddForm() {
+  const bot    = document.getElementById('af-bot').value;
+  const name   = document.getElementById('af-name').value.trim();
+  const stop   = parseFloat(document.getElementById('af-stop').value);
+  const profit = parseFloat(document.getElementById('af-profit').value);
+  const amount = parseFloat(document.getElementById('af-amount').value);
+
+  if (!name) { showToast('전략명을 입력해주세요', 'error'); return; }
+
+  const params = { stop_loss: stop, take_profit: profit, buy_amount: amount };
+
+  try {
+    // DB에 새 전략 추가
+    const res = await fetch('/api/strategies/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bot, name, is_active: false, params })
+    });
+    const { success, message } = await res.json();
+    if (success) {
+      showToast(`${name} 전략이 추가됐어요!`, 'success');
+      hideAddForm();
+      // 입력 초기화
+      document.getElementById('af-name').value = '';
+      // 전략 목록 새로고침
+      await loadStrategies();
+    } else {
+      showToast(message || '추가 실패', 'error');
+    }
+  } catch(e) {
+    showToast('오류 발생', 'error');
+  }
+}
+
+function showToast(msg, type) {
+  const toast = document.createElement('div');
+  toast.style.cssText = `
+    position:fixed;bottom:24px;right:24px;z-index:9999;
+    padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;
+    background:${type === 'success' ? 'var(--green)' : 'var(--red)'};
+    color:white;box-shadow:0 4px 12px rgba(0,0,0,0.3);
+    transition:opacity 0.3s;
+  `;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 2500);
+}
 </script>

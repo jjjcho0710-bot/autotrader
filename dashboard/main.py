@@ -532,3 +532,33 @@ async def create_strategy_table():
             logger.info("✅ strategy_config 테이블 초기화 완료")
     except Exception as e:
         logger.error(f"strategy_config 초기화 실패: {e}")
+
+
+@app.post("/api/strategies/add")
+async def add_strategy(body: dict):
+    """새 전략 추가"""
+    try:
+        import json
+        bot     = body.get("bot")
+        name    = body.get("name", "").strip()
+        active  = body.get("is_active", False)
+        params  = body.get("params", {})
+
+        if not name:
+            return {"success": False, "message": "전략명을 입력해주세요"}
+
+        async with db_pool.acquire() as conn:
+            exists = await conn.fetchrow(
+                "SELECT id FROM strategy_config WHERE bot=$1 AND name=$2", bot, name
+            )
+            if exists:
+                return {"success": False, "message": f"'{name}' 전략이 이미 존재해요"}
+
+            await conn.execute("""
+                INSERT INTO strategy_config (bot, name, is_active, params)
+                VALUES ($1, $2, $3, $4)
+            """, bot, name, active, json.dumps(params))
+
+        return {"success": True, "message": f"{name} 전략 추가 완료"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}

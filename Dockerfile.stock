@@ -2,11 +2,11 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY common/ ./common/
-COPY data_collector/requirements.txt .
+COPY stock_trader/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY data_collector/ ./data_collector/
+COPY stock_trader/ ./stock_trader/
 
 ENV PYTHONPATH=/app
 
-WORKDIR /app/data_collector
+WORKDIR /app/stock_trader
 CMD ["python", "main.py"]

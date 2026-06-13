@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTrader — 전략</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+:root{--bg:#12131a;--panel:#1a1c27;--panel2:#1f2133;--border:#272a3d;--stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;--purple:#a78bfa;--muted:#4b5270;--text:#8892b0;--bright:#e2e8f7;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
+.sidebar{width:52px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border);flex-shrink:0;}
+.logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
+.sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:4px;}
+.nav-item{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
+.nav-divider{width:24px;height:1px;background:var(--border);margin:4px 0;}
+.nav-item:hover{background:var(--panel2);color:var(--text);}
+.nav-item.active{background:var(--panel2);color:var(--bright);}
+.nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;}
+.nav-item.t.active::before{background:var(--purple);}
+.nav-item.d.active::before{background:var(--green);}
+.nav-item.s.active::before{background:var(--stock);}
+.nav-item.c.active::before{background:var(--crypto);}
+.nav-item.l.active::before{background:var(--text);}
+.nav-tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--panel2);border:1px solid var(--border);color:var(--bright);font-size:11px;font-weight:500;padding:4px 10px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;z-index:100;}
+.nav-item:hover .nav-tooltip{opacity:1;}
+.sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
+.sdot-group{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
+.sdot{width:6px;height:6px;border-radius:50%;}
+.sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
+.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
+.page-label{font-size:14px;font-weight:600;color:var(--bright);}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
+.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);font-family:var(--mono);}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
+.page{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.page-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;}
+.ph-left{display:flex;align-items:center;gap:12px;}
+.ph-dot{width:10px;height:10px;border-radius:50%;background:var(--purple);box-shadow:0 0 10px var(--purple);}
+.ph-title{font-size:15px;font-weight:700;color:var(--bright);}
+.ph-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+.add-btn{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:7px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);color:var(--purple);font-size:12px;font-weight:600;cursor:pointer;}
+.content-area{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow:hidden;}
+.section{border-right:1px solid var(--border);padding:18px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;}
+.section:last-child{border-right:none;}
+.sec-title{font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;display:flex;align-items:center;gap:8px;}
+.sec-dot{width:6px;height:6px;border-radius:50%;}
+/* card */
+.sc{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+.sc.as{border-color:rgba(91,143,255,0.35);}
+.sc.ac{border-color:rgba(240,165,0,0.35);}
+.sc-header{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);}
+.sc-title{font-size:14px;font-weight:600;color:var(--bright);}
+.sc-desc{font-size:11px;color:var(--muted);margin-top:2px;}
+.toggle{width:36px;height:20px;border-radius:10px;position:relative;cursor:pointer;flex-shrink:0;}
+.toggle.on{background:var(--green);}.toggle.off{background:var(--border);}
+.toggle::after{content:'';position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
+.toggle.on::after{left:19px;}.toggle.off::after{left:3px;}
+.sc-body{padding:12px 14px;display:flex;flex-direction:column;gap:10px;}
+.param-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.pr{display:flex;flex-direction:column;gap:4px;}
+.pr-label{font-size:10px;color:var(--muted);}
+.pr-row{display:flex;align-items:center;gap:6px;}
+.pr-input{background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:5px 8px;font-family:var(--mono);font-size:12px;color:var(--bright);width:72px;outline:none;}
+.pr-input:focus{border-color:var(--stock);}
+.pr-input.cf:focus{border-color:var(--crypto);}
+.pr-unit{font-size:11px;color:var(--muted);}
+.sig-bar{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;font-size:11px;}
+.sig-bar.wait{background:rgba(75,82,112,0.2);border:1px solid var(--border);color:var(--muted);}
+.sig-bar.act{background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.25);color:var(--green);}
+.sig-bar.alr{background:rgba(240,165,0,0.08);border:1px solid rgba(240,165,0,0.25);color:var(--crypto);}
+.sig-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;}
+.perf-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.ps{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;}
+.ps-label{font-size:9px;color:var(--muted);letter-spacing:0.5px;margin-bottom:3px;}
+.ps-value{font-size:13px;font-weight:700;font-family:var(--mono);}
+.ps-value.pos{color:var(--green);}.ps-value.stock{color:var(--stock);}.ps-value.crypto{color:var(--crypto);}
+.save-btn{display:flex;align-items:center;justify-content:center;padding:8px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;width:100%;}
+.save-btn.s{background:rgba(91,143,255,0.1);border:1px solid rgba(91,143,255,0.25);color:var(--stock);}
+.save-btn.c{background:rgba(240,165,0,0.1);border:1px solid rgba(240,165,0,0.25);color:var(--crypto);}
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="sidebar-logo"><div class="logo-mark">AT</div></div>
+  <div class="sidebar-nav">
+    <div class="nav-item j" onclick="location.href='jarvis.html'">🤖<div class="nav-tooltip">Jarvis</div></div>
+    <div class="nav-divider"></div>
+    <div class="nav-item d" onclick="location.href='dashboard-C.html'"">⊞<div class="nav-tooltip">대시보드</div></div>
+    <div class="nav-item s" onclick="location.href='stock.html'">📈<div class="nav-tooltip">주식</div></div>
+    <div class="nav-item c" onclick="location.href='crypto.html'">₿<div class="nav-tooltip">코인</div></div>
+    <div class="nav-item t active" onclick="location.href='strategy.html'">⚙<div class="nav-tooltip">전략</div></div>
+    <div class="nav-item l" onclick="location.href='logs.html'">≡<div class="nav-tooltip">로그</div></div>
+  </div>
+  <div class="sidebar-bottom">
+    <div class="sdot-group">
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">STK</div></div>
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">CRY</div></div>
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">DAT</div></div>
+    </div>
+  </div>
+</div>
+<div class="main">
+  <div class="topbar">
+    <div class="page-label">전략 관리</div>
+    <div class="topbar-right">
+      <div class="live-pill"><div class="live-dot"></div>LIVE</div>
+      <div class="clock">2026.06.13 &nbsp;14:32:07</div>
+    </div>
+  </div>
+  <div class="page">
+    <div class="page-header">
+      <div class="ph-left"><div class="ph-dot"></div><div><div class="ph-title">전략 관리</div><div class="ph-sub">매매 전략 ON/OFF 및 파라미터 설정</div></div></div>
+      <div class="add-btn">＋ 전략 추가</div>
+    </div>
+    <div class="content-area">
+      <!-- 주식 -->
+      <div class="section">
+        <div class="sec-title"><div class="sec-dot" style="background:var(--stock);box-shadow:0 0 6px var(--stock)"></div><span style="color:var(--stock)">stock-trader</span>&nbsp;한국주식 전략</div>
+        <div class="sc as">
+          <div class="sc-header"><div><div class="sc-title">MA 크로스</div><div class="sc-desc">이동평균선 골든/데드크로스 기반 진입</div></div><div class="toggle on"></div></div>
+          <div class="sc-body">
+            <div class="param-grid">
+              <div class="pr"><div class="pr-label">단기 이평</div><div class="pr-row"><input class="pr-input" value="5" type="number"><span class="pr-unit">일</span></div></div>
+              <div class="pr"><div class="pr-label">장기 이평</div><div class="pr-row"><input class="pr-input" value="20" type="number"><span class="pr-unit">일</span></div></div>
+              <div class="pr"><div class="pr-label">손절선</div><div class="pr-row"><input class="pr-input" value="-2" type="number"><span class="pr-unit">%</span></div></div>
+            </div>
+            <div class="param-grid">
+              <div class="pr"><div class="pr-label">1회 매수금액</div><div class="pr-row"><input class="pr-input" value="500000" type="number" style="width:90px"><span class="pr-unit">원</span></div></div>
+              <div class="pr"><div class="pr-label">최대 종목수</div><div class="pr-row"><input class="pr-input" value="5" type="number"><span class="pr-unit">개</span></div></div>
+              <div class="pr"><div class="pr-label">익절선</div><div class="pr-row"><input class="pr-input" value="5" type="number"><span class="pr-unit">%</span></div></div>
+            </div>
+            <div class="sig-bar act"><div class="sig-dot" style="background:var(--green)"></div>골든크로스 감지 — 삼성전자, NAVER 신호 활성</div>
+            <div class="perf-row">
+              <div class="ps"><div class="ps-label">30일 수익률</div><div class="ps-value pos">+8.4%</div></div>
+              <div class="ps"><div class="ps-label">승률</div><div class="ps-value stock">64.2%</div></div>
+              <div class="ps"><div class="ps-label">총 체결</div><div class="ps-value">53건</div></div>
+            </div>
+            <div class="save-btn s">파라미터 저장</div>
+          </div>
+        </div>
+        <div class="sc">
+          <div class="sc-header"><div><div class="sc-title">RSI 반등</div><div class="sc-desc">과매도 구간 진입 후 반등 노리기</div></div><div class="toggle off"></div></div>
+          <div class="sc-body">
+            <div class="param-grid">
+              <div class="pr"><div class="pr-label">RSI 기간</div><div class="pr-row"><input class="pr-input" value="14" type="number"><span class="pr-unit">일</span></div></div>
+              <div class="pr"><div class="pr-label">진입 기준</div><div class="pr-row"><input class="pr-input" value="30" type="number"></div></div>
+              <div class="pr"><div class="pr-label">청산 기준</div><div class="pr-row"><input class="pr-input" value="60" type="number"></div></div>
+            </div>
+            <div class="sig-bar wait"><div class="sig-dot" style="background:var(--muted)"></div>비활성 — 전략을 켜면 신호 감지 시작</div>
+            <div class="perf-row">
+              <div class="ps"><div class="ps-label">30일 수익률</div><div class="ps-value">-</div></div>
+              <div class="ps"><div class="ps-label">승률</div><div class="ps-value">-</div></div>
+              <div class="ps"><div class="ps-label">총 체결</div><div class="ps-value">-</div></div>
+            </div>
+            <div class="save-btn s">파라미터 저장</div>
+          </div>
+        </div>
+      </div>
+      <!-- 코인 -->
+      <div class="section">
+        <div class="sec-title"><div class="sec-dot" style="background:var(--crypto);box-shadow:0 0 6px var(--crypto)"></div><span style="color:var(--crypto)">crypto-trader</span>&nbsp;코인 전략</div>
+        <div class="sc ac">
+          <div class="sc-header"><div><div class="sc-title">MACD 시그널</div><div class="sc-desc">MACD 라인 / 시그널 라인 교차 매매</div></div><div class="toggle on"></div></div>
+          <div class="sc-body">
+            <div class="param-grid">
+              <div class="pr"><div class="pr-label">단기 EMA</div><div class="pr-row"><input class="pr-input cf" value="12" type="number"></div></div>
+              <div class="pr"><div class="pr-label">장기 EMA</div><div class="pr-row"><input class="pr-input cf" value="26" type="number"></div></div>
+              <div class="pr"><div class="pr-label">시그널</div><div class="pr-row"><input class="pr-input cf" value="9" type="number"></div></div>
+            </div>
+            <div class="param-grid">
+              <div class="pr"><div class="pr-label">기준 캔들</div><div class="pr-row"><input class="pr-input cf" value="60" type="number"><span class="pr-unit">분</span></div></div>
+              <div class="pr"><div class="pr-label">손절선</div><div class="pr-row"><input class="pr-input cf" value="-3" type="number"><span class="pr-unit">%</span></div></div>
+              <div class="pr"><div class="pr-label">익절선</div><div class="pr-row"><input class="pr-input cf" value="7" type="number"><span class="pr-unit">%</span></div></div>
+            </div>
+            <div class="sig-bar alr"><div class="sig-dot" style="background:var(--crypto)"></div>BTC 골든크로스 대기 — 1시간봉 MACD 수렴중</div>
+            <div class="perf-row">
+              <div class="ps"><div class="ps-label">30일 수익률</div><div class="ps-value pos">+12.1%</div></div>
+              <div class="ps"><div class="ps-label">승률</div><div class="ps-value crypto">58.7%</div></div>
+              <div class="ps"><div class="ps-label">총 체결</div><div class="ps-value">46건</div></div>
+            </div>
+            <div class="save-btn c">파라미터 저장</div>
+          </div>
+        </div>
+        <div class="sc">
+          <div class="sc-header"><div><div class="sc-title">변동성 돌파</div><div class="sc-desc">Larry Williams K값 기반 당일 돌파 매매</div></div><div class="toggle off"></div></div>
+          <div class="sc-body">
+            <div class="param-grid">
+              <div class="pr"><div class="pr-label">K 값</div><div class="pr-row"><input class="pr-input cf" value="0.5" type="number" step="0.1"></div></div>
+              <div class="pr"><div class="pr-label">기준 봉</div><div class="pr-row"><input class="pr-input cf" value="1440" type="number"><span class="pr-unit">분</span></div></div>
+              <div class="pr"><div class="pr-label">청산 시간</div><div class="pr-row"><input class="pr-input cf" value="09:00" style="width:72px"></div></div>
+            </div>
+            <div class="sig-bar wait"><div class="sig-dot" style="background:var(--muted)"></div>비활성 — 전략을 켜면 신호 감지 시작</div>
+            <div class="perf-row">
+              <div class="ps"><div class="ps-label">30일 수익률</div><div class="ps-value">-</div></div>
+              <div class="ps"><div class="ps-label">승률</div><div class="ps-value">-</div></div>
+              <div class="ps"><div class="ps-label">총 체결</div><div class="ps-value">-</div></div>
+            </div>
+            <div class="save-btn c">파라미터 저장</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

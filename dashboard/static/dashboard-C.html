@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTrader — 대시보드</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+:root{
+  --bg:#12131a;--panel:#1a1c27;--panel2:#1f2133;--border:#272a3d;
+  --stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;
+  --purple:#a78bfa;--muted:#4b5270;--text:#8892b0;--bright:#e2e8f7;
+  --sidebar:52px;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
+
+/* Sidebar */
+.sidebar{
+  width:var(--sidebar);flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;align-items:center;height:100vh;position:sticky;top:0;z-index:20;
+}
+.sidebar-logo{
+  width:100%;height:52px;display:flex;align-items:center;justify-content:center;
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.logo-mark{
+  width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));
+  border-radius:7px;display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:white;font-weight:700;font-family:var(--mono);
+}
+.sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:4px;}
+.nav-item{
+  width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;
+}
+.nav-divider{width:24px;height:1px;background:var(--border);margin:4px 0;}
+.nav-item:hover{background:var(--panel2);color:var(--text);}
+.nav-item.active{background:var(--panel2);color:var(--bright);}
+.nav-item.active::before{
+  content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);
+  width:3px;height:20px;border-radius:0 3px 3px 0;
+}
+.nav-item.d.active::before{background:var(--green);}
+.nav-item.s.active::before{background:var(--stock);}
+.nav-item.c.active::before{background:var(--crypto);}
+.nav-item.t.active::before{background:var(--purple);}
+.nav-item.l.active::before{background:var(--text);}
+.nav-tooltip{
+  position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);
+  background:var(--panel2);border:1px solid var(--border);color:var(--bright);
+  font-size:11px;font-weight:500;font-family:var(--grotesk);padding:4px 10px;
+  border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;
+  transition:opacity 0.15s;z-index:100;
+}
+.nav-item:hover .nav-tooltip{opacity:1;}
+.sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
+.sdot-group{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
+.sdot{width:6px;height:6px;border-radius:50%;}
+.sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
+.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);letter-spacing:0.5px;}
+
+/* Main */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.topbar{
+  height:52px;background:var(--panel);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 20px;flex-shrink:0;
+}
+.page-label{font-size:14px;font-weight:600;color:var(--bright);}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
+.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);font-family:var(--mono);}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:blink 1.5s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
+
+/* Split */
+.split{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr auto;overflow:hidden;}
+.half-header{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.half-header.bdr{border-right:1px solid var(--border);}
+.half-label{display:flex;align-items:center;gap:10px;font-size:11px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;}
+.half-dot{width:8px;height:8px;border-radius:50%;}
+.dot-stock{background:var(--stock);box-shadow:0 0 8px var(--stock);}
+.dot-crypto{background:var(--crypto);box-shadow:0 0 8px var(--crypto);}
+.half-pnl{font-family:var(--mono);font-size:18px;font-weight:700;}
+.half-pnl.pos{color:var(--green);}
+.half-sub{font-size:10px;color:var(--muted);margin-top:2px;text-align:right;}
+.half-content{padding:18px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden;}
+.half-content.bdr{border-right:1px solid var(--border);}
+.mini-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.mini-kpi{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+.mini-kpi-label{font-size:9px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;}
+.mini-kpi-value{font-size:15px;font-weight:700;font-family:var(--mono);}
+.val-stock{color:var(--stock);}.val-crypto{color:var(--crypto);}.val-green{color:var(--green);}.val-bright{color:var(--bright);}
+.section-label{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;}
+.pos-list{display:flex;flex-direction:column;gap:6px;}
+.pos-item{
+  background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+  padding:10px 14px;display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:14px;
+}
+.pos-item.si{border-left:3px solid var(--stock);}
+.pos-item.ci{border-left:3px solid var(--crypto);}
+.pos-name{font-size:13px;font-weight:600;color:var(--bright);}
+.pos-code{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px;}
+.pos-price{font-size:12px;color:var(--text);font-family:var(--mono);text-align:right;}
+.pos-pct{font-size:12px;font-weight:700;font-family:var(--mono);text-align:right;min-width:50px;}
+.pos-pct.pos{color:var(--green);}.pos-pct.neg{color:var(--red);}
+.bottom-bar{
+  grid-column:1/3;border-top:1px solid var(--border);background:var(--panel);
+  padding:12px 20px;display:flex;flex-direction:column;gap:6px;
+}
+.bottom-title{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;}
+.log-stream{display:flex;flex-direction:column;gap:4px;}
+.log-entry{display:flex;gap:12px;font-size:11px;font-family:var(--mono);align-items:baseline;}
+.le-time{color:var(--muted);flex-shrink:0;}
+.le-bot.s{color:var(--stock);}.le-bot.c{color:var(--crypto);}.le-bot.d{color:var(--text);}
+.le-action.buy{color:var(--green);font-weight:700;}.le-action.sell{color:var(--red);font-weight:700;}.le-action.info{color:var(--muted);}
+.le-msg{color:var(--text);}
+.overall-strip{display:flex;align-items:center;gap:28px;padding:10px 0 0;border-top:1px solid var(--border);margin-top:4px;}
+.overall-item{display:flex;gap:8px;align-items:baseline;}
+.o-label{font-size:10px;color:var(--muted);}
+.o-value{font-size:14px;font-weight:700;font-family:var(--mono);}
+.o-value.pos{color:var(--green);}.o-value.bright{color:var(--bright);}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-logo"><div class="logo-mark">AT</div></div>
+  <div class="sidebar-nav">
+    <div class="nav-item d active" onclick="location.href='dashboard-C.html'">⊞<div class="nav-tooltip">대시보드</div></div>
+    <div class="nav-item s" onclick="location.href='stock.html'">📈<div class="nav-tooltip">주식</div></div>
+    <div class="nav-item c" onclick="location.href='crypto.html'">₿<div class="nav-tooltip">코인</div></div>
+    <div class="nav-item t" onclick="location.href='strategy.html'">⚙<div class="nav-tooltip">전략</div></div>
+    <div class="nav-item l" onclick="location.href='logs.html'">≡<div class="nav-tooltip">로그</div></div>
+  </div>
+  <div class="sidebar-bottom">
+    <div class="sdot-group">
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">STK</div></div>
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">CRY</div></div>
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">DAT</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <div class="page-label">대시보드</div>
+    <div class="topbar-right">
+      <div class="live-pill"><div class="live-dot"></div>LIVE</div>
+      <div class="clock">2026.06.13 &nbsp;14:32:07</div>
+    </div>
+  </div>
+
+  <div class="split">
+    <div class="half-header bdr">
+      <div>
+        <div class="half-label" style="color:var(--stock);"><div class="half-dot dot-stock"></div>stock-trader</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:3px;">한국주식 · KIS API · 09:00~15:30</div>
+      </div>
+      <div style="text-align:right;"><div class="half-pnl pos">+142,500</div><div class="half-sub">오늘 수익 / 체결 4건</div></div>
+    </div>
+    <div class="half-header">
+      <div>
+        <div class="half-label" style="color:var(--crypto);"><div class="half-dot dot-crypto"></div>crypto-trader</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:3px;">비트코인 · 업비트 · 24시간</div>
+      </div>
+      <div style="text-align:right;"><div class="half-pnl pos">+142,000</div><div class="half-sub">오늘 수익 / 체결 3건</div></div>
+    </div>
+
+    <div class="half-content bdr">
+      <div class="mini-kpis">
+        <div class="mini-kpi"><div class="mini-kpi-label">평가금액</div><div class="mini-kpi-value val-bright" style="font-size:13px;">18,420,000</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">누적수익</div><div class="mini-kpi-value val-green">+1,420K</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">승률</div><div class="mini-kpi-value val-stock">64.2%</div></div>
+      </div>
+      <div>
+        <div class="section-label">보유 포지션</div>
+        <div class="pos-list">
+          <div class="pos-item si"><div><div class="pos-name">삼성전자</div><div class="pos-code">005930 · 10주</div></div><div class="pos-price">74,200원</div><div class="pos-pct pos">+3.2%</div></div>
+          <div class="pos-item si"><div><div class="pos-name">SK하이닉스</div><div class="pos-code">000660 · 5주</div></div><div class="pos-price">188,500원</div><div class="pos-pct neg">-1.2%</div></div>
+          <div class="pos-item si"><div><div class="pos-name">NAVER</div><div class="pos-code">035420 · 3주</div></div><div class="pos-price">182,000원</div><div class="pos-pct pos">+2.8%</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="half-content">
+      <div class="mini-kpis">
+        <div class="mini-kpi"><div class="mini-kpi-label">평가금액</div><div class="mini-kpi-value val-bright" style="font-size:13px;">14,427,200</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">누적수익</div><div class="mini-kpi-value val-green">+1,427K</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">승률</div><div class="mini-kpi-value val-crypto">58.7%</div></div>
+      </div>
+      <div>
+        <div class="section-label">보유 포지션</div>
+        <div class="pos-list">
+          <div class="pos-item ci"><div><div class="pos-name">BTC/KRW</div><div class="pos-code">업비트 · 0.1 BTC</div></div><div class="pos-price">141.2M</div><div class="pos-pct pos">+5.9%</div></div>
+          <div class="pos-item ci"><div><div class="pos-name">ETH/KRW</div><div class="pos-code">업비트 · 2.0 ETH</div></div><div class="pos-price">4.82M</div><div class="pos-pct neg">-2.5%</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bottom-bar">
+      <div class="bottom-title">실시간 로그</div>
+      <div class="log-stream">
+        <div class="log-entry"><span class="le-time">14:31:52</span><span class="le-bot s">[stock]</span><span class="le-action buy">BUY</span><span class="le-msg">삼성전자 74,200 × 10주 — MA크로스 신호</span></div>
+        <div class="log-entry"><span class="le-time">14:28:10</span><span class="le-bot c">[crypto]</span><span class="le-action sell">SELL</span><span class="le-msg">BTC/KRW 0.05 BTC 부분 매도 — RSI 78.4 과매수</span></div>
+        <div class="log-entry"><span class="le-time">14:15:03</span><span class="le-bot d">[data]</span><span class="le-action info">INFO</span><span class="le-msg">1분봉 수집 완료 KIS:240종목 / 업비트:18페어</span></div>
+      </div>
+      <div class="overall-strip">
+        <div class="overall-item"><span class="o-label">총 평가</span><span class="o-value bright">32,847,200원</span></div>
+        <div class="overall-item"><span class="o-label">오늘 수익</span><span class="o-value pos">+284,500원</span></div>
+        <div class="overall-item"><span class="o-label">누적 수익</span><span class="o-value pos">+2,847,200원</span></div>
+        <div class="overall-item"><span class="o-label">오늘 체결</span><span class="o-value bright">7건</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+
+<script>
+// ── 실시간 API 연동 ──────────────────────────────
+const API = '';  // 같은 서버
+
+async function fetchSummary() {
+  try {
+    const res = await fetch(`${API}/api/summary`);
+    const { data } = await res.json();
+    if (!data) return;
+
+    // 오늘 수익
+    document.querySelectorAll('.o-value.pos')[0].textContent =
+      (data.today_pnl >= 0 ? '+' : '') + data.today_pnl.toLocaleString() + '원';
+
+    // 누적 수익
+    document.querySelectorAll('.o-value.pos')[1].textContent =
+      (data.total_pnl >= 0 ? '+' : '') + data.total_pnl.toLocaleString() + '원';
+
+    // 오늘 체결
+    document.querySelectorAll('.o-value.bright')[1].textContent = data.today_trades + '건';
+  } catch(e) { console.log('summary error', e); }
+}
+
+async function fetchBotStatus() {
+  try {
+    const res = await fetch(`${API}/api/status`);
+    const { data } = await res.json();
+    if (!data) return;
+
+    // 봇 상태 도트 업데이트
+    const dots = document.querySelectorAll('.sdot');
+    const bots = ['stock_trader', 'crypto_trader', 'data_collector'];
+    bots.forEach((bot, i) => {
+      if (dots[i]) {
+        const status = data[bot]?.status;
+        dots[i].style.background = status === 'running' ? 'var(--green)' : 'var(--red)';
+      }
+    });
+  } catch(e) { console.log('status error', e); }
+}
+
+async function fetchTrades() {
+  try {
+    const res = await fetch(`${API}/api/trades?limit=5`);
+    const { data } = await res.json();
+    if (!data || !data.length) return;
+
+    const stream = document.querySelector('.log-stream');
+    if (!stream) return;
+    stream.innerHTML = '';
+
+    data.forEach(t => {
+      const time = new Date(t.ts).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      const botClass = t.bot === 'stock_trader' ? 's' : t.bot === 'crypto_trader' ? 'c' : 'd';
+      const action = t.side === 'BUY' ? 'buy' : 'sell';
+      const result = t.pnl ? (t.pnl >= 0 ? '+' : '') + t.pnl.toLocaleString() + '원' : '보유중';
+      stream.innerHTML += `
+        <div class="log-entry">
+          <span class="le-time">${time}</span>
+          <span class="le-bot ${botClass}">[${t.bot.replace('_trader','')}]</span>
+          <span class="le-action ${action}">${t.side}</span>
+          <span class="le-msg">${t.symbol} ${t.price?.toLocaleString()}원 × ${t.quantity}</span>
+        </div>`;
+    });
+  } catch(e) { console.log('trades error', e); }
+}
+
+// 초기 로드 + 30초마다 갱신
+fetchSummary();
+fetchBotStatus();
+fetchTrades();
+setInterval(fetchSummary, 30000);
+setInterval(fetchBotStatus, 10000);
+setInterval(fetchTrades, 30000);
+</script>

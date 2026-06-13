@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTrader — 주식</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+:root{--bg:#12131a;--panel:#1a1c27;--panel2:#1f2133;--border:#272a3d;--stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;--purple:#a78bfa;--muted:#4b5270;--text:#8892b0;--bright:#e2e8f7;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
+.sidebar{width:52px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border);flex-shrink:0;}
+.logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
+.sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:4px;}
+.nav-item{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
+.nav-divider{width:24px;height:1px;background:var(--border);margin:4px 0;}
+.nav-item:hover{background:var(--panel2);color:var(--text);}
+.nav-item.active{background:var(--panel2);color:var(--bright);}
+.nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;}
+.nav-item.s.active::before{background:var(--stock);}
+.nav-item.d.active::before{background:var(--green);}
+.nav-item.c.active::before{background:var(--crypto);}
+.nav-item.t.active::before{background:var(--purple);}
+.nav-item.l.active::before{background:var(--text);}
+.nav-tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--panel2);border:1px solid var(--border);color:var(--bright);font-size:11px;font-weight:500;padding:4px 10px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;z-index:100;}
+.nav-item:hover .nav-tooltip{opacity:1;}
+.sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
+.sdot-group{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
+.sdot{width:6px;height:6px;border-radius:50%;}
+.sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
+.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
+.page-label{font-size:14px;font-weight:600;color:var(--bright);}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
+.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);font-family:var(--mono);}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
+/* page */
+.page{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.page-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;}
+.ph-left{display:flex;align-items:center;gap:12px;}
+.ph-dot{width:10px;height:10px;border-radius:50%;background:var(--stock);box-shadow:0 0 10px var(--stock);}
+.ph-title{font-size:15px;font-weight:700;color:var(--bright);}
+.ph-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+.ph-pnl{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--green);}
+.ph-psub{font-size:10px;color:var(--muted);margin-top:2px;text-align:right;}
+.toggle-wrap{display:flex;align-items:center;gap:10px;padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);}
+.toggle-label{font-size:11px;color:var(--text);}
+.toggle{width:36px;height:20px;border-radius:10px;position:relative;cursor:pointer;background:var(--green);}
+.toggle::after{content:'';position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;left:19px;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
+/* kpi */
+.kpi-strip{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--border);flex-shrink:0;}
+.kpi{padding:12px 18px;border-right:1px solid var(--border);}
+.kpi:last-child{border-right:none;}
+.kpi-label{font-size:9px;color:var(--muted);letter-spacing:1.2px;text-transform:uppercase;margin-bottom:5px;}
+.kpi-value{font-size:17px;font-weight:700;font-family:var(--mono);line-height:1;}
+.kpi-value.pos{color:var(--green);}.kpi-value.stock{color:var(--stock);}.kpi-value.bright{color:var(--bright);}
+.kpi-sub{font-size:10px;color:var(--muted);margin-top:3px;}
+/* grid */
+.content-grid{flex:1;display:grid;grid-template-columns:1fr 300px;grid-template-rows:1fr 1fr;overflow:hidden;}
+.pbox{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;flex-direction:column;overflow:hidden;}
+.pbox.nr{border-right:none;}.pbox.nb{border-bottom:none;}
+.ptitle{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;}
+.paction{font-size:10px;color:var(--stock);cursor:pointer;letter-spacing:0;text-transform:none;}
+/* pos table */
+.pos-table{width:100%;border-collapse:collapse;font-size:12px;}
+.pos-table th{text-align:left;font-size:9px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);font-weight:500;text-transform:uppercase;letter-spacing:0.5px;}
+.pos-table th:not(:first-child){text-align:right;}
+.pos-table td{padding:9px 0;border-bottom:1px solid rgba(39,42,61,0.7);vertical-align:middle;}
+.pos-table tr:last-child td{border-bottom:none;}
+.tk-name{font-size:13px;font-weight:600;color:var(--bright);}
+.tk-code{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:1px;}
+.nr2{text-align:right;font-family:var(--mono);font-size:12px;}
+.nr2.pos{color:var(--green);}.nr2.neg{color:var(--red);}.nr2.neu{color:var(--text);}
+.pct-row{display:flex;align-items:center;gap:6px;justify-content:flex-end;}
+.pct-bar{height:3px;border-radius:2px;width:36px;background:var(--border);overflow:hidden;}
+.pct-fill{height:100%;border-radius:2px;}
+/* history */
+.hist-list{display:flex;flex-direction:column;gap:5px;flex:1;overflow-y:auto;}
+.hist-item{display:grid;grid-template-columns:56px 44px 1fr auto auto;gap:8px;align-items:center;padding:8px 10px;background:var(--panel2);border-radius:6px;border:1px solid var(--border);font-size:11px;}
+.h-time{font-family:var(--mono);color:var(--muted);font-size:10px;}
+.h-tag{font-size:9px;font-weight:700;padding:2px 5px;border-radius:4px;text-align:center;}
+.tag-buy{background:rgba(52,211,153,0.12);color:var(--green);}
+.tag-sell{background:rgba(248,113,113,0.12);color:var(--red);}
+.h-name{color:var(--bright);font-weight:500;}
+.h-price{font-family:var(--mono);color:var(--text);text-align:right;font-size:11px;}
+.h-res{font-family:var(--mono);font-size:11px;font-weight:600;text-align:right;}
+.h-res.pos{color:var(--green);}.h-res.neg{color:var(--red);}.h-res.pend{color:var(--muted);font-size:10px;}
+/* strategy */
+.strat-list{display:flex;flex-direction:column;gap:8px;}
+.strat-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:11px 13px;}
+.strat-item.active-s{border-color:rgba(91,143,255,0.4);background:rgba(91,143,255,0.05);}
+.sh{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;}
+.sn{font-size:12px;font-weight:600;color:var(--bright);}
+.spill{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;}
+.spill.on{background:rgba(52,211,153,0.12);color:var(--green);}
+.spill.off{background:rgba(75,82,112,0.3);color:var(--muted);}
+.sparams{display:flex;gap:8px;flex-wrap:wrap;}
+.sp{font-size:10px;color:var(--muted);font-family:var(--mono);}
+.sp span{color:var(--stock);}
+.ssig{margin-top:5px;font-size:10px;display:flex;align-items:center;gap:5px;}
+.sig-dot{width:5px;height:5px;border-radius:50%;}
+/* watchlist */
+.watch-list{display:flex;flex-direction:column;gap:4px;}
+.wi{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);}
+.wi-left{display:flex;align-items:center;gap:8px;}
+.wi-rank{font-family:var(--mono);font-size:10px;color:var(--muted);width:14px;}
+.wi-name{font-size:12px;font-weight:500;color:var(--bright);}
+.wi-code{font-size:10px;color:var(--muted);font-family:var(--mono);}
+.wi-price{font-family:var(--mono);font-size:11px;color:var(--text);}
+.wi-chg{font-family:var(--mono);font-size:11px;font-weight:600;}
+.wi-chg.pos{color:var(--green);}.wi-chg.neg{color:var(--red);}
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="sidebar-logo"><div class="logo-mark">AT</div></div>
+  <div class="sidebar-nav">
+    <div class="nav-item j" onclick="location.href='jarvis.html'">🤖<div class="nav-tooltip">Jarvis</div></div>
+    <div class="nav-divider"></div>
+    <div class="nav-item d" onclick="location.href='dashboard-C.html'"">⊞<div class="nav-tooltip">대시보드</div></div>
+    <div class="nav-item s active" onclick="location.href='stock.html'">📈<div class="nav-tooltip">주식</div></div>
+    <div class="nav-item c" onclick="location.href='crypto.html'">₿<div class="nav-tooltip">코인</div></div>
+    <div class="nav-item t" onclick="location.href='strategy.html'">⚙<div class="nav-tooltip">전략</div></div>
+    <div class="nav-item l" onclick="location.href='logs.html'">≡<div class="nav-tooltip">로그</div></div>
+  </div>
+  <div class="sidebar-bottom">
+    <div class="sdot-group">
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">STK</div></div>
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">CRY</div></div>
+      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">DAT</div></div>
+    </div>
+  </div>
+</div>
+<div class="main">
+  <div class="topbar">
+    <div class="page-label">주식</div>
+    <div class="topbar-right">
+      <div class="live-pill"><div class="live-dot"></div>LIVE</div>
+      <div class="clock">2026.06.13 &nbsp;14:32:07</div>
+    </div>
+  </div>
+  <div class="page">
+    <div class="page-header">
+      <div class="ph-left">
+        <div class="ph-dot"></div>
+        <div><div class="ph-title">stock-trader</div><div class="ph-sub">한국투자증권 KIS API · 운영중 · 장 마감까지 01:27:53</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div style="text-align:right;"><div class="ph-pnl">+142,500원</div><div class="ph-psub">오늘 수익 / 누적 +1,420,000원</div></div>
+        <div class="toggle-wrap"><span class="toggle-label">봇 운영</span><div class="toggle"></div></div>
+      </div>
+    </div>
+    <div class="kpi-strip">
+      <div class="kpi"><div class="kpi-label">주식 평가금액</div><div class="kpi-value stock">18,420,000</div><div class="kpi-sub">원</div></div>
+      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos">+142,500</div><div class="kpi-sub">+0.78%</div></div>
+      <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright">3</div><div class="kpi-sub">관심 12</div></div>
+      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright">4건</div><div class="kpi-sub">매수 2 · 매도 2</div></div>
+      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value stock">64.2%</div><div class="kpi-sub">34승 / 19패</div></div>
+    </div>
+    <div class="content-grid">
+      <!-- 포지션 -->
+      <div class="pbox">
+        <div class="ptitle">보유 포지션<span class="paction">+ 수동 추가</span></div>
+        <table class="pos-table">
+          <thead><tr><th>종목</th><th style="text-align:right">수량</th><th style="text-align:right">평균단가</th><th style="text-align:right">현재가</th><th style="text-align:right">평가손익</th><th style="text-align:right">수익률</th></tr></thead>
+          <tbody>
+            <tr><td><div class="tk-name">삼성전자</div><div class="tk-code">005930</div></td><td class="nr2 neu">10주</td><td class="nr2 neu">74,200</td><td class="nr2 neu">76,600</td><td class="nr2 pos">+24,000</td><td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:60%;background:var(--green)"></div></div><span class="nr2 pos">+3.2%</span></div></td></tr>
+            <tr><td><div class="tk-name">SK하이닉스</div><div class="tk-code">000660</div></td><td class="nr2 neu">5주</td><td class="nr2 neu">188,500</td><td class="nr2 neu">186,200</td><td class="nr2 neg">-11,500</td><td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:24%;background:var(--red)"></div></div><span class="nr2 neg">-1.2%</span></div></td></tr>
+            <tr><td><div class="tk-name">NAVER</div><div class="tk-code">035420</div></td><td class="nr2 neu">3주</td><td class="nr2 neu">182,000</td><td class="nr2 neu">187,100</td><td class="nr2 pos">+15,300</td><td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:48%;background:var(--green)"></div></div><span class="nr2 pos">+2.8%</span></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- 전략 -->
+      <div class="pbox nr">
+        <div class="ptitle">전략 상태<span class="paction" onclick="location.href='strategy.html'">전략 관리 →</span></div>
+        <div class="strat-list">
+          <div class="strat-item active-s">
+            <div class="sh"><span class="sn">MA 크로스</span><span class="spill on">ON</span></div>
+            <div class="sparams"><span class="sp">단기 <span>MA5</span></span><span class="sp">장기 <span>MA20</span></span><span class="sp">손절 <span>-2%</span></span></div>
+            <div class="ssig"><div class="sig-dot" style="background:var(--green)"></div><span style="color:var(--green);font-size:10px;">골든크로스 감지 — 삼성전자, NAVER</span></div>
+          </div>
+          <div class="strat-item">
+            <div class="sh"><span class="sn">RSI 반등</span><span class="spill off">OFF</span></div>
+            <div class="sparams"><span class="sp">기간 <span>RSI14</span></span><span class="sp">진입 <span>&lt;30</span></span><span class="sp">청산 <span>&gt;60</span></span></div>
+          </div>
+          <div class="strat-item">
+            <div class="sh"><span class="sn">볼린저 밴드</span><span class="spill off">OFF</span></div>
+            <div class="sparams"><span class="sp">기간 <span>BB20</span></span><span class="sp">표준편차 <span>2σ</span></span></div>
+          </div>
+        </div>
+      </div>
+      <!-- 매매 이력 -->
+      <div class="pbox nb">
+        <div class="ptitle">오늘 매매 이력</div>
+        <div class="hist-list">
+          <div class="hist-item"><span class="h-time">14:31</span><span class="h-tag tag-buy">매수</span><span class="h-name">삼성전자</span><span class="h-price">74,200 × 10주</span><span class="h-res pend">보유중</span></div>
+          <div class="hist-item"><span class="h-time">13:52</span><span class="h-tag tag-sell">매도</span><span class="h-name">SK하이닉스</span><span class="h-price">187,000 × 5주</span><span class="h-res neg">-57,500</span></div>
+          <div class="hist-item"><span class="h-time">11:24</span><span class="h-tag tag-buy">매수</span><span class="h-name">NAVER</span><span class="h-price">182,000 × 3주</span><span class="h-res pend">보유중</span></div>
+          <div class="hist-item"><span class="h-time">09:32</span><span class="h-tag tag-sell">매도</span><span class="h-name">카카오</span><span class="h-price">48,200 × 20주</span><span class="h-res pos">+94,000</span></div>
+          <div class="hist-item"><span class="h-time">09:05</span><span class="h-tag tag-buy">매수</span><span class="h-name">카카오</span><span class="h-price">43,500 × 20주</span><span class="h-res pend">보유중</span></div>
+        </div>
+      </div>
+      <!-- 관심종목 -->
+      <div class="pbox nr nb">
+        <div class="ptitle">관심 종목<span class="paction">+ 추가</span></div>
+        <div class="watch-list">
+          <div class="wi"><div class="wi-left"><span class="wi-rank">1</span><div><div class="wi-name">LG에너지솔루션</div><div class="wi-code">373220</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">412,000</span><span class="wi-chg pos">+2.2%</span></div></div>
+          <div class="wi"><div class="wi-left"><span class="wi-rank">2</span><div><div class="wi-name">현대차</div><div class="wi-code">005380</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">238,500</span><span class="wi-chg neg">-0.8%</span></div></div>
+          <div class="wi"><div class="wi-left"><span class="wi-rank">3</span><div><div class="wi-name">셀트리온</div><div class="wi-code">068270</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">178,800</span><span class="wi-chg pos">+1.4%</span></div></div>
+          <div class="wi"><div class="wi-left"><span class="wi-rank">4</span><div><div class="wi-name">카카오뱅크</div><div class="wi-code">323410</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">24,150</span><span class="wi-chg pos">+3.6%</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

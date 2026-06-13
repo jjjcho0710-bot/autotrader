@@ -292,3 +292,55 @@ async function fetchCryptoData() {
 fetchCryptoData();
 setInterval(fetchCryptoData, 30000);
 </script>
+
+<script>
+// 보유 코인 실시간 연동
+async function fetchCryptoPositions() {
+  try {
+    const res = await fetch('/api/positions/crypto');
+    const { data } = await res.json();
+    if (!data) return;
+
+    const cards = document.querySelector('.coin-cards');
+    if (!cards) return;
+    cards.innerHTML = '';
+
+    data.forEach(p => {
+      const pnlClass = p.pnl >= 0 ? 'pos' : 'neg';
+      const pctClass = p.pnl_rate >= 0 ? 'pos' : 'neg';
+      const borderColor = p.pnl_rate >= 0 ? 'var(--crypto)' : 'rgba(248,113,113,0.6)';
+      cards.innerHTML += `
+        <div class="coin-card" style="border-left-color:${borderColor}">
+          <div class="cc-header">
+            <div>
+              <div class="cc-sym">${p.pair}</div>
+              <div class="cc-ex">업비트</div>
+            </div>
+            <div class="cc-pct ${pctClass}">${p.pnl_rate >= 0 ? '+' : ''}${p.pnl_rate?.toFixed(1)}%</div>
+          </div>
+          <div class="cc-grid">
+            <div><div class="cc-sl">보유량</div><div class="cc-sv bright">${parseFloat(p.qty).toFixed(4)} ${p.currency}</div></div>
+            <div><div class="cc-sl">평균단가</div><div class="cc-sv">${p.avg_price?.toLocaleString()}</div></div>
+            <div><div class="cc-sl">현재가</div><div class="cc-sv bright">${p.cur_price?.toLocaleString()}</div></div>
+            <div><div class="cc-sl">평가손익</div><div class="cc-sv ${pnlClass}">${p.pnl >= 0 ? '+' : ''}${Math.round(p.pnl)?.toLocaleString()}</div></div>
+          </div>
+        </div>`;
+    });
+
+    if (data.length === 0) {
+      cards.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:10px;">보유 코인 없음</div>';
+    }
+
+    // KRW 잔고
+    const balRes = await fetch('/api/balance/crypto');
+    const { data: bal } = await balRes.json();
+    if (bal) {
+      const kpis = document.querySelectorAll('.kpi-value');
+      if (kpis[0]) kpis[0].textContent = Math.round(bal.krw)?.toLocaleString();
+    }
+  } catch(e) { console.log('crypto positions error', e); }
+}
+
+fetchCryptoPositions();
+setInterval(fetchCryptoPositions, 60000);
+</script>

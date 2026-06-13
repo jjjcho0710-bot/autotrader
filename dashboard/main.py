@@ -275,3 +275,177 @@ async def get_summary():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
+
+
+# ── 보유 포지션 API ──────────────────────────────────────
+
+@app.get("/api/positions/stock")
+async def get_stock_positions():
+    """KIS API - 주식 보유 포지션 실시간 조회"""
+    try:
+        import aiohttp as http
+        base = config.kis_base_url
+
+        # 토큰 발급
+        async with http.ClientSession() as session:
+            token_res = await session.post(f"{base}/oauth2/tokenP", json={
+                "grant_type": "client_credentials",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+            })
+            token_data = await token_res.json()
+            token = token_data.get("access_token", "")
+
+            headers = {
+                "authorization": f"Bearer {token}",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+                "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
+                "custtype": "P",
+            }
+            acct = config.KIS_ACCOUNT_NO.split("-")
+            params = {
+                "CANO": acct[0],
+                "ACNT_PRDT_CD": acct[1] if len(acct) > 1 else "01",
+                "AFHR_FLPR_YN": "N", "OFL_YN": "",
+                "INQR_DVSN": "02", "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+            }
+            res = await session.get(
+                f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
+                headers=headers, params=params
+            )
+            data = await res.json()
+            positions = []
+            for row in data.get("output1", []):
+                qty = int(row.get("hldg_qty", 0))
+                if qty <= 0:
+                    continue
+                positions.append({
+                    "symbol":    row.get("pdno"),
+                    "name":      row.get("prdt_name"),
+                    "qty":       qty,
+                    "avg_price": int(row.get("pchs_avg_pric", 0)),
+                    "cur_price": int(row.get("prpr", 0)),
+                    "pnl":       int(row.get("evlu_pfls_amt", 0)),
+                    "pnl_rate":  float(row.get("evlu_pfls_rt", 0)),
+                })
+            return {"success": True, "data": positions}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+
+@app.get("/api/positions/crypto")
+async def get_crypto_positions():
+    """업비트 API - 코인 보유 포지션 실시간 조회"""
+    try:
+        import aiohttp as http
+        import jwt, uuid, hashlib
+
+        payload = {
+            "access_key": config.UPBIT_ACCESS_KEY,
+            "nonce": str(uuid.uuid4()),
+        }
+        token = jwt.encode(payload, config.UPBIT_SECRET_KEY, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async with http.ClientSession() as session:
+            res = await session.get("https://api.upbit.com/v1/accounts", headers=headers)
+            balances = await res.json()
+
+            positions = []
+            for b in balances:
+                if b["currency"] == "KRW":
+                    continue
+                qty = float(b.get("balance", 0))
+                if qty < 0.00001:
+                    continue
+                avg = float(b.get("avg_buy_price", 0))
+                pair = f"KRW-{b['currency']}"
+
+                # 현재가 조회
+                price_res = await session.get(
+                    "https://api.upbit.com/v1/ticker",
+                    params={"markets": pair}
+                )
+                price_data = await price_res.json()
+                cur = float(price_data[0].get("trade_price", 0)) if price_data else 0
+
+                positions.append({
+                    "pair":      pair,
+                    "currency":  b["currency"],
+                    "qty":       qty,
+                    "avg_price": avg,
+                    "cur_price": cur,
+                    "pnl":       (cur - avg) * qty,
+                    "pnl_rate":  (cur - avg) / avg * 100 if avg > 0 else 0,
+                })
+            return {"success": True, "data": positions}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+
+@app.get("/api/balance/stock")
+async def get_stock_balance():
+    """KIS API - 주식 잔고 조회"""
+    try:
+        import aiohttp as http
+        base = config.kis_base_url
+        async with http.ClientSession() as session:
+            token_res = await session.post(f"{base}/oauth2/tokenP", json={
+                "grant_type": "client_credentials",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+            })
+            token_data = await token_res.json()
+            token = token_data.get("access_token", "")
+            headers = {
+                "authorization": f"Bearer {token}",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+                "tr_id": "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R",
+                "custtype": "P",
+            }
+            acct = config.KIS_ACCOUNT_NO.split("-")
+            params = {
+                "CANO": acct[0],
+                "ACNT_PRDT_CD": acct[1] if len(acct) > 1 else "01",
+                "PDNO": "005930", "ORD_UNPR": "0",
+                "ORD_DVSN": "01", "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N",
+            }
+            res = await session.get(
+                f"{base}/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+                headers=headers, params=params
+            )
+            data = await res.json()
+            output = data.get("output", {})
+            return {
+                "success": True,
+                "data": {
+                    "cash":  int(output.get("ord_psbl_cash", 0)),
+                    "total": int(output.get("tot_evlu_amt", 0)),
+                }
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/balance/crypto")
+async def get_crypto_balance():
+    """업비트 - KRW 잔고 조회"""
+    try:
+        import aiohttp as http
+        import jwt, uuid
+        payload = {"access_key": config.UPBIT_ACCESS_KEY, "nonce": str(uuid.uuid4())}
+        token = jwt.encode(payload, config.UPBIT_SECRET_KEY, algorithm="HS256")
+        async with http.ClientSession() as session:
+            res = await session.get(
+                "https://api.upbit.com/v1/accounts",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            balances = await res.json()
+            krw = next((float(b["balance"]) for b in balances if b["currency"] == "KRW"), 0)
+            return {"success": True, "data": {"krw": krw}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

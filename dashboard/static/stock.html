@@ -274,3 +274,49 @@ async function fetchStockData() {
 fetchStockData();
 setInterval(fetchStockData, 30000);
 </script>
+
+<script>
+// 보유 포지션 실시간 연동
+async function fetchStockPositions() {
+  try {
+    const res = await fetch('/api/positions/stock');
+    const { data } = await res.json();
+    if (!data || !data.length) return;
+
+    const tbody = document.querySelector('.pos-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    data.forEach(p => {
+      const pnlClass = p.pnl >= 0 ? 'pos' : 'neg';
+      const rateClass = p.pnl_rate >= 0 ? 'pos' : 'neg';
+      const barW = Math.min(Math.abs(p.pnl_rate) * 10, 100);
+      const barColor = p.pnl_rate >= 0 ? 'var(--green)' : 'var(--red)';
+      tbody.innerHTML += `
+        <tr>
+          <td><div class="tk-name">${p.name}</div><div class="tk-code">${p.symbol}</div></td>
+          <td class="nr2 neu">${p.qty}주</td>
+          <td class="nr2 neu">${p.avg_price?.toLocaleString()}</td>
+          <td class="nr2 neu">${p.cur_price?.toLocaleString()}</td>
+          <td class="nr2 ${pnlClass}">${p.pnl >= 0 ? '+' : ''}${p.pnl?.toLocaleString()}</td>
+          <td>
+            <div class="pct-row">
+              <div class="pct-bar"><div class="pct-fill" style="width:${barW}%;background:${barColor}"></div></div>
+              <span class="nr2 ${rateClass}">${p.pnl_rate >= 0 ? '+' : ''}${p.pnl_rate?.toFixed(1)}%</span>
+            </div>
+          </td>
+        </tr>`;
+    });
+
+    // KPI 업데이트
+    const balRes = await fetch('/api/balance/stock');
+    const { data: bal } = await balRes.json();
+    if (bal) {
+      const kpis = document.querySelectorAll('.kpi-value');
+      if (kpis[0]) kpis[0].textContent = bal.total?.toLocaleString();
+    }
+  } catch(e) { console.log('positions error', e); }
+}
+
+fetchStockPositions();
+setInterval(fetchStockPositions, 60000);
+</script>

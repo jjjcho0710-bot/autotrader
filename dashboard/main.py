@@ -465,12 +465,20 @@ async def get_strategies(bot: str = None):
                 rows = await conn.fetch("SELECT * FROM strategy_config ORDER BY bot, id")
             data = []
             for r in rows:
+                params = r["params"]
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except:
+                        params = {}
+                elif params is None:
+                    params = {}
                 data.append({
                     "id":        r["id"],
                     "bot":       r["bot"],
                     "name":      r["name"],
                     "is_active": r["is_active"],
-                    "params":    dict(r["params"]) if r["params"] else {},
+                    "params":    params,
                     "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
                 })
             return {"success": True, "data": data}

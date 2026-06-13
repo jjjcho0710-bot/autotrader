@@ -8,6 +8,7 @@
 :root{--bg:#12131a;--panel:#1a1c27;--panel2:#1f2133;--border:#272a3d;--stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;--purple:#a78bfa;--muted:#4b5270;--text:#8892b0;--bright:#e2e8f7;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
+/* sidebar */
 .sidebar{width:52px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
 .sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border);flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
@@ -18,6 +19,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .nav-item.active{background:var(--panel2);color:var(--bright);}
 .nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;}
 .nav-item.s.active::before{background:var(--stock);}
+.nav-item.j.active::before{background:var(--purple);}
 .nav-item.d.active::before{background:var(--green);}
 .nav-item.c.active::before{background:var(--crypto);}
 .nav-item.t.active::before{background:var(--purple);}
@@ -30,6 +32,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .sdot{width:6px;height:6px;border-radius:50%;}
 .sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
 .sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
+/* main */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
 .topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
 .page-label{font-size:14px;font-weight:600;color:var(--bright);}
@@ -40,7 +43,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
 /* page */
 .page{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.page-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;}
+.page-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 .ph-left{display:flex;align-items:center;gap:12px;}
 .ph-dot{width:10px;height:10px;border-radius:50%;background:var(--stock);box-shadow:0 0 10px var(--stock);}
 .ph-title{font-size:15px;font-weight:700;color:var(--bright);}
@@ -59,11 +62,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .kpi-value{font-size:17px;font-weight:700;font-family:var(--mono);line-height:1;}
 .kpi-value.pos{color:var(--green);}.kpi-value.stock{color:var(--stock);}.kpi-value.bright{color:var(--bright);}
 .kpi-sub{font-size:10px;color:var(--muted);margin-top:3px;}
-/* grid */
-.content-grid{flex:1;display:grid;grid-template-columns:1fr 300px;grid-template-rows:1fr 1fr;overflow:hidden;}
+/* content grid - 2열 2행 */
+.content-grid{flex:1;display:grid;grid-template-columns:1fr 280px;grid-template-rows:1fr 1fr;overflow:hidden;}
 .pbox{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;flex-direction:column;overflow:hidden;}
-.pbox.nr{border-right:none;}.pbox.nb{border-bottom:none;}
-.ptitle{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;}
+.pbox.nr{border-right:none;}
+.pbox.nb{border-bottom:none;}
+.ptitle{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 .paction{font-size:10px;color:var(--stock);cursor:pointer;letter-spacing:0;text-transform:none;}
 /* pos table */
 .pos-table{width:100%;border-collapse:collapse;font-size:12px;}
@@ -80,18 +84,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .pct-fill{height:100%;border-radius:2px;}
 /* history */
 .hist-list{display:flex;flex-direction:column;gap:5px;flex:1;overflow-y:auto;}
-.hist-item{display:grid;grid-template-columns:56px 44px 1fr auto auto;gap:8px;align-items:center;padding:8px 10px;background:var(--panel2);border-radius:6px;border:1px solid var(--border);font-size:11px;}
+.hist-item{display:grid;grid-template-columns:52px 40px 1fr auto auto;gap:6px;align-items:center;padding:7px 10px;background:var(--panel2);border-radius:6px;border:1px solid var(--border);font-size:11px;}
 .h-time{font-family:var(--mono);color:var(--muted);font-size:10px;}
 .h-tag{font-size:9px;font-weight:700;padding:2px 5px;border-radius:4px;text-align:center;}
 .tag-buy{background:rgba(52,211,153,0.12);color:var(--green);}
 .tag-sell{background:rgba(248,113,113,0.12);color:var(--red);}
-.h-name{color:var(--bright);font-weight:500;}
-.h-price{font-family:var(--mono);color:var(--text);text-align:right;font-size:11px;}
+.h-name{color:var(--bright);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.h-price{font-family:var(--mono);color:var(--text);text-align:right;font-size:10px;}
 .h-res{font-family:var(--mono);font-size:11px;font-weight:600;text-align:right;}
 .h-res.pos{color:var(--green);}.h-res.neg{color:var(--red);}.h-res.pend{color:var(--muted);font-size:10px;}
 /* strategy */
-.strat-list{display:flex;flex-direction:column;gap:8px;}
-.strat-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:11px 13px;}
+.strat-list{display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1;}
+.strat-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;flex-shrink:0;}
 .strat-item.active-s{border-color:rgba(91,143,255,0.4);background:rgba(91,143,255,0.05);}
 .sh{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;}
 .sn{font-size:12px;font-weight:600;color:var(--bright);}
@@ -104,8 +108,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .ssig{margin-top:5px;font-size:10px;display:flex;align-items:center;gap:5px;}
 .sig-dot{width:5px;height:5px;border-radius:50%;}
 /* watchlist */
-.watch-list{display:flex;flex-direction:column;gap:4px;}
-.wi{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);}
+.watch-list{display:flex;flex-direction:column;gap:4px;overflow-y:auto;flex:1;}
+.wi{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);flex-shrink:0;}
 .wi-left{display:flex;align-items:center;gap:8px;}
 .wi-rank{font-family:var(--mono);font-size:10px;color:var(--muted);width:14px;}
 .wi-name{font-size:12px;font-weight:500;color:var(--bright);}
@@ -113,6 +117,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .wi-price{font-family:var(--mono);font-size:11px;color:var(--text);}
 .wi-chg{font-family:var(--mono);font-size:11px;font-weight:600;}
 .wi-chg.pos{color:var(--green);}.wi-chg.neg{color:var(--red);}
+.empty-msg{color:var(--muted);font-size:11px;padding:10px 0;}
 </style>
 </head>
 <body>
@@ -121,7 +126,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
   <div class="sidebar-nav">
     <div class="nav-item j" onclick="location.href='jarvis.html'">🤖<div class="nav-tooltip">Jarvis</div></div>
     <div class="nav-divider"></div>
-    <div class="nav-item d" onclick="location.href='dashboard-C.html'"">⊞<div class="nav-tooltip">대시보드</div></div>
+    <div class="nav-item d" onclick="location.href='dashboard-C.html'">⊞<div class="nav-tooltip">대시보드</div></div>
     <div class="nav-item s active" onclick="location.href='stock.html'">📈<div class="nav-tooltip">주식</div></div>
     <div class="nav-item c" onclick="location.href='crypto.html'">₿<div class="nav-tooltip">코인</div></div>
     <div class="nav-item t" onclick="location.href='strategy.html'">⚙<div class="nav-tooltip">전략</div></div>
@@ -129,9 +134,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
   </div>
   <div class="sidebar-bottom">
     <div class="sdot-group">
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">STK</div></div>
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">CRY</div></div>
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">DAT</div></div>
+      <div class="sdot-wrap"><div class="sdot" id="dot-stk"></div><div class="sdot-label">STK</div></div>
+      <div class="sdot-wrap"><div class="sdot" id="dot-cry"></div><div class="sdot-label">CRY</div></div>
+      <div class="sdot-wrap"><div class="sdot" id="dot-dat"></div><div class="sdot-label">DAT</div></div>
     </div>
   </div>
 </div>
@@ -140,195 +145,265 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     <div class="page-label">주식</div>
     <div class="topbar-right">
       <div class="live-pill"><div class="live-dot"></div>LIVE</div>
-      <div class="clock">2026.06.13 &nbsp;14:32:07</div>
+      <div class="clock" id="clock">-</div>
     </div>
   </div>
   <div class="page">
     <div class="page-header">
       <div class="ph-left">
         <div class="ph-dot"></div>
-        <div><div class="ph-title">stock-trader</div><div class="ph-sub">한국투자증권 KIS API · 운영중 · 장 마감까지 01:27:53</div></div>
+        <div>
+          <div class="ph-title">stock-trader</div>
+          <div class="ph-sub" id="market-status">한국투자증권 KIS API · 상태 확인 중...</div>
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:16px;">
-        <div style="text-align:right;"><div class="ph-pnl" id="sh-today-pnl">+0원</div><div class="ph-psub">오늘 수익 / 누적 <span id="sh-total-pnl">+0</span>원</div></div>
-        <div class="toggle-wrap"><span class="toggle-label">봇 운영</span><div class="toggle"></div></div>
+        <div style="text-align:right;">
+          <div class="ph-pnl" id="sh-today-pnl">+0원</div>
+          <div class="ph-psub">오늘 수익 / 누적 <span id="sh-total-pnl">+0</span>원</div>
+        </div>
+        <div class="toggle-wrap">
+          <span class="toggle-label">봇 운영</span>
+          <div class="toggle" id="bot-toggle" onclick="toggleBot()"></div>
+        </div>
       </div>
     </div>
     <div class="kpi-strip">
       <div class="kpi"><div class="kpi-label">주식 평가금액</div><div class="kpi-value stock" id="s-eval">-</div><div class="kpi-sub">원</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="s-pnl">0</div><div class="kpi-sub">+0.78%</div></div>
-      <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright" id="s-pos-cnt">-</div><div class="kpi-sub">관심 12</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="s-trades">-</div><div class="kpi-sub">매수 2 · 매도 2</div></div>
-      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value stock" id="s-winrate">-</div><div class="kpi-sub"><span id="s-winstat">-</span></div></div>
+      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="s-pnl">0</div><div class="kpi-sub" id="s-pnl-rate">-</div></div>
+      <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright" id="s-pos-cnt">0</div><div class="kpi-sub">종목</div></div>
+      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="s-trades">0</div><div class="kpi-sub">건</div></div>
+      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value stock" id="s-winrate">-</div><div class="kpi-sub" id="s-winstat">-</div></div>
     </div>
     <div class="content-grid">
-      <!-- 포지션 -->
+      <!-- 보유 포지션 -->
       <div class="pbox">
         <div class="ptitle">보유 포지션<span class="paction">+ 수동 추가</span></div>
         <table class="pos-table">
-          <thead><tr><th>종목</th><th style="text-align:right">수량</th><th style="text-align:right">평균단가</th><th style="text-align:right">현재가</th><th style="text-align:right">평가손익</th><th style="text-align:right">수익률</th></tr></thead>
-          <tbody>
-<tr id="s-pos-empty"><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">보유 종목 없음</td></tr>
-</tbody>
+          <thead><tr>
+            <th>종목</th>
+            <th style="text-align:right">수량</th>
+            <th style="text-align:right">평균단가</th>
+            <th style="text-align:right">현재가</th>
+            <th style="text-align:right">평가손익</th>
+            <th style="text-align:right">수익률</th>
+          </tr></thead>
+          <tbody id="pos-tbody">
+            <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">보유 종목 없음</td></tr>
+          </tbody>
         </table>
       </div>
-      <!-- 전략 -->
+      <!-- 전략 상태 -->
       <div class="pbox nr">
         <div class="ptitle">전략 상태<span class="paction" onclick="location.href='strategy.html'">전략 관리 →</span></div>
-        <div class="strat-list">
-          <div class="strat-item active-s">
-            <div class="sh"><span class="sn">MA 크로스</span><span class="spill on">ON</span></div>
-            <div class="sparams"><span class="sp">단기 <span>MA5</span></span><span class="sp">장기 <span>MA20</span></span><span class="sp">손절 <span>-2%</span></span></div>
-            <div class="ssig"><div class="sig-dot" style="background:var(--green)"></div><span style="color:var(--green);font-size:10px;">골든크로스 감지 — 삼성전자, NAVER</span></div>
-          </div>
-          <div class="strat-item">
-            <div class="sh"><span class="sn">RSI 반등</span><span class="spill off">OFF</span></div>
-            <div class="sparams"><span class="sp">기간 <span>RSI14</span></span><span class="sp">진입 <span>&lt;30</span></span><span class="sp">청산 <span>&gt;60</span></span></div>
-          </div>
-          <div class="strat-item">
-            <div class="sh"><span class="sn">볼린저 밴드</span><span class="spill off">OFF</span></div>
-            <div class="sparams"><span class="sp">기간 <span>BB20</span></span><span class="sp">표준편차 <span>2σ</span></span></div>
-          </div>
+        <div class="strat-list" id="strat-list">
+          <div class="empty-msg">로딩 중...</div>
         </div>
       </div>
-      <!-- 매매 이력 -->
+      <!-- 오늘 매매 이력 -->
       <div class="pbox nb">
         <div class="ptitle">오늘 매매 이력</div>
-        <div class="hist-list">
-<div id="s-hist-empty" style="color:var(--muted);font-size:11px;padding:10px;">매매 이력 없음</div>
-</div></div></div>
-      <!-- 관심종목 -->
+        <div class="hist-list" id="hist-list">
+          <div class="empty-msg">매매 이력 없음</div>
+        </div>
+      </div>
+      <!-- 관심 종목 -->
       <div class="pbox nr nb">
-        <div class="ptitle">관심 종목<span class="paction">+ 추가</span></div>
-        <div class="watch-list">
-<div id="s-watch-empty" style="color:var(--muted);font-size:11px;padding:10px;">관심 종목 없음</div>
-</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">412,000</span><span class="wi-chg pos">+2.2%</span></div></div>
-          <div class="wi"><div class="wi-left"><span class="wi-rank">2</span><div><div class="wi-name">현대차</div><div class="wi-code">005380</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">238,500</span><span class="wi-chg neg">-0.8%</span></div></div>
-          <div class="wi"><div class="wi-left"><span class="wi-rank">3</span><div><div class="wi-name">셀트리온</div><div class="wi-code">068270</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">178,800</span><span class="wi-chg pos">+1.4%</span></div></div>
-          <div class="wi"><div class="wi-left"><span class="wi-rank">4</span><div><div class="wi-name">카카오뱅크</div><div class="wi-code">323410</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">24,150</span><span class="wi-chg pos">+3.6%</span></div></div>
+        <div class="ptitle">관심 종목 <span style="color:var(--muted);font-weight:400;">(실시간)</span></div>
+        <div class="watch-list" id="watch-list">
+          <div class="empty-msg">로딩 중...</div>
         </div>
       </div>
     </div>
   </div>
 </div>
-</body>
-</html>
 
 <script>
 const API = '';
 
-async function fetchStockData() {
-  try {
-    // 봇 상태
-    const statusRes = await fetch(`${API}/api/status`);
-    const { data: status } = await statusRes.json();
-    const stockStatus = status?.stock_trader;
-    if (stockStatus) {
-      const pill = document.querySelector('.toggle');
-      if (pill) pill.className = `toggle ${stockStatus.status === 'running' ? 'on' : 'off'}`;
-    }
-
-    // 주식 실시간 시세
-    const priceRes = await fetch(`${API}/api/prices/stock`);
-    const { data: prices } = await priceRes.json();
-
-    // 오늘 매매 이력
-    const tradeRes = await fetch(`${API}/api/trades?bot=stock_trader&limit=10`);
-    const { data: trades } = await tradeRes.json();
-    if (trades && trades.length) {
-      const list = document.querySelector('.hist-list');
-      if (list) {
-        list.innerHTML = '';
-        trades.forEach(t => {
-          const time = new Date(t.ts).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
-          const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl).toLocaleString() : '보유중';
-          const pnlClass = t.pnl != null ? (t.pnl >= 0 ? 'pos' : 'neg') : 'pend';
-          list.innerHTML += `
-            <div class="hist-item">
-              <span class="h-time">${time}</span>
-              <span class="h-tag ${t.side === 'BUY' ? 'tag-buy' : 'tag-sell'}">${t.side === 'BUY' ? '매수' : '매도'}</span>
-              <span class="h-name">${t.symbol}</span>
-              <span class="h-price">${t.price?.toLocaleString()} × ${t.quantity}주</span>
-              <span class="h-res ${pnlClass}">${pnl}</span>
-            </div>`;
-        });
-      }
-    }
-
-    // 요약 데이터
-    const sumRes = await fetch(`${API}/api/summary`);
-    const { data: sum } = await sumRes.json();
-    if (sum) {
-      const kpis = document.querySelectorAll('.kpi-value');
-      if (kpis[1]) kpis[1].textContent = (sum.bot_pnl?.stock_trader >= 0 ? '+' : '') + Math.round(sum.bot_pnl?.stock_trader || 0).toLocaleString();
-    }
-  } catch(e) { console.log('stock error', e); }
+// ── 시계 ──
+function updateClock() {
+  const now = new Date();
+  const d = now.toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).replace(/\. /g,'.').replace('.','');
+  const t = now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  document.getElementById('clock').textContent = `${d} ${t}`;
 }
+setInterval(updateClock, 1000);
+updateClock();
 
-fetchStockData();
-setInterval(fetchStockData, 30000);
-</script>
+// ── 장 상태 ──
+function updateMarketStatus() {
+  const now = new Date();
+  const h = now.getHours(), m = now.getMinutes();
+  const totalMin = h * 60 + m;
+  const open = 9 * 60, close = 15 * 60 + 30;
+  const isOpen = totalMin >= open && totalMin <= close;
+  const el = document.getElementById('market-status');
+  if (isOpen) {
+    const remain = close - totalMin;
+    const rh = Math.floor(remain/60), rm = remain%60;
+    el.textContent = `한국투자증권 KIS API · 운영중 · 장 마감까지 ${String(rh).padStart(2,'0')}:${String(rm).padStart(2,'0')}`;
+  } else {
+    el.textContent = `한국투자증권 KIS API · 장 마감 (09:00~15:30)`;
+  }
+}
+setInterval(updateMarketStatus, 60000);
+updateMarketStatus();
 
-<script>
-// 보유 포지션 실시간 연동
-async function fetchStockPositions() {
+// ── 봇 상태 ──
+async function fetchBotStatus() {
   try {
-    const res = await fetch('/api/positions/stock');
+    const res = await fetch(`${API}/api/status`);
     const { data } = await res.json();
-    if (!data || !data.length) return;
-
-    const tbody = document.querySelector('.pos-table tbody');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-    data.forEach(p => {
-      const pnlClass = p.pnl >= 0 ? 'pos' : 'neg';
-      const rateClass = p.pnl_rate >= 0 ? 'pos' : 'neg';
-      const barW = Math.min(Math.abs(p.pnl_rate) * 10, 100);
-      const barColor = p.pnl_rate >= 0 ? 'var(--green)' : 'var(--red)';
-      tbody.innerHTML += `
-        <tr>
-          <td><div class="tk-name">${p.name}</div><div class="tk-code">${p.symbol}</div></td>
-          <td class="nr2 neu">${p.qty}주</td>
-          <td class="nr2 neu">${p.avg_price?.toLocaleString()}</td>
-          <td class="nr2 neu">${p.cur_price?.toLocaleString()}</td>
-          <td class="nr2 ${pnlClass}">${p.pnl >= 0 ? '+' : ''}${p.pnl?.toLocaleString()}</td>
-          <td>
-            <div class="pct-row">
-              <div class="pct-bar"><div class="pct-fill" style="width:${barW}%;background:${barColor}"></div></div>
-              <span class="nr2 ${rateClass}">${p.pnl_rate >= 0 ? '+' : ''}${p.pnl_rate?.toFixed(1)}%</span>
-            </div>
-          </td>
-        </tr>`;
-    });
-
-    // KPI 업데이트
-    const balRes = await fetch('/api/balance/stock');
-    const { data: bal } = await balRes.json();
-    if (bal) {
-      const kpis = document.querySelectorAll('.kpi-value');
-      if (kpis[0]) kpis[0].textContent = bal.total?.toLocaleString();
-    }
-  } catch(e) { console.log('positions error', e); }
-}
-
-fetchStockPositions();
-setInterval(fetchStockPositions, 60000);
-</script>
-
-<script>
-async function updateStockHeader() {
-  try {
-    const sumRes = await fetch('/api/summary');
-    const { data: sum } = await sumRes.json();
-    if (sum) {
-      const sp = Math.round(sum.bot_pnl?.stock_trader || 0);
-      const tp = Math.round(sum.total_pnl || 0);
-      const el = id => document.getElementById(id);
-      if (el('sh-today-pnl')) el('sh-today-pnl').textContent = (sp >= 0 ? '+' : '') + sp.toLocaleString() + '원';
-      if (el('sh-total-pnl')) el('sh-total-pnl').textContent = (tp >= 0 ? '+' : '') + tp.toLocaleString();
-    }
+    if (!data) return;
+    const setDot = (id, bot) => {
+      const el = document.getElementById(id);
+      if (el) { el.style.background = data[bot]?.status==='running' ? 'var(--green)' : 'var(--red)'; el.style.boxShadow = data[bot]?.status==='running' ? '0 0 5px var(--green)' : 'none'; }
+    };
+    setDot('dot-stk','stock_trader');
+    setDot('dot-cry','crypto_trader');
+    setDot('dot-dat','data_collector');
   } catch(e) {}
 }
-updateStockHeader();
-setInterval(updateStockHeader, 30000);
+
+// ── 봇 토글 ──
+async function toggleBot() {
+  // 추후 봇 ON/OFF API 연동
+  alert('봇 ON/OFF 기능은 준비 중이에요!');
+}
+
+// ── 요약 데이터 ──
+async function fetchSummary() {
+  try {
+    const res = await fetch(`${API}/api/summary`);
+    const { data } = await res.json();
+    if (!data) return;
+    const sp = Math.round(data.bot_pnl?.stock_trader || 0);
+    const tp = Math.round(data.total_pnl || 0);
+    const el = id => document.getElementById(id);
+    el('sh-today-pnl').textContent = (sp>=0?'+':'')+sp.toLocaleString()+'원';
+    el('sh-total-pnl').textContent = (tp>=0?'+':'')+tp.toLocaleString();
+    el('s-pnl').textContent = (sp>=0?'+':'')+sp.toLocaleString();
+    el('s-trades').textContent = data.today_trades || 0;
+  } catch(e) {}
+}
+
+// ── 보유 포지션 ──
+async function fetchPositions() {
+  try {
+    const res = await fetch(`${API}/api/positions/stock`);
+    const { data } = await res.json();
+    const tbody = document.getElementById('pos-tbody');
+    if (!data || !data.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">보유 종목 없음</td></tr>';
+      document.getElementById('s-pos-cnt').textContent = '0';
+      document.getElementById('s-eval').textContent = '-';
+      return;
+    }
+    document.getElementById('s-pos-cnt').textContent = data.length;
+    let totalEval = 0;
+    tbody.innerHTML = '';
+    data.forEach(p => {
+      const cls = p.pnl>=0?'pos':'neg';
+      const barW = Math.min(Math.abs(p.pnl_rate)*10,100);
+      const barColor = p.pnl_rate>=0?'var(--green)':'var(--red)';
+      totalEval += p.cur_price * p.qty;
+      tbody.innerHTML += `<tr>
+        <td><div class="tk-name">${p.name||p.symbol}</div><div class="tk-code">${p.symbol}</div></td>
+        <td class="nr2 neu">${p.qty}주</td>
+        <td class="nr2 neu">${p.avg_price?.toLocaleString()}</td>
+        <td class="nr2 neu">${p.cur_price?.toLocaleString()}</td>
+        <td class="nr2 ${cls}">${p.pnl>=0?'+':''}${p.pnl?.toLocaleString()}</td>
+        <td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:${barW}%;background:${barColor}"></div></div><span class="nr2 ${cls}">${p.pnl_rate>=0?'+':''}${p.pnl_rate?.toFixed(1)}%</span></div></td>
+      </tr>`;
+    });
+    document.getElementById('s-eval').textContent = Math.round(totalEval).toLocaleString();
+  } catch(e) {}
+}
+
+// ── 전략 상태 ──
+async function fetchStrategies() {
+  try {
+    const res = await fetch(`${API}/api/strategies?bot=stock_trader`);
+    const { data } = await res.json();
+    const list = document.getElementById('strat-list');
+    if (!data || !data.length) { list.innerHTML = '<div class="empty-msg">전략 없음</div>'; return; }
+    list.innerHTML = '';
+    data.forEach(s => {
+      const params = s.params || {};
+      const paramStr = Object.entries(params).slice(0,3).map(([k,v])=>`<span class="sp">${k} <span>${v}</span></span>`).join('');
+      const isActive = s.is_active;
+      list.innerHTML += `
+        <div class="strat-item ${isActive?'active-s':''}">
+          <div class="sh"><span class="sn">${s.name}</span><span class="spill ${isActive?'on':'off'}">${isActive?'ON':'OFF'}</span></div>
+          <div class="sparams">${paramStr}</div>
+          ${isActive?`<div class="ssig"><div class="sig-dot" style="background:var(--green)"></div><span style="color:var(--green);font-size:10px;">활성 — 신호 감지 중</span></div>`:''}
+        </div>`;
+    });
+  } catch(e) {}
+}
+
+// ── 매매 이력 ──
+async function fetchHistory() {
+  try {
+    const res = await fetch(`${API}/api/trades?bot=stock_trader&limit=10`);
+    const { data } = await res.json();
+    const list = document.getElementById('hist-list');
+    if (!data || !data.length) { list.innerHTML = '<div class="empty-msg">매매 이력 없음</div>'; return; }
+    list.innerHTML = '';
+    data.forEach(t => {
+      const time = new Date(t.ts).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+      const pnl = t.pnl!=null ? (t.pnl>=0?'+':'')+Math.round(t.pnl).toLocaleString() : '보유중';
+      const pnlCls = t.pnl!=null ? (t.pnl>=0?'pos':'neg') : 'pend';
+      list.innerHTML += `<div class="hist-item">
+        <span class="h-time">${time}</span>
+        <span class="h-tag ${t.side==='BUY'?'tag-buy':'tag-sell'}">${t.side==='BUY'?'매수':'매도'}</span>
+        <span class="h-name">${t.symbol}</span>
+        <span class="h-price">${t.price?.toLocaleString()}×${t.quantity}주</span>
+        <span class="h-res ${pnlCls}">${pnl}</span>
+      </div>`;
+    });
+  } catch(e) {}
+}
+
+// ── 관심 종목 (실시간 시세) ──
+async function fetchWatchlist() {
+  try {
+    const res = await fetch(`${API}/api/prices/stock`);
+    const { data } = await res.json();
+    const list = document.getElementById('watch-list');
+    if (!data || !Object.keys(data).length) { list.innerHTML = '<div class="empty-msg">시세 데이터 없음</div>'; return; }
+    list.innerHTML = '';
+    Object.entries(data).slice(0,8).forEach(([symbol, p], i) => {
+      const cls = p.change_rate>=0?'pos':'neg';
+      list.innerHTML += `<div class="wi">
+        <div class="wi-left">
+          <span class="wi-rank">${i+1}</span>
+          <div><div class="wi-name">${symbol}</div></div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:center;">
+          <span class="wi-price">${Math.round(p.price)?.toLocaleString()}</span>
+          <span class="wi-chg ${cls}">${p.change_rate>=0?'+':''}${p.change_rate?.toFixed(2)}%</span>
+        </div>
+      </div>`;
+    });
+  } catch(e) {}
+}
+
+// ── 전체 로드 ──
+async function loadAll() {
+  await Promise.all([
+    fetchBotStatus(),
+    fetchSummary(),
+    fetchPositions(),
+    fetchStrategies(),
+    fetchHistory(),
+    fetchWatchlist(),
+  ]);
+}
+
+loadAll();
+setInterval(loadAll, 30000);
 </script>
+</body>
+</html>

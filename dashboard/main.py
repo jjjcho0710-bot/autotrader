@@ -77,6 +77,11 @@ async def crypto():
     with open("static/crypto.html", encoding="utf-8") as f:
         return f.read()
 
+@app.get("/crypto.html", response_class=HTMLResponse)
+async def crypto_html():
+    with open("static/crypto.html", encoding="utf-8") as f:
+        return f.read()
+
 @app.get("/strategy", response_class=HTMLResponse)
 async def strategy():
     with open("static/strategy.html", encoding="utf-8") as f:
@@ -87,6 +92,31 @@ async def logs():
     with open("static/logs.html", encoding="utf-8") as f:
         return f.read()
 
+
+@app.get("/stock.html", response_class=HTMLResponse)
+async def stock_html():
+    with open("static/stock.html", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/strategy.html", response_class=HTMLResponse)
+async def strategy_html():
+    with open("static/strategy.html", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/logs.html", response_class=HTMLResponse)
+async def logs_html():
+    with open("static/logs.html", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/dashboard-C.html", response_class=HTMLResponse)
+async def dashboard_html():
+    with open("static/dashboard-C.html", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/jarvis.html", response_class=HTMLResponse)
+async def jarvis_html():
+    with open("static/jarvis.html", encoding="utf-8") as f:
+        return f.read()
 
 # ── API 엔드포인트 ──────────────────────────────────────
 

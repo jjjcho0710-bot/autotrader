@@ -150,18 +150,22 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         </div>
       </div>
     </div>
-    <div class="content-area">
+        <div class="content-area">
       <!-- 주식 -->
-      <div class="section">
+      <div class="section" id="section-stock">
         <div class="sec-title"><div class="sec-dot" style="background:var(--stock);box-shadow:0 0 6px var(--stock)"></div><span style="color:var(--stock)">stock-trader</span>&nbsp;한국주식 전략</div>
-        <div class="sc as">
-          <div class="sc-header"><div><div class="sc-title">MA 크로스</div><div class="sc-desc">이동평균선 골든/데드크로스 기반 진입</div></div><div class="toggle on"></div></div>
-          <div class="sc-body">
-            <div class="param-grid">
-              <div class="pr"><div class="pr-label">단기 이평</div><div class="pr-row"><input class="pr-input" value="5" type="number"><span class="pr-unit">일</span></div></div>
-              <div class="pr"><div class="pr-label">장기 이평</div><div class="pr-row"><input class="pr-input" value="20" type="number"><span class="pr-unit">일</span></div></div>
-              <div class="pr"><div class="pr-label">손절선</div><div class="pr-row"><input class="pr-input" value="-2" type="number"><span class="pr-unit">%</span></div></div>
-            </div>
+        <div id="stock-cards" style="display:flex;flex-direction:column;gap:12px;">
+          <div style="color:var(--muted);font-size:12px;padding:10px;">로딩 중...</div>
+        </div>
+      </div>
+      <!-- 코인 -->
+      <div class="section" id="section-crypto">
+        <div class="sec-title"><div class="sec-dot" style="background:var(--crypto);box-shadow:0 0 6px var(--crypto)"></div><span style="color:var(--crypto)">crypto-trader</span>&nbsp;코인 전략</div>
+        <div id="crypto-cards" style="display:flex;flex-direction:column;gap:12px;">
+          <div style="color:var(--muted);font-size:12px;padding:10px;">로딩 중...</div>
+        </div>
+      </div>
+    </div>
             <div class="param-grid">
               <div class="pr"><div class="pr-label">1회 매수금액</div><div class="pr-row"><input class="pr-input" value="500000" type="number" style="width:90px"><span class="pr-unit">원</span></div></div>
               <div class="pr"><div class="pr-label">최대 종목수</div><div class="pr-row"><input class="pr-input" value="5" type="number"><span class="pr-unit">개</span></div></div>
@@ -470,4 +474,190 @@ function showToast(msg, type) {
   document.body.appendChild(toast);
   setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 2500);
 }
+</script>
+
+<script>
+const API = '';
+let strategiesData = [];
+
+// ── 전략 카드 렌더링 ──────────────────────────────────
+async function loadStrategies() {
+  try {
+    const res = await fetch(`${API}/api/strategies`);
+    const { data } = await res.json();
+    if (!data) return;
+    strategiesData = data;
+
+    const stockCards  = document.getElementById('stock-cards');
+    const cryptoCards = document.getElementById('crypto-cards');
+    stockCards.innerHTML  = '';
+    cryptoCards.innerHTML = '';
+
+    const stockList  = data.filter(s => s.bot === 'stock_trader');
+    const cryptoList = data.filter(s => s.bot === 'crypto_trader');
+
+    if (!stockList.length)  stockCards.innerHTML  = '<div style="color:var(--muted);font-size:12px;padding:10px;">전략 없음 — 전략 추가 버튼으로 추가하세요</div>';
+    if (!cryptoList.length) cryptoCards.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:10px;">전략 없음 — 전략 추가 버튼으로 추가하세요</div>';
+
+    stockList.forEach(s  => stockCards.insertAdjacentHTML('beforeend',  buildCard(s, 'stock')));
+    cryptoList.forEach(s => cryptoCards.insertAdjacentHTML('beforeend', buildCard(s, 'crypto')));
+  } catch(e) { console.log('loadStrategies error', e); }
+}
+
+function buildCard(s, type) {
+  const isActive = s.is_active;
+  const params   = s.params || {};
+  const accent   = type === 'stock' ? 'as' : 'ac';
+  const btnClass = type === 'stock' ? 's' : 'c';
+  const color    = type === 'stock' ? 'var(--stock)' : 'var(--crypto)';
+  const cardId   = `card-${s.bot}-${s.name.replace(/\s/g,'_')}`;
+
+  const paramHTML = Object.entries(params).map(([k,v]) => `
+    <div class="pr">
+      <div class="pr-label">${k}</div>
+      <div class="pr-row">
+        <input class="pr-input ${type==='crypto'?'cf':''}"
+          data-bot="${s.bot}" data-name="${s.name}" data-key="${k}"
+          value="${v}" style="width:80px">
+      </div>
+    </div>`).join('');
+
+  const sigColor = isActive ? color : 'var(--muted)';
+  const sigText  = isActive ? '활성 — 신호 감지 중' : '비활성 — 전략을 켜면 신호 감지 시작';
+  const sigClass = isActive ? 'act' : 'wait';
+
+  return `
+    <div class="sc ${isActive ? accent : ''}" id="${cardId}">
+      <div class="sc-header">
+        <div>
+          <div class="sc-title">${s.name}</div>
+          <div class="sc-desc">${getDesc(s.name)}</div>
+        </div>
+        <div class="toggle ${isActive?'on':'off'}"
+          onclick="toggleStrategy('${s.bot}','${s.name}',this)"
+          data-active="${isActive}">
+        </div>
+      </div>
+      <div class="sc-body">
+        <div class="param-grid">${paramHTML}</div>
+        <div class="sig-bar ${sigClass}">
+          <div class="sig-dot" style="background:${sigColor}"></div>${sigText}
+        </div>
+        <div class="perf-row">
+          <div class="ps"><div class="ps-label">30일 수익률</div><div class="ps-value">-</div></div>
+          <div class="ps"><div class="ps-label">승률</div><div class="ps-value">-</div></div>
+          <div class="ps"><div class="ps-label">총 체결</div><div class="ps-value">-</div></div>
+        </div>
+        <div class="save-btn ${btnClass}" onclick="saveStrategy('${s.bot}','${s.name}')">파라미터 저장</div>
+      </div>
+    </div>`;
+}
+
+function getDesc(name) {
+  const map = {
+    'MA크로스':'이동평균선 골든/데드크로스 기반 진입',
+    'RSI반등':'과매도 구간 진입 후 반등 노리기',
+    '볼린저밴드':'볼린저밴드 상하단 돌파 매매',
+    'MACD':'MACD 라인 / 시그널 라인 교차 매매',
+    '변동성돌파':'Larry Williams K값 기반 당일 돌파 매매',
+    'RSI과매도':'과매도 구간 코인 진입',
+  };
+  return map[name] || name;
+}
+
+// ── 전략 ON/OFF ──────────────────────────────────────
+async function toggleStrategy(bot, name, el) {
+  const isActive = el.dataset.active === 'true';
+  const newActive = !isActive;
+  el.className = `toggle ${newActive?'on':'off'}`;
+  el.dataset.active = newActive;
+
+  const params = collectParams(bot, name);
+  try {
+    const res = await fetch(`${API}/api/strategies/update`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({bot, name, is_active: newActive, params})
+    });
+    const { success, message } = await res.json();
+    if (success) {
+      showToast(message, 'success');
+      await loadStrategies();
+    } else {
+      showToast('저장 실패', 'error');
+      el.className = `toggle ${isActive?'on':'off'}`;
+      el.dataset.active = isActive;
+    }
+  } catch(e) { showToast('오류 발생', 'error'); }
+}
+
+// ── 파라미터 저장 ──────────────────────────────────────
+async function saveStrategy(bot, name) {
+  const params = collectParams(bot, name);
+  const s = strategiesData.find(x => x.bot===bot && x.name===name);
+  try {
+    const res = await fetch(`${API}/api/strategies/update`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({bot, name, is_active: s?.is_active||false, params})
+    });
+    const { success } = await res.json();
+    showToast(success ? '저장 완료!' : '저장 실패', success?'success':'error');
+  } catch(e) { showToast('오류 발생','error'); }
+}
+
+function collectParams(bot, name) {
+  const params = {};
+  document.querySelectorAll(`input[data-bot="${bot}"][data-name="${name}"]`).forEach(inp => {
+    const v = parseFloat(inp.value);
+    params[inp.dataset.key] = isNaN(v) ? inp.value : v;
+  });
+  return params;
+}
+
+// ── 전략 추가 폼 ──────────────────────────────────────
+function showAddForm() {
+  const f = document.getElementById('add-form');
+  f.style.display = 'block';
+  f.scrollIntoView({behavior:'smooth'});
+}
+function hideAddForm() {
+  document.getElementById('add-form').style.display = 'none';
+}
+async function submitAddForm() {
+  const bot    = document.getElementById('af-bot').value;
+  const name   = document.getElementById('af-name').value.trim();
+  const stop   = parseFloat(document.getElementById('af-stop').value);
+  const profit = parseFloat(document.getElementById('af-profit').value);
+  const amount = parseFloat(document.getElementById('af-amount').value);
+  if (!name) { showToast('전략명을 입력해주세요','error'); return; }
+  try {
+    const res = await fetch(`${API}/api/strategies/add`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({bot, name, is_active:false, params:{stop_loss:stop, take_profit:profit, buy_amount:amount}})
+    });
+    const { success, message } = await res.json();
+    if (success) {
+      showToast(`${name} 전략 추가 완료!`,'success');
+      hideAddForm();
+      document.getElementById('af-name').value = '';
+      await loadStrategies();
+    } else {
+      showToast(message||'추가 실패','error');
+    }
+  } catch(e) { showToast('오류 발생','error'); }
+}
+
+// ── 토스트 ──────────────────────────────────────────
+function showToast(msg, type) {
+  const t = document.createElement('div');
+  t.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;background:${type==='success'?'var(--green)':'var(--red)'};color:white;box-shadow:0 4px 12px rgba(0,0,0,0.3);`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity='0'; setTimeout(()=>t.remove(),300); }, 2500);
+}
+
+// 초기 로드
+loadStrategies();
 </script>

@@ -1,6 +1,5 @@
 import json
 import logging
-from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -19,13 +18,9 @@ class Database:
 
     async def connect(self):
         self.pool = await asyncpg.create_pool(
-            host=config.DB_HOST,
-            port=config.DB_PORT,
-            database=config.DB_NAME,
-            user=config.DB_USER,
-            password=config.DB_PASS,
-            min_size=2,
-            max_size=10,
+            host=config.DB_HOST, port=config.DB_PORT,
+            database=config.DB_NAME, user=config.DB_USER,
+            password=config.DB_PASS, min_size=2, max_size=10,
         )
         logger.info("✅ PostgreSQL 연결 완료")
         await self._create_tables()
@@ -33,119 +28,89 @@ class Database:
     async def disconnect(self):
         if self.pool:
             await self.pool.close()
-            logger.info("PostgreSQL 연결 종료")
 
     async def _create_tables(self):
-        """테이블 없으면 자동 생성"""
         async with self.pool.acquire() as conn:
-            # 주식 OHLCV
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS stock_ohlcv (
-                    id          BIGSERIAL PRIMARY KEY,
-                    symbol      VARCHAR(10) NOT NULL,
-                    ts          TIMESTAMPTZ NOT NULL,
-                    open        BIGINT,
-                    high        BIGINT,
-                    low         BIGINT,
-                    close       BIGINT,
-                    volume      BIGINT,
-                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY, symbol VARCHAR(10) NOT NULL,
+                    ts TIMESTAMPTZ NOT NULL, open BIGINT, high BIGINT,
+                    low BIGINT, close BIGINT, volume BIGINT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_ohlcv_symbol_ts
-                    ON stock_ohlcv (symbol, ts);
-            """)
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_ohlcv_symbol_ts ON stock_ohlcv (symbol, ts);
 
-            # 코인 OHLCV
-            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS crypto_ohlcv (
-                    id          BIGSERIAL PRIMARY KEY,
-                    pair        VARCHAR(20) NOT NULL,
-                    ts          TIMESTAMPTZ NOT NULL,
-                    open        NUMERIC(20,2),
-                    high        NUMERIC(20,2),
-                    low         NUMERIC(20,2),
-                    close       NUMERIC(20,2),
-                    volume      NUMERIC(20,8),
-                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY, pair VARCHAR(20) NOT NULL,
+                    ts TIMESTAMPTZ NOT NULL, open NUMERIC(20,2), high NUMERIC(20,2),
+                    low NUMERIC(20,2), close NUMERIC(20,2), volume NUMERIC(20,8),
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_ohlcv_pair_ts
-                    ON crypto_ohlcv (pair, ts);
-            """)
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_ohlcv_pair_ts ON crypto_ohlcv (pair, ts);
 
-            # 매매 이력
-            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS trade_history (
-                    id          BIGSERIAL PRIMARY KEY,
-                    bot         VARCHAR(20) NOT NULL,   -- stock_trader / crypto_trader
-                    asset_type  VARCHAR(10) NOT NULL,   -- stock / crypto
-                    symbol      VARCHAR(20) NOT NULL,
-                    side        VARCHAR(5) NOT NULL,    -- BUY / SELL
-                    price       NUMERIC(20,2),
-                    quantity    NUMERIC(20,8),
-                    amount      NUMERIC(20,2),
-                    strategy    VARCHAR(50),
-                    pnl         NUMERIC(20,2),
-                    ts          TIMESTAMPTZ DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
+                    asset_type VARCHAR(10) NOT NULL, symbol VARCHAR(20) NOT NULL,
+                    side VARCHAR(5) NOT NULL, price NUMERIC(20,2), quantity NUMERIC(20,8),
+                    amount NUMERIC(20,2), strategy VARCHAR(50), pnl NUMERIC(20,2),
+                    ts TIMESTAMPTZ DEFAULT NOW()
                 );
-            """)
 
-            # 잔고 스냅샷
-            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS balance_snapshot (
-                    id          BIGSERIAL PRIMARY KEY,
-                    bot         VARCHAR(20) NOT NULL,
-                    total_krw   NUMERIC(20,2),
-                    cash_krw    NUMERIC(20,2),
-                    eval_krw    NUMERIC(20,2),
-                    pnl_today   NUMERIC(20,2),
-                    ts          TIMESTAMPTZ DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
+                    total_krw NUMERIC(20,2), cash_krw NUMERIC(20,2),
+                    eval_krw NUMERIC(20,2), pnl_today NUMERIC(20,2),
+                    ts TIMESTAMPTZ DEFAULT NOW()
                 );
-            """)
 
+                CREATE TABLE IF NOT EXISTS strategy_config (
+                    id SERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
+                    name VARCHAR(50) NOT NULL, is_active BOOLEAN DEFAULT FALSE,
+                    params JSONB DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(bot, name)
+                );
+                INSERT INTO strategy_config (bot, name, is_active, params) VALUES
+                ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
+                ('stock_trader','RSI반등',false,'{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
+                ('stock_trader','볼린저밴드',false,'{"period":20,"std":2,"stop_loss":-2,"buy_amount":500000}'),
+                ('crypto_trader','MACD',true,'{"fast":12,"slow":26,"signal":9,"candle_min":60,"stop_loss":-3,"take_profit":7,"buy_amount":500000}'),
+                ('crypto_trader','변동성돌파',false,'{"k":0.5,"candle_min":1440,"stop_loss":-3}'),
+                ('crypto_trader','RSI과매도',false,'{"period":14,"entry":25,"exit":65,"stop_loss":-3,"buy_amount":500000}')
+                ON CONFLICT (bot, name) DO NOTHING;
+            """)
             logger.info("✅ DB 테이블 확인 완료")
 
-    @asynccontextmanager
-    async def acquire(self):
-        async with self.pool.acquire() as conn:
-            yield conn
-
-    async def insert_stock_ohlcv(self, symbol: str, ts: datetime, o: int, h: int, l: int, c: int, v: int):
+    async def insert_stock_ohlcv(self, symbol, ts, o, h, l, c, v):
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO stock_ohlcv (symbol, ts, open, high, low, close, volume)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1,$2,$3,$4,$5,$6,$7)
                 ON CONFLICT (symbol, ts) DO UPDATE
                 SET open=$3, high=$4, low=$5, close=$6, volume=$7
             """, symbol, ts, o, h, l, c, v)
 
-    async def insert_crypto_ohlcv(self, pair: str, ts: datetime, o, h, l, c, v):
+    async def insert_crypto_ohlcv(self, pair, ts, o, h, l, c, v):
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO crypto_ohlcv (pair, ts, open, high, low, close, volume)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1,$2,$3,$4,$5,$6,$7)
                 ON CONFLICT (pair, ts) DO UPDATE
                 SET open=$3, high=$4, low=$5, close=$6, volume=$7
             """, pair, ts, float(o), float(h), float(l), float(c), float(v))
 
-    async def insert_trade(self, bot: str, asset_type: str, symbol: str,
-                           side: str, price: float, quantity: float,
-                           amount: float, strategy: str, pnl: float = None):
+    async def insert_trade(self, bot, asset_type, symbol, side, price, quantity, amount, strategy, pnl=None):
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO trade_history
-                    (bot, asset_type, symbol, side, price, quantity, amount, strategy, pnl)
+                INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
             """, bot, asset_type, symbol, side, price, quantity, amount, strategy, pnl)
 
-    async def get_recent_ohlcv(self, symbol: str, limit: int = 60, asset: str = "stock"):
+    async def get_recent_ohlcv(self, symbol, limit=60, asset="stock"):
         table = "stock_ohlcv" if asset == "stock" else "crypto_ohlcv"
         col = "symbol" if asset == "stock" else "pair"
         async with self.pool.acquire() as conn:
             return await conn.fetch(f"""
-                SELECT * FROM {table}
-                WHERE {col} = $1
-                ORDER BY ts DESC
-                LIMIT $2
+                SELECT * FROM {table} WHERE {col}=$1 ORDER BY ts DESC LIMIT $2
             """, symbol, limit)
 
 
@@ -156,9 +121,7 @@ class Cache:
 
     async def connect(self):
         self.client = aioredis.from_url(
-            config.redis_url,
-            encoding="utf-8",
-            decode_responses=True,
+            config.redis_url, encoding="utf-8", decode_responses=True
         )
         await self.client.ping()
         logger.info("✅ Redis 연결 완료")
@@ -168,21 +131,19 @@ class Cache:
             await self.client.close()
 
     async def set_price(self, key: str, data: dict, ttl: int = 120):
-        """실시간 시세 캐시 (기본 2분 TTL)"""
         await self.client.setex(key, ttl, json.dumps(data, ensure_ascii=False))
 
-    async def get_price(self, key: str) -> Optional[dict]:
+    async def get_price(self, key: str):
         val = await self.client.get(key)
         return json.loads(val) if val else None
 
     async def push_signal(self, channel: str, signal: dict):
-        """매매 신호 큐에 발행"""
         await self.client.publish(channel, json.dumps(signal, ensure_ascii=False))
 
     async def set_bot_status(self, bot: str, status: dict):
         await self.client.hset("bot:status", bot, json.dumps(status, ensure_ascii=False))
 
-    async def get_all_bot_status(self) -> dict:
+    async def get_all_bot_status(self):
         raw = await self.client.hgetall("bot:status")
         return {k: json.loads(v) for k, v in raw.items()}
 
@@ -190,52 +151,3 @@ class Cache:
 # 싱글톤
 db = Database()
 cache = Cache()
-
-    async def create_strategy_table(self):
-        """전략 설정 테이블 생성"""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS strategy_config (
-                    id          SERIAL PRIMARY KEY,
-                    bot         VARCHAR(20) NOT NULL,   -- stock_trader / crypto_trader
-                    name        VARCHAR(50) NOT NULL,   -- MA크로스 / MACD 등
-                    is_active   BOOLEAN DEFAULT FALSE,
-                    params      JSONB DEFAULT '{}',
-                    updated_at  TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(bot, name)
-                );
-            """)
-
-            # 기본 전략 초기값 삽입
-            await conn.execute("""
-                INSERT INTO strategy_config (bot, name, is_active, params) VALUES
-                ('stock_trader', 'MA크로스', true, '{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
-                ('stock_trader', 'RSI반등', false, '{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
-                ('stock_trader', '볼린저밴드', false, '{"period":20,"std":2,"stop_loss":-2,"buy_amount":500000}'),
-                ('crypto_trader', 'MACD', true, '{"fast":12,"slow":26,"signal":9,"candle_min":60,"stop_loss":-3,"take_profit":7,"buy_amount":500000}'),
-                ('crypto_trader', '변동성돌파', false, '{"k":0.5,"candle_min":1440,"close_time":"09:00","stop_loss":-3}'),
-                ('crypto_trader', 'RSI과매도', false, '{"period":14,"entry":25,"exit":65,"stop_loss":-3,"buy_amount":500000}')
-                ON CONFLICT (bot, name) DO NOTHING;
-            """)
-            print("✅ strategy_config 테이블 생성 완료")
-
-    async def get_strategies(self, bot: str = None):
-        """전략 설정 조회"""
-        async with self.pool.acquire() as conn:
-            if bot:
-                rows = await conn.fetch("""
-                    SELECT * FROM strategy_config WHERE bot = $1 ORDER BY id
-                """, bot)
-            else:
-                rows = await conn.fetch("SELECT * FROM strategy_config ORDER BY bot, id")
-            return [dict(r) for r in rows]
-
-    async def update_strategy(self, bot: str, name: str, is_active: bool, params: dict):
-        """전략 설정 업데이트"""
-        import json
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE strategy_config
-                SET is_active = $1, params = $2, updated_at = NOW()
-                WHERE bot = $3 AND name = $4
-            """, is_active, json.dumps(params), bot, name)

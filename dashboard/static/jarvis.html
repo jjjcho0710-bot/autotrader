@@ -494,3 +494,75 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 
 </body>
 </html>
+
+<script>
+const API = '';
+
+async function fetchJarvisData() {
+  try {
+    // 봇 상태
+    const statusRes = await fetch(`${API}/api/status`);
+    const { data: status } = await statusRes.json();
+
+    if (status) {
+      // 봇 상태 도트
+      const dots = document.querySelectorAll('.sdot');
+      const bots = ['stock_trader', 'crypto_trader', 'data_collector'];
+      bots.forEach((bot, i) => {
+        if (dots[i]) {
+          dots[i].style.background = status[bot]?.status === 'running' ? 'var(--green)' : 'var(--red)';
+          dots[i].style.boxShadow = status[bot]?.status === 'running' ? '0 0 5px var(--green)' : 'none';
+        }
+      });
+
+      // 캐릭터 상태 텍스트
+      const statusText = document.querySelector('.char-status span:last-child');
+      const allRunning = bots.every(b => status[b]?.status === 'running');
+      if (statusText) statusText.textContent = allRunning ? '온라인 · 모든 봇 정상' : '일부 봇 오류 확인 필요';
+    }
+
+    // 요약
+    const sumRes = await fetch(`${API}/api/summary`);
+    const { data: sum } = await sumRes.json();
+    if (sum) {
+      const bigNums = document.querySelectorAll('.pa-big');
+      if (bigNums[1]) bigNums[1].textContent = (sum.today_pnl >= 0 ? '+' : '') + Math.round(sum.today_pnl).toLocaleString();
+    }
+
+    // 최근 활동
+    const tradeRes = await fetch(`${API}/api/trades?limit=5`);
+    const { data: trades } = await tradeRes.json();
+    if (trades && trades.length) {
+      const feed = document.querySelector('.activity-area');
+      if (feed) {
+        // 타이틀 유지
+        const title = feed.querySelector('.act-title');
+        feed.innerHTML = '';
+        if (title) feed.appendChild(title);
+
+        trades.forEach(t => {
+          const time = new Date(t.ts).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
+          const isStock = t.bot === 'stock_trader';
+          const iconClass = isStock ? 'icon-stock' : t.bot === 'crypto_trader' ? 'icon-crypto' : 'icon-data';
+          const icon = isStock ? '📈' : t.bot === 'crypto_trader' ? '₿' : '🗄';
+          const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl/1000) + 'K' : '보유중';
+          const pnlClass = t.pnl != null ? (t.pnl >= 0 ? 'pos' : 'neg') : '';
+          feed.innerHTML += `
+            <div class="act-item">
+              <div class="act-icon ${iconClass}">${icon}</div>
+              <div class="act-content">
+                <div class="act-main">${t.symbol} ${t.side === 'BUY' ? '매수' : '매도'} 체결</div>
+                <div class="act-sub">${t.bot} · ${t.price?.toLocaleString()}원 × ${parseFloat(t.quantity).toFixed(4)}</div>
+              </div>
+              <div class="act-time">${time}</div>
+              <div class="act-result ${pnlClass}">${pnl}</div>
+            </div>`;
+        });
+      }
+    }
+  } catch(e) { console.log('jarvis error', e); }
+}
+
+fetchJarvisData();
+setInterval(fetchJarvisData, 15000);
+</script>

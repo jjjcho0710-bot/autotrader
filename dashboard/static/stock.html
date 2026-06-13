@@ -219,3 +219,58 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 </div>
 </body>
 </html>
+
+<script>
+const API = '';
+
+async function fetchStockData() {
+  try {
+    // 봇 상태
+    const statusRes = await fetch(`${API}/api/status`);
+    const { data: status } = await statusRes.json();
+    const stockStatus = status?.stock_trader;
+    if (stockStatus) {
+      const pill = document.querySelector('.toggle');
+      if (pill) pill.className = `toggle ${stockStatus.status === 'running' ? 'on' : 'off'}`;
+    }
+
+    // 주식 실시간 시세
+    const priceRes = await fetch(`${API}/api/prices/stock`);
+    const { data: prices } = await priceRes.json();
+
+    // 오늘 매매 이력
+    const tradeRes = await fetch(`${API}/api/trades?bot=stock_trader&limit=10`);
+    const { data: trades } = await tradeRes.json();
+    if (trades && trades.length) {
+      const list = document.querySelector('.hist-list');
+      if (list) {
+        list.innerHTML = '';
+        trades.forEach(t => {
+          const time = new Date(t.ts).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
+          const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl).toLocaleString() : '보유중';
+          const pnlClass = t.pnl != null ? (t.pnl >= 0 ? 'pos' : 'neg') : 'pend';
+          list.innerHTML += `
+            <div class="hist-item">
+              <span class="h-time">${time}</span>
+              <span class="h-tag ${t.side === 'BUY' ? 'tag-buy' : 'tag-sell'}">${t.side === 'BUY' ? '매수' : '매도'}</span>
+              <span class="h-name">${t.symbol}</span>
+              <span class="h-price">${t.price?.toLocaleString()} × ${t.quantity}주</span>
+              <span class="h-res ${pnlClass}">${pnl}</span>
+            </div>`;
+        });
+      }
+    }
+
+    // 요약 데이터
+    const sumRes = await fetch(`${API}/api/summary`);
+    const { data: sum } = await sumRes.json();
+    if (sum) {
+      const kpis = document.querySelectorAll('.kpi-value');
+      if (kpis[1]) kpis[1].textContent = (sum.bot_pnl?.stock_trader >= 0 ? '+' : '') + Math.round(sum.bot_pnl?.stock_trader || 0).toLocaleString();
+    }
+  } catch(e) { console.log('stock error', e); }
+}
+
+fetchStockData();
+setInterval(fetchStockData, 30000);
+</script>

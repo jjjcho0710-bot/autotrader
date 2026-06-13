@@ -1,0 +1,79 @@
+import os
+from dataclasses import dataclass
+
+
+@dataclass
+class Config:
+    # ── PostgreSQL ──
+    DB_HOST: str = os.getenv("DB_HOST", "localhost")
+    DB_PORT: int = int(os.getenv("DB_PORT", "5432"))
+    DB_NAME: str = os.getenv("DB_NAME", "autotrader")
+    DB_USER: str = os.getenv("DB_USER", "postgres")
+    DB_PASS: str = os.getenv("DB_PASS", "")
+
+    # ── Redis ──
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_PASS: str = os.getenv("REDIS_PASS", "")
+
+    # ── KIS (한국투자증권) ──
+    KIS_APP_KEY: str = os.getenv("KIS_APP_KEY", "")
+    KIS_APP_SECRET: str = os.getenv("KIS_APP_SECRET", "")
+    KIS_ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "")   # 계좌번호
+    KIS_IS_PAPER: bool = os.getenv("KIS_IS_PAPER", "true").lower() == "true"  # 모의투자
+
+    # ── 업비트 ──
+    UPBIT_ACCESS_KEY: str = os.getenv("UPBIT_ACCESS_KEY", "")
+    UPBIT_SECRET_KEY: str = os.getenv("UPBIT_SECRET_KEY", "")
+
+    # ── 텔레그램 ──
+    TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
+    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # ── 수집 설정 ──
+    COLLECT_INTERVAL_SEC: int = int(os.getenv("COLLECT_INTERVAL_SEC", "60"))  # 1분봉
+    STOCK_SYMBOLS: list = None   # 아래에서 설정
+    CRYPTO_PAIRS: list = None
+
+    def __post_init__(self):
+        # 수집할 주식 종목 (환경변수로 override 가능)
+        symbols_env = os.getenv("STOCK_SYMBOLS", "")
+        self.STOCK_SYMBOLS = symbols_env.split(",") if symbols_env else [
+            "005930",  # 삼성전자
+            "000660",  # SK하이닉스
+            "035420",  # NAVER
+            "035720",  # 카카오
+            "005380",  # 현대차
+            "068270",  # 셀트리온
+            "373220",  # LG에너지솔루션
+            "323410",  # 카카오뱅크
+        ]
+
+        # 수집할 코인 페어
+        pairs_env = os.getenv("CRYPTO_PAIRS", "")
+        self.CRYPTO_PAIRS = pairs_env.split(",") if pairs_env else [
+            "KRW-BTC",
+            "KRW-ETH",
+            "KRW-SOL",
+            "KRW-XRP",
+            "KRW-ADA",
+        ]
+
+    @property
+    def db_url(self) -> str:
+        return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+
+    @property
+    def redis_url(self) -> str:
+        if self.REDIS_PASS:
+            return f"redis://:{self.REDIS_PASS}@{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+
+    @property
+    def kis_base_url(self) -> str:
+        if self.KIS_IS_PAPER:
+            return "https://openapivts.koreainvestment.com:29443"
+        return "https://openapi.koreainvestment.com:9443"
+
+
+config = Config()

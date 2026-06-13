@@ -158,43 +158,40 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div class="half-label" style="color:var(--stock);"><div class="half-dot dot-stock"></div>stock-trader</div>
         <div style="font-size:10px;color:var(--muted);margin-top:3px;">한국주식 · KIS API · 09:00~15:30</div>
       </div>
-      <div style="text-align:right;"><div class="half-pnl pos">+142,500</div><div class="half-sub">오늘 수익 / 체결 4건</div></div>
+      <div style="text-align:right;"><div class="half-pnl pos" id="stock-pnl">+0</div><div class="half-sub">오늘 수익 / <span id="stock-trades">0</span>건</div></div>
     </div>
     <div class="half-header">
       <div>
         <div class="half-label" style="color:var(--crypto);"><div class="half-dot dot-crypto"></div>crypto-trader</div>
         <div style="font-size:10px;color:var(--muted);margin-top:3px;">비트코인 · 업비트 · 24시간</div>
       </div>
-      <div style="text-align:right;"><div class="half-pnl pos">+142,000</div><div class="half-sub">오늘 수익 / 체결 3건</div></div>
+      <div style="text-align:right;"><div class="half-pnl pos" id="crypto-pnl">+0</div><div class="half-sub">오늘 수익 / <span id="crypto-trades">0</span>건</div></div>
     </div>
 
     <div class="half-content bdr">
       <div class="mini-kpis">
-        <div class="mini-kpi"><div class="mini-kpi-label">평가금액</div><div class="mini-kpi-value val-bright" style="font-size:13px;">18,420,000</div></div>
-        <div class="mini-kpi"><div class="mini-kpi-label">누적수익</div><div class="mini-kpi-value val-green">+1,420K</div></div>
-        <div class="mini-kpi"><div class="mini-kpi-label">승률</div><div class="mini-kpi-value val-stock">64.2%</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">평가금액</div><div class="mini-kpi-value val-bright" id="stock-eval" style="font-size:13px;">-</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">누적수익</div><div class="mini-kpi-value val-green" id="stock-total-pnl">-</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">승률</div><div class="mini-kpi-value val-stock" id="stock-winrate">-</div></div>
       </div>
       <div>
         <div class="section-label">보유 포지션</div>
         <div class="pos-list">
-          <div class="pos-item si"><div><div class="pos-name">삼성전자</div><div class="pos-code">005930 · 10주</div></div><div class="pos-price">74,200원</div><div class="pos-pct pos">+3.2%</div></div>
-          <div class="pos-item si"><div><div class="pos-name">SK하이닉스</div><div class="pos-code">000660 · 5주</div></div><div class="pos-price">188,500원</div><div class="pos-pct neg">-1.2%</div></div>
-          <div class="pos-item si"><div><div class="pos-name">NAVER</div><div class="pos-code">035420 · 3주</div></div><div class="pos-price">182,000원</div><div class="pos-pct pos">+2.8%</div></div>
+          <div id="stock-pos-list" style="color:var(--muted);font-size:11px;padding:8px 0;">데이터 로딩 중...</div>
         </div>
       </div>
     </div>
 
     <div class="half-content">
       <div class="mini-kpis">
-        <div class="mini-kpi"><div class="mini-kpi-label">평가금액</div><div class="mini-kpi-value val-bright" style="font-size:13px;">14,427,200</div></div>
-        <div class="mini-kpi"><div class="mini-kpi-label">누적수익</div><div class="mini-kpi-value val-green">+1,427K</div></div>
-        <div class="mini-kpi"><div class="mini-kpi-label">승률</div><div class="mini-kpi-value val-crypto">58.7%</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">평가금액</div><div class="mini-kpi-value val-bright" id="crypto-eval" style="font-size:13px;">-</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">누적수익</div><div class="mini-kpi-value val-green" id="crypto-total-pnl">-</div></div>
+        <div class="mini-kpi"><div class="mini-kpi-label">승률</div><div class="mini-kpi-value val-crypto" id="crypto-winrate">-</div></div>
       </div>
       <div>
         <div class="section-label">보유 포지션</div>
         <div class="pos-list">
-          <div class="pos-item ci"><div><div class="pos-name">BTC/KRW</div><div class="pos-code">업비트 · 0.1 BTC</div></div><div class="pos-price">141.2M</div><div class="pos-pct pos">+5.9%</div></div>
-          <div class="pos-item ci"><div><div class="pos-name">ETH/KRW</div><div class="pos-code">업비트 · 2.0 ETH</div></div><div class="pos-price">4.82M</div><div class="pos-pct neg">-2.5%</div></div>
+          <div id="crypto-pos-list" style="color:var(--muted);font-size:11px;padding:8px 0;">데이터 로딩 중...</div>
         </div>
       </div>
     </div>
@@ -202,15 +199,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     <div class="bottom-bar">
       <div class="bottom-title">실시간 로그</div>
       <div class="log-stream">
-        <div class="log-entry"><span class="le-time">14:31:52</span><span class="le-bot s">[stock]</span><span class="le-action buy">BUY</span><span class="le-msg">삼성전자 74,200 × 10주 — MA크로스 신호</span></div>
-        <div class="log-entry"><span class="le-time">14:28:10</span><span class="le-bot c">[crypto]</span><span class="le-action sell">SELL</span><span class="le-msg">BTC/KRW 0.05 BTC 부분 매도 — RSI 78.4 과매수</span></div>
-        <div class="log-entry"><span class="le-time">14:15:03</span><span class="le-bot d">[data]</span><span class="le-action info">INFO</span><span class="le-msg">1분봉 수집 완료 KIS:240종목 / 업비트:18페어</span></div>
+        <div id="live-log" style="color:var(--muted);font-size:11px;">매매 이력 없음</div>
       </div>
       <div class="overall-strip">
-        <div class="overall-item"><span class="o-label">총 평가</span><span class="o-value bright">32,847,200원</span></div>
-        <div class="overall-item"><span class="o-label">오늘 수익</span><span class="o-value pos">+284,500원</span></div>
-        <div class="overall-item"><span class="o-label">누적 수익</span><span class="o-value pos">+2,847,200원</span></div>
-        <div class="overall-item"><span class="o-label">오늘 체결</span><span class="o-value bright">7건</span></div>
+        <div class="overall-item"><span class="o-label">총 평가</span><span class="o-value bright"><span id="total-eval">-</span>원</span></div>
+        <div class="overall-item"><span class="o-label">오늘 수익</span><span class="o-value pos"><span id="today-pnl">+0</span>원</span></div>
+        <div class="overall-item"><span class="o-label">누적 수익</span><span class="o-value pos"><span id="total-pnl">+0</span>원</span></div>
+        <div class="overall-item"><span class="o-label">오늘 체결</span><span class="o-value bright" id="total-trades">0건</span></div>
       </div>
     </div>
   </div>
@@ -292,4 +287,114 @@ fetchTrades();
 setInterval(fetchSummary, 30000);
 setInterval(fetchBotStatus, 10000);
 setInterval(fetchTrades, 30000);
+</script>
+
+<script>
+const API = '';
+
+async function fetchDashboard() {
+  try {
+    // 요약
+    const sumRes = await fetch(`${API}/api/summary`);
+    const { data: sum } = await sumRes.json();
+    if (sum) {
+      const todayPnl = Math.round(sum.today_pnl || 0);
+      const totalPnl = Math.round(sum.total_pnl || 0);
+      const stockPnl = Math.round(sum.bot_pnl?.stock_trader || 0);
+      const cryptoPnl = Math.round(sum.bot_pnl?.crypto_trader || 0);
+
+      const el = (id) => document.getElementById(id);
+      if (el('today-pnl')) el('today-pnl').textContent = (todayPnl >= 0 ? '+' : '') + todayPnl.toLocaleString();
+      if (el('total-pnl')) el('total-pnl').textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toLocaleString();
+      if (el('total-trades')) el('total-trades').textContent = sum.today_trades + '건';
+      if (el('stock-pnl')) el('stock-pnl').textContent = (stockPnl >= 0 ? '+' : '') + stockPnl.toLocaleString();
+      if (el('crypto-pnl')) el('crypto-pnl').textContent = (cryptoPnl >= 0 ? '+' : '') + cryptoPnl.toLocaleString();
+    }
+
+    // 봇 상태
+    const statusRes = await fetch(`${API}/api/status`);
+    const { data: status } = await statusRes.json();
+    if (status) {
+      const dots = document.querySelectorAll('.sdot');
+      ['stock_trader','crypto_trader','data_collector'].forEach((b,i) => {
+        if (dots[i]) {
+          const on = status[b]?.status === 'running';
+          dots[i].style.background = on ? 'var(--green)' : 'var(--red)';
+          dots[i].style.boxShadow = on ? '0 0 5px var(--green)' : 'none';
+        }
+      });
+    }
+
+    // 주식 포지션
+    const stockPosRes = await fetch(`${API}/api/positions/stock`);
+    const { data: stockPos } = await stockPosRes.json();
+    const stockList = document.getElementById('stock-pos-list');
+    if (stockList) {
+      if (stockPos && stockPos.length) {
+        stockList.innerHTML = '';
+        stockPos.forEach(p => {
+          const cls = p.pnl_rate >= 0 ? 'pos' : 'neg';
+          stockList.innerHTML += `
+            <div class="pos-item si">
+              <div><div class="pos-name">${p.name}</div><div class="pos-code">${p.symbol} · ${p.qty}주</div></div>
+              <div class="pos-price">${p.cur_price?.toLocaleString()}원</div>
+              <div class="pos-pct ${cls}">${p.pnl_rate >= 0 ? '+' : ''}${p.pnl_rate?.toFixed(1)}%</div>
+            </div>`;
+        });
+      } else {
+        stockList.textContent = '보유 종목 없음';
+      }
+    }
+
+    // 코인 포지션
+    const cryptoPosRes = await fetch(`${API}/api/positions/crypto`);
+    const { data: cryptoPos } = await cryptoPosRes.json();
+    const cryptoList = document.getElementById('crypto-pos-list');
+    if (cryptoList) {
+      if (cryptoPos && cryptoPos.length) {
+        cryptoList.innerHTML = '';
+        cryptoPos.forEach(p => {
+          const cls = p.pnl_rate >= 0 ? 'pos' : 'neg';
+          cryptoList.innerHTML += `
+            <div class="pos-item ci">
+              <div><div class="pos-name">${p.pair}</div><div class="pos-code">업비트 · ${parseFloat(p.qty).toFixed(4)} ${p.currency}</div></div>
+              <div class="pos-price">${p.cur_price?.toLocaleString()}</div>
+              <div class="pos-pct ${cls}">${p.pnl_rate >= 0 ? '+' : ''}${p.pnl_rate?.toFixed(1)}%</div>
+            </div>`;
+        });
+      } else {
+        cryptoList.textContent = '보유 코인 없음';
+      }
+    }
+
+    // 실시간 로그
+    const tradeRes = await fetch(`${API}/api/trades?limit=5`);
+    const { data: trades } = await tradeRes.json();
+    const logEl = document.getElementById('live-log');
+    if (logEl) {
+      if (trades && trades.length) {
+        logEl.innerHTML = '';
+        trades.forEach(t => {
+          const time = new Date(t.ts).toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+          const botClass = t.bot === 'stock_trader' ? 's' : t.bot === 'crypto_trader' ? 'c' : 'd';
+          const botLabel = t.bot === 'stock_trader' ? 'stock' : t.bot === 'crypto_trader' ? 'crypto' : 'data';
+          const action = t.side === 'BUY' ? 'buy' : 'sell';
+          logEl.innerHTML += `
+            <div class="log-entry">
+              <span class="le-time">${time}</span>
+              <span class="le-bot ${botClass}">[${botLabel}]</span>
+              <span class="le-action ${action}">${t.side}</span>
+              <span class="le-msg">${t.symbol} ${t.price?.toLocaleString()} × ${parseFloat(t.quantity).toFixed(4)}</span>
+            </div>`;
+        });
+      } else {
+        logEl.textContent = '매매 이력 없음';
+      }
+    }
+
+  } catch(e) { console.log('dashboard error', e); }
+}
+
+fetchDashboard();
+setInterval(fetchDashboard, 30000);
 </script>

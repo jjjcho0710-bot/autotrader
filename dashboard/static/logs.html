@@ -155,41 +155,27 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     </div>
     <div class="content-layout">
       <div class="log-stream">
-        <div class="le buy-e"><span class="le-time">14:31:52</span><span class="le-tag tag-buy">매수</span><span class="le-bot bs">주식</span><span class="le-ticker">005930</span><span class="le-msg">삼성전자 74,200원 × 10주 — MA크로스 골든신호</span><span class="le-res neu">보유중</span></div>
-        <div class="le sell-e"><span class="le-time">14:28:10</span><span class="le-tag tag-sell">매도</span><span class="le-bot bc">코인</span><span class="le-ticker">BTC/KRW</span><span class="le-msg">0.05 BTC 142,180,000원 부분 매도 — RSI 과매수</span><span class="le-res pos">+421,000</span></div>
-        <div class="le info-e"><span class="le-time">14:15:03</span><span class="le-tag tag-info">정보</span><span class="le-bot bd">수집</span><span class="le-ticker">—</span><span class="le-msg">1분봉 수집 완료 KIS 240종목 / 업비트 18페어 / 지연없음</span><span class="le-res neu">—</span></div>
-        <div class="le sell-e"><span class="le-time">13:52:44</span><span class="le-tag tag-sell">매도</span><span class="le-bot bs">주식</span><span class="le-ticker">000660</span><span class="le-msg">SK하이닉스 187,000원 × 5주 — 손절 -1.5% 트리거</span><span class="le-res neg">-57,500</span></div>
-        <div class="le warn-e"><span class="le-time">13:30:01</span><span class="le-tag tag-warn">경고</span><span class="le-bot bs">주식</span><span class="le-ticker">KIS</span><span class="le-msg">KIS API 호가 응답 지연 2.3s 감지 — 재시도 성공</span><span class="le-res neu">복구됨</span></div>
-        <div class="le buy-e"><span class="le-time">11:24:18</span><span class="le-tag tag-buy">매수</span><span class="le-bot bs">주식</span><span class="le-ticker">035420</span><span class="le-msg">NAVER 182,000원 × 3주 체결 — MA크로스 골든신호</span><span class="le-res neu">보유중</span></div>
-        <div class="le buy-e"><span class="le-time">11:14:52</span><span class="le-tag tag-buy">매수</span><span class="le-bot bc">코인</span><span class="le-ticker">ETH/KRW</span><span class="le-msg">ETH 4,820,000원 × 2.0 ETH — MACD 골든크로스</span><span class="le-res neu">보유중</span></div>
-        <div class="le sell-e"><span class="le-time">09:32:41</span><span class="le-tag tag-sell">매도</span><span class="le-bot bs">주식</span><span class="le-ticker">035720</span><span class="le-msg">카카오 48,200원 × 20주 — 익절 +10.8%</span><span class="le-res pos">+94,000</span></div>
-        <div class="le buy-e"><span class="le-time">09:05:12</span><span class="le-tag tag-buy">매수</span><span class="le-bot bc">코인</span><span class="le-ticker">BTC/KRW</span><span class="le-msg">BTC 141,200,000원 × 0.05 — MACD 데드크로스 반등</span><span class="le-res neu">보유중</span></div>
-        <div class="le info-e"><span class="le-time">09:00:01</span><span class="le-tag tag-info">정보</span><span class="le-bot bs">주식</span><span class="le-ticker">—</span><span class="le-msg">장 시작 — stock-trader 활성화 / 전략 로드 완료</span><span class="le-res neu">—</span></div>
-        <div class="le sell-e"><span class="le-time">02:17:33</span><span class="le-tag tag-sell">매도</span><span class="le-bot bc">코인</span><span class="le-ticker">SOL/KRW</span><span class="le-msg">SOL 248,400원 × 5.0 SOL — 손절 -2.8% 트리거</span><span class="le-res neg">-279,000</span></div>
-        <div class="le info-e"><span class="le-time">00:00:01</span><span class="le-tag tag-info">정보</span><span class="le-bot bd">수집</span><span class="le-ticker">—</span><span class="le-msg">일별 리포트 생성 완료 — 텔레그램 전송 성공</span><span class="le-res neu">—</span></div>
-      </div>
+<div id="l-empty" style="color:var(--muted);font-size:11px;padding:10px;">매매 이력 없음</div>
+</div></div>
       <div class="right-col">
         <div class="sum-box">
           <div class="rtitle">오늘 요약</div>
           <div class="sg">
-            <div class="ss"><div class="ss-label">총 체결</div><div class="ss-value bright">7건</div></div>
-            <div class="ss"><div class="ss-label">오늘 수익</div><div class="ss-value pos">+284,500</div></div>
-            <div class="ss"><div class="ss-label">주식</div><div class="ss-value stock">+142,500</div></div>
-            <div class="ss"><div class="ss-label">코인</div><div class="ss-value crypto">+142,000</div></div>
+            <div class="ss"><div class="ss-label">총 체결</div><div class="ss-value bright" id="l-trades">-</div></div>
+            <div class="ss"><div class="ss-label">오늘 수익</div><div class="ss-value pos" id="l-today-pnl">0</div></div>
+            <div class="ss"><div class="ss-label">주식</div><div class="ss-value stock" id="l-stock-pnl">0</div></div>
+            <div class="ss"><div class="ss-label">코인</div><div class="ss-value crypto" id="l-crypto-pnl">0</div></div>
           </div>
           <div class="rtitle">일별 손익</div>
           <div class="dl">
-            <div class="dr"><span class="dd">06/13</span><span class="dc">7건</span><span class="dp pos">+284,500</span></div>
-            <div class="dr"><span class="dd">06/12</span><span class="dc">9건</span><span class="dp pos">+512,000</span></div>
-            <div class="dr"><span class="dd">06/11</span><span class="dc">5건</span><span class="dp neg">-128,000</span></div>
-            <div class="dr"><span class="dd">06/10</span><span class="dc">11건</span><span class="dp pos">+374,200</span></div>
-            <div class="dr"><span class="dd">06/09</span><span class="dc">4건</span><span class="dp neg">-84,500</span></div>
-          </div>
+<div style="color:var(--muted);font-size:11px;padding:8px 0;">데이터 없음</div>
+</div></div>
         </div>
         <div class="tg-box">
           <div class="tg-header"><div class="rtitle" style="margin-bottom:0">텔레그램 알림</div><span class="tg-link">설정 →</span></div>
           <div class="tg-list">
-            <div class="tm"><div class="tm-header"><span class="tm-type" style="color:var(--green)">📈 매수 체결</span><span class="tm-time">14:31</span></div><div class="tm-body">[주식] 삼성전자<br>74,200 × 10주<br>MA골든크로스</div></div>
+<div style="color:var(--muted);font-size:11px;padding:8px 0;">알림 없음</div>
+</div></div>
             <div class="tm"><div class="tm-header"><span class="tm-type" style="color:var(--red)">📉 매도 체결</span><span class="tm-time">14:28</span></div><div class="tm-body">[코인] BTC/KRW<br>0.05 BTC +421,000원<br>RSI과매수</div></div>
             <div class="tm"><div class="tm-header"><span class="tm-type" style="color:var(--crypto)">⚠️ 경고</span><span class="tm-time">13:30</span></div><div class="tm-body">KIS API 응답지연<br>2.3s → 재시도 성공</div></div>
             <div class="tm"><div class="tm-header"><span class="tm-type" style="color:var(--blue)">📊 일별 리포트</span><span class="tm-time">00:00</span></div><div class="tm-body">어제: +512,000<br>승률: 7/9 (77.8%)<br>누적: +2,562,700</div></div>

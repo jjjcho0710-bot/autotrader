@@ -155,11 +155,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       </div>
     </div>
     <div class="kpi-strip">
-      <div class="kpi"><div class="kpi-label">주식 평가금액</div><div class="kpi-value stock">18,420,000</div><div class="kpi-sub">원</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos">+142,500</div><div class="kpi-sub">+0.78%</div></div>
-      <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright">3</div><div class="kpi-sub">관심 12</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright">4건</div><div class="kpi-sub">매수 2 · 매도 2</div></div>
-      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value stock">64.2%</div><div class="kpi-sub">34승 / 19패</div></div>
+      <div class="kpi"><div class="kpi-label">주식 평가금액</div><div class="kpi-value stock" id="s-eval">-</div><div class="kpi-sub">원</div></div>
+      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="s-pnl">0</div><div class="kpi-sub">+0.78%</div></div>
+      <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright" id="s-pos-cnt">-</div><div class="kpi-sub">관심 12</div></div>
+      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="s-trades">-</div><div class="kpi-sub">매수 2 · 매도 2</div></div>
+      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value stock" id="s-winrate">-</div><div class="kpi-sub">34승 / 19패</div></div>
     </div>
     <div class="content-grid">
       <!-- 포지션 -->
@@ -168,10 +168,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <table class="pos-table">
           <thead><tr><th>종목</th><th style="text-align:right">수량</th><th style="text-align:right">평균단가</th><th style="text-align:right">현재가</th><th style="text-align:right">평가손익</th><th style="text-align:right">수익률</th></tr></thead>
           <tbody>
-            <tr><td><div class="tk-name">삼성전자</div><div class="tk-code">005930</div></td><td class="nr2 neu">10주</td><td class="nr2 neu">74,200</td><td class="nr2 neu">76,600</td><td class="nr2 pos">+24,000</td><td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:60%;background:var(--green)"></div></div><span class="nr2 pos">+3.2%</span></div></td></tr>
-            <tr><td><div class="tk-name">SK하이닉스</div><div class="tk-code">000660</div></td><td class="nr2 neu">5주</td><td class="nr2 neu">188,500</td><td class="nr2 neu">186,200</td><td class="nr2 neg">-11,500</td><td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:24%;background:var(--red)"></div></div><span class="nr2 neg">-1.2%</span></div></td></tr>
-            <tr><td><div class="tk-name">NAVER</div><div class="tk-code">035420</div></td><td class="nr2 neu">3주</td><td class="nr2 neu">182,000</td><td class="nr2 neu">187,100</td><td class="nr2 pos">+15,300</td><td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:48%;background:var(--green)"></div></div><span class="nr2 pos">+2.8%</span></div></td></tr>
-          </tbody>
+<tr id="s-pos-empty"><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">보유 종목 없음</td></tr>
+</tbody>
         </table>
       </div>
       <!-- 전략 -->
@@ -197,18 +195,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="pbox nb">
         <div class="ptitle">오늘 매매 이력</div>
         <div class="hist-list">
-          <div class="hist-item"><span class="h-time">14:31</span><span class="h-tag tag-buy">매수</span><span class="h-name">삼성전자</span><span class="h-price">74,200 × 10주</span><span class="h-res pend">보유중</span></div>
-          <div class="hist-item"><span class="h-time">13:52</span><span class="h-tag tag-sell">매도</span><span class="h-name">SK하이닉스</span><span class="h-price">187,000 × 5주</span><span class="h-res neg">-57,500</span></div>
-          <div class="hist-item"><span class="h-time">11:24</span><span class="h-tag tag-buy">매수</span><span class="h-name">NAVER</span><span class="h-price">182,000 × 3주</span><span class="h-res pend">보유중</span></div>
-          <div class="hist-item"><span class="h-time">09:32</span><span class="h-tag tag-sell">매도</span><span class="h-name">카카오</span><span class="h-price">48,200 × 20주</span><span class="h-res pos">+94,000</span></div>
-          <div class="hist-item"><span class="h-time">09:05</span><span class="h-tag tag-buy">매수</span><span class="h-name">카카오</span><span class="h-price">43,500 × 20주</span><span class="h-res pend">보유중</span></div>
-        </div>
-      </div>
+<div id="s-hist-empty" style="color:var(--muted);font-size:11px;padding:10px;">매매 이력 없음</div>
+</div></div></div>
       <!-- 관심종목 -->
       <div class="pbox nr nb">
         <div class="ptitle">관심 종목<span class="paction">+ 추가</span></div>
         <div class="watch-list">
-          <div class="wi"><div class="wi-left"><span class="wi-rank">1</span><div><div class="wi-name">LG에너지솔루션</div><div class="wi-code">373220</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">412,000</span><span class="wi-chg pos">+2.2%</span></div></div>
+<div id="s-watch-empty" style="color:var(--muted);font-size:11px;padding:10px;">관심 종목 없음</div>
+</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">412,000</span><span class="wi-chg pos">+2.2%</span></div></div>
           <div class="wi"><div class="wi-left"><span class="wi-rank">2</span><div><div class="wi-name">현대차</div><div class="wi-code">005380</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">238,500</span><span class="wi-chg neg">-0.8%</span></div></div>
           <div class="wi"><div class="wi-left"><span class="wi-rank">3</span><div><div class="wi-name">셀트리온</div><div class="wi-code">068270</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">178,800</span><span class="wi-chg pos">+1.4%</span></div></div>
           <div class="wi"><div class="wi-left"><span class="wi-rank">4</span><div><div class="wi-name">카카오뱅크</div><div class="wi-code">323410</div></div></div><div style="display:flex;gap:12px;align-items:center;"><span class="wi-price">24,150</span><span class="wi-chg pos">+3.6%</span></div></div>

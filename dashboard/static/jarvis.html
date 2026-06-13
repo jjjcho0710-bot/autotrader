@@ -367,8 +367,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
             <span class="bc-pill pill-on">ON</span>
           </div>
           <div class="bc-row">
-            <div class="bc-mini"><div class="bc-label">오늘 수익</div><div class="bc-value pos">+142,500</div></div>
-            <div class="bc-mini"><div class="bc-label">체결</div><div class="bc-value">4건</div></div>
+            <div class="bc-mini"><div class="bc-label">오늘 수익</div><div class="bc-value pos" id="j-stock-pnl">0</div></div>
+            <div class="bc-mini"><div class="bc-label">체결</div><div class="bc-value" id="j-stock-trades">-</div></div>
           </div>
         </div>
         <div class="bot-cell">
@@ -377,8 +377,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
             <span class="bc-pill pill-on">ON</span>
           </div>
           <div class="bc-row">
-            <div class="bc-mini"><div class="bc-label">오늘 수익</div><div class="bc-value pos">+142,000</div></div>
-            <div class="bc-mini"><div class="bc-label">체결</div><div class="bc-value">3건</div></div>
+            <div class="bc-mini"><div class="bc-label">오늘 수익</div><div class="bc-value pos" id="j-crypto-pnl">0</div></div>
+            <div class="bc-mini"><div class="bc-label">체결</div><div class="bc-value" id="j-crypto-trades">-</div></div>
           </div>
         </div>
       </div>
@@ -387,7 +387,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="portfolio-area">
         <div class="pa-cell">
           <div class="pa-title">총 포트폴리오</div>
-          <div class="pa-big">32,847,200</div>
+          <div class="pa-big" id="j-total-eval">-</div>
           <div class="pa-sub">원</div>
           <div class="pa-sub pos" style="margin-top:6px;">오늘 +284,500 (+0.87%)</div>
           <div class="sparkline" style="margin-top:10px;">
@@ -405,7 +405,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         </div>
         <div class="pa-cell">
           <div class="pa-title">누적 수익</div>
-          <div class="pa-big" style="color:var(--green);">+2,847,200</div>
+          <div class="pa-big" style="color:var(--green);" id="j-total-pnl">0</div>
           <div class="pa-sub">원 (전체 기간)</div>
           <div class="pa-sub pos" style="margin-top:6px;">수익률 +9.48% · 승률 61.8%</div>
           <div class="sparkline" style="margin-top:10px;">
@@ -426,13 +426,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <!-- Activity feed -->
       <div class="activity-area">
         <div class="act-title">최근 활동</div>
-
-        <div class="act-item jarvis-item">
-          <div class="act-icon icon-jarvis">🤖</div>
-          <div class="act-content">
-            <div class="act-main">RSI 과매수 감지 → BTC 부분 매도 명령 실행</div>
-            <div class="act-sub">crypto-trader에 매도 신호 전달 완료</div>
-          </div>
+        <div id="j-activity-empty" style="color:var(--muted);font-size:11px;padding:10px;">매매 이력 없음</div>
+      </div></div>
           <div class="act-time">14:28</div>
           <div class="act-result pos">+421K</div>
         </div>

@@ -150,19 +150,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       </div>
     </div>
     <div class="kpi-strip">
-      <div class="kpi"><div class="kpi-label">코인 평가금액</div><div class="kpi-value crypto">14,427,200</div><div class="kpi-sub">원</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos">+142,000</div><div class="kpi-sub">+0.99%</div></div>
-      <div class="kpi"><div class="kpi-label">보유 코인</div><div class="kpi-value bright">2</div><div class="kpi-sub">모니터링 8</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright">3건</div><div class="kpi-sub">매수 2 · 매도 1</div></div>
-      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value crypto">58.7%</div><div class="kpi-sub">27승 / 19패</div></div>
+      <div class="kpi"><div class="kpi-label">코인 평가금액</div><div class="kpi-value crypto" id="c-eval">-</div><div class="kpi-sub">원</div></div>
+      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="c-pnl">0</div><div class="kpi-sub">+0.99%</div></div>
+      <div class="kpi"><div class="kpi-label">보유 코인</div><div class="kpi-value bright" id="c-pos-cnt">-</div><div class="kpi-sub">모니터링 8</div></div>
+      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="c-trades">-</div><div class="kpi-sub">매수 2 · 매도 1</div></div>
+      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value crypto" id="c-winrate">-</div><div class="kpi-sub">27승 / 19패</div></div>
     </div>
     <div class="content-grid">
       <!-- 보유 코인 -->
       <div class="pbox">
         <div class="ptitle">보유 포지션</div>
         <div class="coin-cards">
-          <div class="coin-card">
-            <div class="cc-header"><div><div class="cc-sym">BTC / KRW</div><div class="cc-ex">업비트</div></div><div class="cc-pct pos">+5.9%</div></div>
+<div id="c-cards-empty" style="color:var(--muted);font-size:11px;padding:10px;">보유 코인 없음</div>
+</div></div><div class="cc-pct pos">+5.9%</div></div>
             <div class="cc-grid">
               <div><div class="cc-sl">보유량</div><div class="cc-sv bright">0.1 BTC</div></div>
               <div><div class="cc-sl">평균단가</div><div class="cc-sv">141.2M</div></div>
@@ -204,22 +204,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="pbox nb">
         <div class="ptitle">오늘 매매 이력</div>
         <div class="hist-list">
-          <div class="hist-item"><span class="h-time">14:28</span><span class="h-tag tag-sell">매도</span><span class="h-name">BTC/KRW</span><span class="h-price">0.05 BTC</span><span class="h-res pos">+421,000</span></div>
-          <div class="hist-item"><span class="h-time">11:14</span><span class="h-tag tag-buy">매수</span><span class="h-name">ETH/KRW</span><span class="h-price">2.0 ETH</span><span class="h-res pend">보유중</span></div>
-          <div class="hist-item"><span class="h-time">08:42</span><span class="h-tag tag-buy">매수</span><span class="h-name">BTC/KRW</span><span class="h-price">0.05 BTC</span><span class="h-res pend">보유중</span></div>
-          <div class="hist-item"><span class="h-time">02:17</span><span class="h-tag tag-sell">매도</span><span class="h-name">SOL/KRW</span><span class="h-price">5.0 SOL</span><span class="h-res neg">-279,000</span></div>
-        </div>
-      </div>
+<div id="c-hist-empty" style="color:var(--muted);font-size:11px;padding:10px;">매매 이력 없음</div>
+</div></div></div>
       <!-- 마켓 -->
       <div class="pbox nr nb">
         <div class="ptitle">마켓 현황</div>
         <div class="mkt-list">
-          <div class="mi"><div class="mi-rank">1</div><div><div class="mi-name">비트코인</div><div class="mi-code">BTC/KRW</div></div><div class="mi-price">149,600,000</div><div class="mi-chg pos">+2.4%</div></div>
-          <div class="mi"><div class="mi-rank">2</div><div><div class="mi-name">이더리움</div><div class="mi-code">ETH/KRW</div></div><div class="mi-price">4,702,000</div><div class="mi-chg neg">-1.1%</div></div>
-          <div class="mi"><div class="mi-rank">3</div><div><div class="mi-name">솔라나</div><div class="mi-code">SOL/KRW</div></div><div class="mi-price">248,400</div><div class="mi-chg pos">+4.2%</div></div>
-          <div class="mi"><div class="mi-rank">4</div><div><div class="mi-name">리플</div><div class="mi-code">XRP/KRW</div></div><div class="mi-price">3,180</div><div class="mi-chg pos">+1.8%</div></div>
-          <div class="mi"><div class="mi-rank">5</div><div><div class="mi-name">에이다</div><div class="mi-code">ADA/KRW</div></div><div class="mi-price">892</div><div class="mi-chg neg">-0.6%</div></div>
-        </div>
+<div id="c-mkt-empty" style="color:var(--muted);font-size:11px;padding:10px;">데이터 로딩 중...</div>
+</div></div></div>
       </div>
     </div>
   </div>

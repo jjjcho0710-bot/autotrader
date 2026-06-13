@@ -150,7 +150,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div><div class="ph-title">stock-trader</div><div class="ph-sub">한국투자증권 KIS API · 운영중 · 장 마감까지 01:27:53</div></div>
       </div>
       <div style="display:flex;align-items:center;gap:16px;">
-        <div style="text-align:right;"><div class="ph-pnl">+142,500원</div><div class="ph-psub">오늘 수익 / 누적 +1,420,000원</div></div>
+        <div style="text-align:right;"><div class="ph-pnl" id="sh-today-pnl">+0원</div><div class="ph-psub">오늘 수익 / 누적 <span id="sh-total-pnl">+0</span>원</div></div>
         <div class="toggle-wrap"><span class="toggle-label">봇 운영</span><div class="toggle"></div></div>
       </div>
     </div>
@@ -159,7 +159,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="s-pnl">0</div><div class="kpi-sub">+0.78%</div></div>
       <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright" id="s-pos-cnt">-</div><div class="kpi-sub">관심 12</div></div>
       <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="s-trades">-</div><div class="kpi-sub">매수 2 · 매도 2</div></div>
-      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value stock" id="s-winrate">-</div><div class="kpi-sub">34승 / 19패</div></div>
+      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value stock" id="s-winrate">-</div><div class="kpi-sub"><span id="s-winstat">-</span></div></div>
     </div>
     <div class="content-grid">
       <!-- 포지션 -->
@@ -313,4 +313,22 @@ async function fetchStockPositions() {
 
 fetchStockPositions();
 setInterval(fetchStockPositions, 60000);
+</script>
+
+<script>
+async function updateStockHeader() {
+  try {
+    const sumRes = await fetch('/api/summary');
+    const { data: sum } = await sumRes.json();
+    if (sum) {
+      const sp = Math.round(sum.bot_pnl?.stock_trader || 0);
+      const tp = Math.round(sum.total_pnl || 0);
+      const el = id => document.getElementById(id);
+      if (el('sh-today-pnl')) el('sh-today-pnl').textContent = (sp >= 0 ? '+' : '') + sp.toLocaleString() + '원';
+      if (el('sh-total-pnl')) el('sh-total-pnl').textContent = (tp >= 0 ? '+' : '') + tp.toLocaleString();
+    }
+  } catch(e) {}
+}
+updateStockHeader();
+setInterval(updateStockHeader, 30000);
 </script>

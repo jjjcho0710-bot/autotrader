@@ -145,7 +145,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div><div class="ph-title">crypto-trader</div><div class="ph-sub">업비트 API · 24시간 운영중 · 자동 재시작 설정됨</div></div>
       </div>
       <div style="display:flex;align-items:center;gap:16px;">
-        <div style="text-align:right;"><div class="ph-pnl">+142,000원</div><div class="ph-psub">오늘 수익 / 누적 +1,427,200원</div></div>
+        <div style="text-align:right;"><div class="ph-pnl" id="ch-today-pnl">+0원</div><div class="ph-psub">오늘 수익 / 누적 <span id="ch-total-pnl">+0</span>원</div></div>
         <div class="toggle-wrap"><span class="toggle-label">봇 운영</span><div class="toggle"></div></div>
       </div>
     </div>
@@ -154,72 +154,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="c-pnl">0</div><div class="kpi-sub">+0.99%</div></div>
       <div class="kpi"><div class="kpi-label">보유 코인</div><div class="kpi-value bright" id="c-pos-cnt">-</div><div class="kpi-sub">모니터링 8</div></div>
       <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="c-trades">-</div><div class="kpi-sub">매수 2 · 매도 1</div></div>
-      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value crypto" id="c-winrate">-</div><div class="kpi-sub">27승 / 19패</div></div>
+      <div class="kpi"><div class="kpi-label">승률 30일</div><div class="kpi-value crypto" id="c-winrate">-</div><div class="kpi-sub"><span id="c-winstat">-</span></div></div>
     </div>
     <div class="content-grid">
       <!-- 보유 코인 -->
       <div class="pbox">
         <div class="ptitle">보유 포지션</div>
         <div class="coin-cards">
-<div id="c-cards-empty" style="color:var(--muted);font-size:11px;padding:10px;">보유 코인 없음</div>
-</div></div><div class="cc-pct pos">+5.9%</div></div>
-            <div class="cc-grid">
-              <div><div class="cc-sl">보유량</div><div class="cc-sv bright">0.1 BTC</div></div>
-              <div><div class="cc-sl">평균단가</div><div class="cc-sv">141.2M</div></div>
-              <div><div class="cc-sl">현재가</div><div class="cc-sv bright">149.6M</div></div>
-              <div><div class="cc-sl">평가손익</div><div class="cc-sv pos">+840,000</div></div>
-            </div>
-          </div>
-          <div class="coin-card" style="border-left-color:rgba(248,113,113,0.6)">
-            <div class="cc-header"><div><div class="cc-sym">ETH / KRW</div><div class="cc-ex">업비트</div></div><div class="cc-pct neg">-2.5%</div></div>
-            <div class="cc-grid">
-              <div><div class="cc-sl">보유량</div><div class="cc-sv bright">2.0 ETH</div></div>
-              <div><div class="cc-sl">평균단가</div><div class="cc-sv">4.82M</div></div>
-              <div><div class="cc-sl">현재가</div><div class="cc-sv bright">4.70M</div></div>
-              <div><div class="cc-sl">평가손익</div><div class="cc-sv" style="color:var(--red)">-240,000</div></div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <!-- 전략 -->
-      <div class="pbox nr">
-        <div class="ptitle">전략 상태<span class="paction" onclick="location.href='strategy.html'">전략 관리 →</span></div>
-        <div class="strat-list">
-          <div class="strat-item active-c">
-            <div class="sh"><span class="sn">MACD 시그널</span><span class="spill on">ON</span></div>
-            <div class="sparams"><span class="sp">단기 <span>EMA12</span></span><span class="sp">장기 <span>EMA26</span></span><span class="sp">시그널 <span>9</span></span><span class="sp">손절 <span>-3%</span></span></div>
-            <div class="ssig"><div class="sig-dot" style="background:var(--crypto)"></div><span style="color:var(--crypto);font-size:10px;">BTC 골든크로스 대기중 — 1시간봉</span></div>
-          </div>
-          <div class="strat-item">
-            <div class="sh"><span class="sn">변동성 돌파</span><span class="spill off">OFF</span></div>
-            <div class="sparams"><span class="sp">K값 <span>0.5</span></span><span class="sp">대상 <span>1일봉</span></span></div>
-          </div>
-          <div class="strat-item">
-            <div class="sh"><span class="sn">RSI 과매도</span><span class="spill off">OFF</span></div>
-            <div class="sparams"><span class="sp">기간 <span>RSI14</span></span><span class="sp">진입 <span>&lt;25</span></span><span class="sp">청산 <span>&gt;65</span></span></div>
-          </div>
-        </div>
-      </div>
-      <!-- 매매 이력 -->
-      <div class="pbox nb">
-        <div class="ptitle">오늘 매매 이력</div>
-        <div class="hist-list">
-<div id="c-hist-empty" style="color:var(--muted);font-size:11px;padding:10px;">매매 이력 없음</div>
-</div></div></div>
-      <!-- 마켓 -->
-      <div class="pbox nr nb">
-        <div class="ptitle">마켓 현황</div>
-        <div class="mkt-list">
-<div id="c-mkt-empty" style="color:var(--muted);font-size:11px;padding:10px;">데이터 로딩 중...</div>
-</div></div></div>
-      </div>
-    </div>
-  </div>
-</div>
-</body>
-</html>
-
-<script>
+<div id="c-cards" style="display:flex;flex-direction:column;gap:10px;"><div style="color:var(--muted);font-size:11px;padding:10px;">데이터 로딩 중...</div></div>
+</div><script>
 const API = '';
 
 async function fetchCryptoData() {
@@ -335,4 +278,53 @@ async function fetchCryptoPositions() {
 
 fetchCryptoPositions();
 setInterval(fetchCryptoPositions, 60000);
+</script>
+
+<script>
+// 코인 포지션 + 헤더 업데이트
+async function updateCryptoHeader() {
+  try {
+    const sumRes = await fetch('/api/summary');
+    const { data: sum } = await sumRes.json();
+    if (sum) {
+      const cp = Math.round(sum.bot_pnl?.crypto_trader || 0);
+      const tp = Math.round(sum.total_pnl || 0);
+      const el = id => document.getElementById(id);
+      if (el('ch-today-pnl')) el('ch-today-pnl').textContent = (cp >= 0 ? '+' : '') + cp.toLocaleString() + '원';
+      if (el('ch-total-pnl')) el('ch-total-pnl').textContent = (tp >= 0 ? '+' : '') + tp.toLocaleString();
+    }
+
+    // 코인 카드
+    const posRes = await fetch('/api/positions/crypto');
+    const { data: positions } = await posRes.json();
+    const cards = document.getElementById('c-cards');
+    if (cards) {
+      if (positions && positions.length) {
+        cards.innerHTML = '';
+        positions.forEach(p => {
+          const cls = p.pnl_rate >= 0 ? 'pos' : 'neg';
+          const borderColor = p.pnl_rate >= 0 ? 'var(--crypto)' : 'rgba(248,113,113,0.6)';
+          cards.innerHTML += `
+            <div class="coin-card" style="border-left-color:${borderColor}">
+              <div class="cc-header">
+                <div><div class="cc-sym">${p.pair}</div><div class="cc-ex">업비트</div></div>
+                <div class="cc-pct ${cls}">${p.pnl_rate >= 0 ? '+' : ''}${p.pnl_rate?.toFixed(1)}%</div>
+              </div>
+              <div class="cc-grid">
+                <div><div class="cc-sl">보유량</div><div class="cc-sv bright">${parseFloat(p.qty).toFixed(4)} ${p.currency}</div></div>
+                <div><div class="cc-sl">평균단가</div><div class="cc-sv">${p.avg_price?.toLocaleString()}</div></div>
+                <div><div class="cc-sl">현재가</div><div class="cc-sv bright">${p.cur_price?.toLocaleString()}</div></div>
+                <div><div class="cc-sl">평가손익</div><div class="cc-sv ${cls}">${p.pnl >= 0 ? '+' : ''}${Math.round(p.pnl)?.toLocaleString()}</div></div>
+              </div>
+            </div>`;
+        });
+      } else {
+        cards.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:10px;">보유 코인 없음</div>';
+      }
+    }
+  } catch(e) { console.log('crypto header error', e); }
+}
+
+updateCryptoHeader();
+setInterval(updateCryptoHeader, 30000);
 </script>

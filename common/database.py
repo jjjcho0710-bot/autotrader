@@ -190,3 +190,52 @@ class Cache:
 # 싱글톤
 db = Database()
 cache = Cache()
+
+    async def create_strategy_table(self):
+        """전략 설정 테이블 생성"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_config (
+                    id          SERIAL PRIMARY KEY,
+                    bot         VARCHAR(20) NOT NULL,   -- stock_trader / crypto_trader
+                    name        VARCHAR(50) NOT NULL,   -- MA크로스 / MACD 등
+                    is_active   BOOLEAN DEFAULT FALSE,
+                    params      JSONB DEFAULT '{}',
+                    updated_at  TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(bot, name)
+                );
+            """)
+
+            # 기본 전략 초기값 삽입
+            await conn.execute("""
+                INSERT INTO strategy_config (bot, name, is_active, params) VALUES
+                ('stock_trader', 'MA크로스', true, '{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
+                ('stock_trader', 'RSI반등', false, '{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
+                ('stock_trader', '볼린저밴드', false, '{"period":20,"std":2,"stop_loss":-2,"buy_amount":500000}'),
+                ('crypto_trader', 'MACD', true, '{"fast":12,"slow":26,"signal":9,"candle_min":60,"stop_loss":-3,"take_profit":7,"buy_amount":500000}'),
+                ('crypto_trader', '변동성돌파', false, '{"k":0.5,"candle_min":1440,"close_time":"09:00","stop_loss":-3}'),
+                ('crypto_trader', 'RSI과매도', false, '{"period":14,"entry":25,"exit":65,"stop_loss":-3,"buy_amount":500000}')
+                ON CONFLICT (bot, name) DO NOTHING;
+            """)
+            print("✅ strategy_config 테이블 생성 완료")
+
+    async def get_strategies(self, bot: str = None):
+        """전략 설정 조회"""
+        async with self.pool.acquire() as conn:
+            if bot:
+                rows = await conn.fetch("""
+                    SELECT * FROM strategy_config WHERE bot = $1 ORDER BY id
+                """, bot)
+            else:
+                rows = await conn.fetch("SELECT * FROM strategy_config ORDER BY bot, id")
+            return [dict(r) for r in rows]
+
+    async def update_strategy(self, bot: str, name: str, is_active: bool, params: dict):
+        """전략 설정 업데이트"""
+        import json
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE strategy_config
+                SET is_active = $1, params = $2, updated_at = NOW()
+                WHERE bot = $3 AND name = $4
+            """, is_active, json.dumps(params), bot, name)

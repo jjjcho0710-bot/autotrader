@@ -449,3 +449,86 @@ async def get_crypto_balance():
             return {"success": True, "data": {"krw": krw}}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ── 전략 관리 API ──────────────────────────────────────
+
+@app.get("/api/strategies")
+async def get_strategies(bot: str = None):
+    """전략 설정 조회"""
+    try:
+        import json
+        async with db_pool.acquire() as conn:
+            if bot:
+                rows = await conn.fetch("SELECT * FROM strategy_config WHERE bot=$1 ORDER BY id", bot)
+            else:
+                rows = await conn.fetch("SELECT * FROM strategy_config ORDER BY bot, id")
+            data = []
+            for r in rows:
+                data.append({
+                    "id":        r["id"],
+                    "bot":       r["bot"],
+                    "name":      r["name"],
+                    "is_active": r["is_active"],
+                    "params":    dict(r["params"]) if r["params"] else {},
+                    "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+                })
+            return {"success": True, "data": data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/strategies/update")
+async def update_strategy(body: dict):
+    """전략 ON/OFF + 파라미터 저장"""
+    try:
+        import json
+        bot     = body.get("bot")
+        name    = body.get("name")
+        active  = body.get("is_active", False)
+        params  = body.get("params", {})
+
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE strategy_config
+                SET is_active=$1, params=$2, updated_at=NOW()
+                WHERE bot=$3 AND name=$4
+            """, active, json.dumps(params), bot, name)
+
+            # Redis에 전략 변경 알림
+            await redis_client.publish("strategy:update", json.dumps({
+                "bot": bot, "name": name, "is_active": active, "params": params
+            }))
+
+        return {"success": True, "message": f"{name} 전략 {'활성화' if active else '비활성화'} 완료"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.on_event("startup")
+async def create_strategy_table():
+    """서버 시작 시 전략 테이블 초기화"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_config (
+                    id          SERIAL PRIMARY KEY,
+                    bot         VARCHAR(20) NOT NULL,
+                    name        VARCHAR(50) NOT NULL,
+                    is_active   BOOLEAN DEFAULT FALSE,
+                    params      JSONB DEFAULT '{}',
+                    updated_at  TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(bot, name)
+                );
+                INSERT INTO strategy_config (bot, name, is_active, params) VALUES
+                ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
+                ('stock_trader','RSI반등',false,'{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
+                ('stock_trader','볼린저밴드',false,'{"period":20,"std":2,"stop_loss":-2,"buy_amount":500000}'),
+                ('crypto_trader','MACD',true,'{"fast":12,"slow":26,"signal":9,"candle_min":60,"stop_loss":-3,"take_profit":7,"buy_amount":500000}'),
+                ('crypto_trader','변동성돌파',false,'{"k":0.5,"candle_min":1440,"close_time":"09:00","stop_loss":-3}'),
+                ('crypto_trader','RSI과매도',false,'{"period":14,"entry":25,"exit":65,"stop_loss":-3,"buy_amount":500000}')
+                ON CONFLICT (bot, name) DO NOTHING;
+            """)
+            logger.info("✅ strategy_config 테이블 초기화 완료")
+    except Exception as e:
+        logger.error(f"strategy_config 초기화 실패: {e}")

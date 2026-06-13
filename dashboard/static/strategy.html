@@ -210,3 +210,171 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 </div>
 </body>
 </html>
+
+<script>
+const API = '';
+let strategiesData = [];
+
+// ── 전략 목록 로드 ──
+async function loadStrategies() {
+  try {
+    const res = await fetch(`${API}/api/strategies`);
+    const { data } = await res.json();
+    if (!data) return;
+    strategiesData = data;
+
+    const stockBots = data.filter(s => s.bot === 'stock_trader');
+    const cryptoBots = data.filter(s => s.bot === 'crypto_trader');
+
+    renderStrategies(stockBots, 'stock');
+    renderStrategies(cryptoBots, 'crypto');
+  } catch(e) { console.log('strategy load error', e); }
+}
+
+function renderStrategies(strategies, type) {
+  const sections = document.querySelectorAll('.section');
+  const section = type === 'stock' ? sections[0] : sections[1];
+  if (!section) return;
+
+  // 기존 카드 제거 (섹션 타이틀 제외)
+  const title = section.querySelector('.sec-title');
+  section.innerHTML = '';
+  if (title) section.appendChild(title);
+
+  strategies.forEach(s => {
+    const isActive = s.is_active;
+    const params = s.params || {};
+    const accentClass = type === 'stock' ? 'as' : 'ac';
+    const activeClass = isActive ? accentClass : '';
+    const btnClass = type === 'stock' ? 's' : 'c';
+    const paramColor = type === 'stock' ? 'var(--stock)' : 'var(--crypto)';
+
+    const paramHTML = Object.entries(params).map(([k, v]) =>
+      `<div class="pr">
+        <div class="pr-label">${k}</div>
+        <div class="pr-row">
+          <input class="pr-input ${type === 'crypto' ? 'cf' : ''}" 
+            data-bot="${s.bot}" data-name="${s.name}" data-key="${k}"
+            value="${v}" style="width:72px">
+        </div>
+      </div>`
+    ).join('');
+
+    section.innerHTML += `
+      <div class="sc ${activeClass}" id="card-${s.bot}-${s.name.replace(/\s/g,'_')}">
+        <div class="sc-header">
+          <div>
+            <div class="sc-title">${s.name}</div>
+            <div class="sc-desc">${getStrategyDesc(s.name)}</div>
+          </div>
+          <div class="toggle ${isActive ? 'on' : 'off'}" 
+            onclick="toggleStrategy('${s.bot}','${s.name}',this)"
+            data-active="${isActive}">
+          </div>
+        </div>
+        <div class="sc-body">
+          <div class="param-grid" id="params-${s.bot}-${s.name.replace(/\s/g,'_')}">
+            ${paramHTML}
+          </div>
+          <div class="sig-bar ${isActive ? 'act' : 'wait'}">
+            <div class="sig-dot" style="background:${isActive ? paramColor : 'var(--muted)'}"></div>
+            ${isActive ? '활성 — 신호 감지 중' : '비활성 — 전략을 켜면 신호 감지 시작'}
+          </div>
+          <div class="save-btn ${btnClass}" onclick="saveStrategy('${s.bot}','${s.name}')">파라미터 저장</div>
+        </div>
+      </div>`;
+  });
+}
+
+function getStrategyDesc(name) {
+  const descs = {
+    'MA크로스': '이동평균선 골든/데드크로스 기반 진입',
+    'RSI반등': '과매도 구간 진입 후 반등 노리기',
+    '볼린저밴드': '볼린저밴드 상하단 돌파 매매',
+    'MACD': 'MACD 라인 / 시그널 라인 교차 매매',
+    '변동성돌파': 'Larry Williams K값 기반 당일 돌파 매매',
+    'RSI과매도': '과매도 구간 코인 진입',
+  };
+  return descs[name] || name;
+}
+
+// ── 전략 ON/OFF ──
+async function toggleStrategy(bot, name, el) {
+  const isActive = el.dataset.active === 'true';
+  const newActive = !isActive;
+
+  // UI 즉시 반영
+  el.className = `toggle ${newActive ? 'on' : 'off'}`;
+  el.dataset.active = newActive;
+
+  // 현재 파라미터 수집
+  const params = collectParams(bot, name);
+
+  try {
+    const res = await fetch(`${API}/api/strategies/update`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ bot, name, is_active: newActive, params })
+    });
+    const { success, message } = await res.json();
+    if (success) {
+      showToast(message, 'success');
+      loadStrategies(); // 새로고침
+    } else {
+      showToast('저장 실패', 'error');
+      // 롤백
+      el.className = `toggle ${isActive ? 'on' : 'off'}`;
+      el.dataset.active = isActive;
+    }
+  } catch(e) {
+    showToast('오류 발생', 'error');
+  }
+}
+
+// ── 파라미터 저장 ──
+async function saveStrategy(bot, name) {
+  const params = collectParams(bot, name);
+  const strategy = strategiesData.find(s => s.bot === bot && s.name === name);
+  const isActive = strategy ? strategy.is_active : false;
+
+  try {
+    const res = await fetch(`${API}/api/strategies/update`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ bot, name, is_active: isActive, params })
+    });
+    const { success } = await res.json();
+    showToast(success ? '저장 완료!' : '저장 실패', success ? 'success' : 'error');
+  } catch(e) {
+    showToast('오류 발생', 'error');
+  }
+}
+
+function collectParams(bot, name) {
+  const inputs = document.querySelectorAll(
+    `input[data-bot="${bot}"][data-name="${name}"]`
+  );
+  const params = {};
+  inputs.forEach(inp => {
+    const val = parseFloat(inp.value);
+    params[inp.dataset.key] = isNaN(val) ? inp.value : val;
+  });
+  return params;
+}
+
+// ── 토스트 알림 ──
+function showToast(msg, type) {
+  const toast = document.createElement('div');
+  toast.style.cssText = `
+    position:fixed;bottom:24px;right:24px;z-index:999;
+    padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;
+    background:${type === 'success' ? 'var(--green)' : 'var(--red)'};
+    color:white;box-shadow:0 4px 12px rgba(0,0,0,0.3);
+  `;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
+
+loadStrategies();
+</script>

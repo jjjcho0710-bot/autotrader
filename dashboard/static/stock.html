@@ -268,7 +268,16 @@ async function fetchSummary() {
 // 보유 포지션
 async function fetchPositions() {
   try {
-    const res = await fetchWithFallback('/api/positions/stock','/api/mock/positions/stock');
+    // 포지션은 빈 배열도 정상(보유 없음) → mock fallback 하면 안 됨
+    let res;
+    try {
+      const r = await fetch('/api/positions/stock');
+      res = await r.json();
+      if (!res.success) throw new Error('api fail');
+    } catch {
+      res = await (await fetch('/api/mock/positions/stock')).json();
+      res.account = null;
+    }
     const data = res.data;
     const account = res.account; // KIS output2 계좌 요약
     const tbody=document.getElementById('pos-tbody');
@@ -341,7 +350,12 @@ async function fetchStrategies() {
 // 매매 이력
 async function fetchHistory() {
   try {
-    const { data } = await fetchWithFallback('/api/trades?bot=stock_trader&limit=10','/api/mock/trades?bot=stock_trader&limit=10');
+    let data;
+    try {
+      const r = await fetch('/api/trades?bot=stock_trader&limit=10');
+      const j = await r.json();
+      data = j.success ? j.data : [];
+    } catch { data = []; }
     const list=document.getElementById('hist-list');
     if (!data||!data.length) { list.innerHTML='<div class="empty-msg">매매 이력 없음</div>'; return; }
     list.innerHTML='';

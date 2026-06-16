@@ -319,7 +319,12 @@ async function fetchPositions() {
 // 매매 이력
 async function fetchHistory() {
   try {
-    const { data } = await fetchWithFallback('/api/trades?bot=crypto_trader&limit=10','/api/mock/trades?bot=crypto_trader&limit=10');
+    let data;
+    try {
+      const r = await fetch('/api/trades?bot=crypto_trader&limit=10');
+      const j = await r.json();
+      data = j.success ? j.data : [];
+    } catch { data = []; }
     const list=document.getElementById('hist-list');
     if (!data||!data.length) { list.innerHTML='<div class="empty-msg">매매 이력 없음</div>'; return; }
     list.innerHTML='';

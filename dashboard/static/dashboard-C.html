@@ -381,7 +381,12 @@ async function fetchCryptoPositions() {
 // ── 매매 로그 ──
 async function fetchTrades() {
   try {
-    const { data } = await fetchWithFallback('/api/trades?limit=5', '/api/mock/trades?limit=5');
+    let data;
+    try {
+      const r = await fetch('/api/trades?limit=5');
+      const j = await r.json();
+      data = j.success ? j.data : [];
+    } catch { data = []; }
     const stream = document.getElementById('live-log');
     if (!data || !data.length) {
       stream.innerHTML = '<div style="color:var(--muted);font-size:11px;">매매 이력 없음</div>';

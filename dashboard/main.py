@@ -4,6 +4,7 @@ AutoTrader Dashboard — FastAPI 서버
 """
 import json
 import logging
+import sys
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -190,7 +191,6 @@ async def analysis_page2():
 async def get_indicators(symbol: str, limit: int = 100):
     """종목의 기술적 지표 계산"""
     try:
-        sys.path.insert(0, "/app")
         from ml.indicators import calculate_all
         rows = await db.get_recent_ohlcv(symbol, limit=limit, asset="stock")
         if not rows:
@@ -208,8 +208,6 @@ async def get_indicators(symbol: str, limit: int = 100):
 async def run_backtest(request: Request):
     """백테스트 실행"""
     try:
-        import sys
-        sys.path.insert(0, "/app")
         from ml.backtest import Backtest
 
         body = await request.json()
@@ -264,8 +262,6 @@ async def run_backtest(request: Request):
 async def get_features(symbol: str, limit: int = 200):
     """피처 엔지니어링 결과"""
     try:
-        import sys
-        sys.path.insert(0, "/app")
         from ml.features import build_features, feature_summary
 
         rows = await db.get_recent_ohlcv(symbol, limit=limit, asset="stock")

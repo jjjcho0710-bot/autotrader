@@ -537,22 +537,78 @@ async def jarvis_clear_history():
 
 # ── 텔레그램 Webhook ─────────────────────────────────────────────
 
-async def _send_telegram(text: str, chat_id: str = None):
+async def _send_telegram(text: str, chat_id: str = None, token: str = None):
     """텔레그램 메시지 전송 (내부용)"""
-    token = config.TELEGRAM_TOKEN
+    _token = token or config.TELEGRAM_TOKEN
     cid = chat_id or config.TELEGRAM_CHAT_ID
-    if not token or not cid:
+    if not _token or not cid:
         return
     try:
         import aiohttp as http
         async with http.ClientSession() as session:
             await session.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
+                f"https://api.telegram.org/bot{_token}/sendMessage",
                 json={"chat_id": cid, "text": text, "parse_mode": "HTML"},
                 timeout=http.ClientTimeout(total=10),
             )
     except Exception as e:
         logger.warning(f"텔레그램 전송 실패: {e}")
+
+
+async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
+    """Open-WebUI Jarvis 모델 호출 — Tools + 메모리 포함"""
+    import aiohttp as http
+    import os
+    openwebui_url   = os.getenv("OPENWEBUI_URL", "https://open-webui-production-5843.up.railway.app")
+    openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
+    jarvis_model    = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
+
+    if not openwebui_token:
+        # fallback: Gemini 직접 호출
+        return await _ask_gemini_direct(message)
+
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openwebui_token}",
+        }
+        payload = {
+            "model": jarvis_model,
+            "messages": [{"role": "user", "content": message}],
+            "stream": False,
+        }
+        async with http.ClientSession() as session:
+            async with session.post(
+                f"{openwebui_url}/api/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=http.ClientTimeout(total=60),
+            ) as res:
+                data = await res.json()
+                return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"Open-WebUI 호출 실패: {e}")
+        return await _ask_gemini_direct(message)
+
+
+async def _ask_gemini_direct(message: str) -> str:
+    """Gemini 직접 호출 (Open-WebUI fallback)"""
+    try:
+        portfolio_ctx = await get_portfolio_context()
+        full_msg = f"{message}
+
+---
+현재 데이터:
+{portfolio_ctx}"
+        genai.configure(api_key=config.GEMINI_API_KEY)
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            system_instruction=JARVIS_SYSTEM_PROMPT,
+        )
+        response = model.generate_content(full_msg)
+        return response.text
+    except Exception as e:
+        return f"❌ AI 오류: {e}"
 
 
 @app.post("/api/telegram/webhook")
@@ -570,68 +626,40 @@ async def telegram_webhook(body: dict):
 
         # 명령어 처리
         if text == "/start":
+            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
             await _send_telegram(
-                "🤖 <b>Jarvis 트레이딩 AI입니다</b>\n\n"
-                "사용 가능한 명령어:\n"
-                "/analyze — 포트폴리오 분석\n"
-                "/status — 봇 상태 확인\n"
+                "🤖 <b>TradeJarvis입니다!</b>\n\n"
+                "AI 트레이딩 어시스턴트예요. 실시간 데이터로 분석해드려요!\n\n"
+                "<b>명령어:</b>\n"
+                "/analyze — 포트폴리오 종합 분석\n"
                 "/positions — 보유 포지션\n"
-                "/history — 오늘 매매 이력\n"
-                "또는 자유롭게 질문하세요!", chat_id
+                "/status — 봇 상태\n"
+                "/history — 매매 이력\n\n"
+                "또는 자유롭게 질문하세요! 💬", chat_id, token
             )
             return {"ok": True}
 
         elif text == "/analyze":
-            await _send_telegram("🔍 분석 중...", chat_id)
-            result = await jarvis_analyze()
-            if not result.get("success"):
-                await _send_telegram(f"❌ 분석 실패: {result.get('error')}", chat_id)
+            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+            await _send_telegram("🔍 분석 중...", chat_id, token)
+            reply = await _ask_openwebui(
+                "현재 포트폴리오를 종합 분석하고 리스크와 액션 포인트를 알려줘",
+                session_id=chat_id
+            )
+            await _send_telegram(f"📊 <b>TradeJarvis 분석</b>\n\n{reply}", chat_id, token)
             return {"ok": True}
 
         elif text == "/status":
-            try:
-                status_data = await get_status()
-                data = status_data.get("data", {})
-                lines = ["🟢 <b>봇 상태</b>\n"]
-                for bot, info in data.items():
-                    emoji = "✅" if info.get("status") == "running" else "❌"
-                    lines.append(f"{emoji} {bot}: {info.get('status', 'unknown')}")
-                await _send_telegram("\n".join(lines), chat_id)
-            except Exception as e:
-                await _send_telegram(f"❌ 상태 조회 실패: {e}", chat_id)
+            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+            reply = await _ask_openwebui("현재 봇 상태 알려줘", session_id=chat_id)
+            await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)
             return {"ok": True}
 
         elif text == "/positions":
-            try:
-                stock = await get_stock_positions()
-                crypto = await get_crypto_positions()
-                lines = ["📊 <b>보유 포지션</b>\n"]
-
-                stock_data = stock.get("data", [])
-                if stock_data:
-                    lines.append("📈 <b>주식</b>")
-                    for p in stock_data:
-                        lines.append(
-                            f"  {p['name']}: {p['qty']}주 "
-                            f"{p['pnl_rate']:+.1f}% ({p['pnl']:+,}원)"
-                        )
-                else:
-                    lines.append("📈 주식: 보유 없음")
-
-                crypto_data = crypto.get("data", [])
-                if crypto_data:
-                    lines.append("₿ <b>코인</b>")
-                    for p in crypto_data:
-                        lines.append(
-                            f"  {p['name']}: {p['qty']:.4f} "
-                            f"{p['pnl_rate']:+.1f}% ({p['pnl']:+,.0f}원)"
-                        )
-                else:
-                    lines.append("₿ 코인: 보유 없음")
-
-                await _send_telegram("\n".join(lines), chat_id)
-            except Exception as e:
-                await _send_telegram(f"❌ 포지션 조회 실패: {e}", chat_id)
+            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+            await _send_telegram("📊 포지션 조회 중...", chat_id, token)
+            reply = await _ask_openwebui("현재 보유 포지션 현황 알려줘", session_id=chat_id)
+            await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)
             return {"ok": True}
 
         elif text == "/history":
@@ -653,17 +681,13 @@ async def telegram_webhook(body: dict):
             return {"ok": True}
 
         else:
-            # 일반 질문 → Jarvis AI 처리
-            await _send_telegram("💭 생각 중...", chat_id)
-            result = await jarvis_chat({"message": text})
-            if result.get("success"):
-                reply = result["reply"]
-                # 텔레그램 길이 제한(4096자) 처리
-                if len(reply) > 3800:
-                    reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"
-                await _send_telegram(f"🤖 <b>Jarvis</b>\n\n{reply}", chat_id)
-            else:
-                await _send_telegram(f"❌ Jarvis 오류: {result.get('error')}", chat_id)
+            # 자유 대화 → Open-WebUI Jarvis (Tools + 메모리 포함)
+            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+            await _send_telegram("💭 생각 중...", chat_id, token)
+            reply = await _ask_openwebui(text, session_id=chat_id)
+            if len(reply) > 3800:
+                reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"
+            await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)
 
         return {"ok": True}
     except Exception as e:

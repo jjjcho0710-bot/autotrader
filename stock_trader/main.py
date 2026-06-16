@@ -21,16 +21,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("stock-trader")
 
-MARKET_OPEN  = time(9, 0)
-MARKET_CLOSE = time(15, 30)
+MARKET_OPEN   = time(9, 0)
+MARKET_CLOSE  = time(15, 30)
+ML_TRAIN_TIME = time(15, 40)   # 장 마감 10분 후 자동 학습
 
 
 class StockTrader:
     def __init__(self):
-        self.running   = False
-        self.trader    = KISTrader()
-        self.positions = {}
+        self.running    = False
+        self.trader     = KISTrader()
+        self.positions  = {}
         self.strategies = {}   # name → {is_active, config}
+        self.ml_trained_date = None   # 오늘 ML 학습 완료 여부 추적
 
     # ── DB에서 전략 설정 로드 ────────────────────────────
     async def load_strategies(self):
@@ -127,6 +129,15 @@ class StockTrader:
         while self.running:
             now = datetime.now()
             cur_time = now.time()
+            today = now.date()
+
+            # ── 장 마감 후 ML 자동 학습 (15:40, 하루 1회) ──
+            if (cur_time >= ML_TRAIN_TIME
+                    and self.ml_trained_date != today
+                    and now.weekday() < 5):   # 평일만
+                logger.info("🎓 장 마감 후 ML 자동 학습 시작...")
+                await self._run_ml_training()
+                self.ml_trained_date = today
 
             if not (MARKET_OPEN <= cur_time <= MARKET_CLOSE):
                 logger.info(f"🕐 장외 시간 [{cur_time.strftime('%H:%M')}] — 대기")
@@ -142,6 +153,45 @@ class StockTrader:
                 await self._notify_error(str(e))
 
             await asyncio.sleep(config.COLLECT_INTERVAL_SEC)
+
+    # ── ML 자동 학습 ──────────────────────────────────────
+    async def _run_ml_training(self):
+        """장 마감 후 감시 종목 전체 자동 학습"""
+        try:
+            from ml.model import MLModelManager
+            ml = MLModelManager(db_pool=db.pool)
+
+            results = []
+            for symbol in config.STOCK_SYMBOLS:
+                try:
+                    ohlcv = await db.get_recent_ohlcv(symbol, limit=200, asset="stock")
+                    if len(ohlcv) < 60:
+                        logger.warning(f"[{symbol}] OHLCV 데이터 부족 ({len(ohlcv)}개) → 스킵")
+                        continue
+
+                    result = await ml.train(symbol, ohlcv)
+                    if result["success"]:
+                        logger.info(
+                            f"✅ [{symbol}] 학습 완료 — "
+                            f"샘플: {result['samples']}개, 정확도: {result['accuracy']}%"
+                        )
+                        results.append(f"✅ {symbol}: 정확도 {result['accuracy']}%")
+                    else:
+                        logger.warning(f"⚠️ [{symbol}] 학습 실패: {result['error']}")
+                        results.append(f"⚠️ {symbol}: {result['error']}")
+
+                except Exception as e:
+                    logger.error(f"❌ [{symbol}] 학습 오류: {e}")
+
+            # 학습 완료 텔레그램 알림
+            if results:
+                msg = "🎓 ML 자동 학습 완료\n" + "\n".join(results)
+                await self._notify(msg)
+                logger.info("📣 ML 학습 결과 텔레그램 전송 완료")
+
+        except Exception as e:
+            logger.error(f"❌ ML 자동 학습 전체 오류: {e}")
+            await self._notify_error(f"ML 자동 학습 실패: {e}")
 
     # ── 매매 사이클 ───────────────────────────────────────
     async def _run_cycle(self):

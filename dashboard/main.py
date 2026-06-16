@@ -696,9 +696,9 @@ async def set_telegram_webhook(request: fastapi.Request):
     """텔레그램 webhook URL 등록"""
     try:
         import aiohttp as http
-        token = config.TELEGRAM_TOKEN
+        token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
         if not token:
-            return {"success": False, "error": "TELEGRAM_TOKEN 없음"}
+            return {"success": False, "error": "JARVIS_ANALYST_TOKEN 없음"}
 
         # 현재 서버 URL 자동 감지
         base_url = str(request.base_url).rstrip("/")

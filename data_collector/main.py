@@ -50,10 +50,15 @@ class DataCollector:
         await self.daily.start()
 
         # 봇 상태 Redis에 등록
+        try:
+            stock_count = len(await db.get_watchlist_symbols()) or len(config.STOCK_SYMBOLS)
+        except Exception:
+            stock_count = len(config.STOCK_SYMBOLS)
+
         await cache.set_bot_status("data_collector", {
             "status": "running",
             "started_at": datetime.now().isoformat(),
-            "stock_symbols": len(config.STOCK_SYMBOLS),
+            "stock_symbols": stock_count,
             "crypto_pairs": len(config.CRYPTO_PAIRS),
         })
 

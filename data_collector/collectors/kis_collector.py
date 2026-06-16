@@ -118,7 +118,12 @@ class KISCollector:
     # ── 전체 수집 루프 ──────────────────────────────────
     async def collect_all(self):
         """설정된 전체 종목 수집 → DB 저장 + Redis 캐시"""
-        symbols = config.STOCK_SYMBOLS
+        try:
+            symbols = await db.get_watchlist_symbols()
+            if not symbols:
+                symbols = config.STOCK_SYMBOLS
+        except Exception:
+            symbols = config.STOCK_SYMBOLS
         logger.info(f"📊 주식 수집 시작 — {len(symbols)}종목")
 
         tasks = [self._collect_one(symbol) for symbol in symbols]

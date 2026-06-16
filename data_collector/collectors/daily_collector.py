@@ -190,8 +190,14 @@ class DailyCollector:
 
     async def collect_all(self):
         """전체 종목 일봉 + 지표 수집"""
-        logger.info(f"📅 일봉 수집 시작 — {len(config.STOCK_SYMBOLS)}종목")
-        for symbol in config.STOCK_SYMBOLS:
+        try:
+            symbols = await db.get_watchlist_symbols()
+            if not symbols:
+                symbols = config.STOCK_SYMBOLS
+        except Exception:
+            symbols = config.STOCK_SYMBOLS
+        logger.info(f"📅 일봉 수집 시작 — {len(symbols)}종목")
+        for symbol in symbols:
             try:
                 candles = await self.get_daily_ohlcv(symbol, days=200)
                 if candles:

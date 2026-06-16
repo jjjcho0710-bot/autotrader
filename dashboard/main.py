@@ -562,6 +562,23 @@ async def jarvis_clear_history():
 
 # ── 텔레그램 Webhook ─────────────────────────────────────────────
 
+async def _typing_action(chat_id: str, token: str = None):
+    """텔레그램 상단 '입력 중...' 표시"""
+    _token = token or config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+    if not _token or not chat_id:
+        return
+    try:
+        import aiohttp as http
+        async with http.ClientSession() as session:
+            await session.post(
+                f"https://api.telegram.org/bot{_token}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+                timeout=http.ClientTimeout(total=5),
+            )
+    except:
+        pass
+
+
 async def _send_telegram(text: str, chat_id: str = None, token: str = None):
     """텔레그램 메시지 전송 (내부용)"""
     _token = token or config.TELEGRAM_TOKEN
@@ -580,8 +597,40 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None):
         logger.warning(f"텔레그램 전송 실패: {e}")
 
 
+# 텔레그램 채팅별 대화 히스토리 (Redis 저장)
+async def _get_chat_history(chat_id: str, max_turns: int = 8) -> list:
+    """Redis에서 대화 히스토리 로드"""
+    if not redis_client:
+        return []
+    try:
+        key = f"jarvis:history:{chat_id}"
+        raw = await redis_client.get(key)
+        if raw:
+            return json.loads(raw)[-max_turns*2:]  # 최근 N턴
+    except:
+        pass
+    return []
+
+
+async def _save_chat_history(chat_id: str, role: str, content: str):
+    """Redis에 대화 히스토리 저장"""
+    if not redis_client:
+        return
+    try:
+        key = f"jarvis:history:{chat_id}"
+        raw = await redis_client.get(key)
+        history = json.loads(raw) if raw else []
+        history.append({"role": role, "content": content})
+        # 최근 20턴만 보관
+        if len(history) > 40:
+            history = history[-40:]
+        await redis_client.setex(key, 86400, json.dumps(history))  # 24시간 보관
+    except Exception as e:
+        logger.warning(f"히스토리 저장 실패: {e}")
+
+
 async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
-    """Open-WebUI Jarvis 모델 호출 — Tools + 메모리 포함"""
+    """Open-WebUI Jarvis 모델 호출 — Tools + 대화 히스토리 포함"""
     import aiohttp as http
     import os
     openwebui_url   = os.getenv("OPENWEBUI_URL", "https://open-webui-production-5843.up.railway.app")
@@ -589,17 +638,22 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
     jarvis_model    = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
 
     if not openwebui_token:
-        # fallback: Gemini 직접 호출
         return await _ask_gemini_direct(message)
 
     try:
+        # 이전 대화 히스토리 로드
+        history = await _get_chat_history(session_id)
+
+        # 현재 메시지 추가
+        messages = history + [{"role": "user", "content": message}]
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {openwebui_token}",
         }
         payload = {
             "model": jarvis_model,
-            "messages": [{"role": "user", "content": message}],
+            "messages": messages,
             "stream": False,
         }
         async with http.ClientSession() as session:
@@ -610,7 +664,13 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
                 timeout=http.ClientTimeout(total=60),
             ) as res:
                 data = await res.json()
-                return data["choices"][0]["message"]["content"]
+                reply = data["choices"][0]["message"]["content"]
+
+                # 대화 히스토리 저장
+                await _save_chat_history(session_id, "user", message)
+                await _save_chat_history(session_id, "assistant", reply)
+
+                return reply
     except Exception as e:
         logger.error(f"Open-WebUI 호출 실패: {e}")
         return await _ask_gemini_direct(message)
@@ -662,7 +722,7 @@ async def telegram_webhook(body: dict):
 
         elif text == "/analyze":
             token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            await _send_telegram("🔍 분석 중...", chat_id, token)
+            await _typing_action(chat_id, token)
             reply = await _ask_openwebui(
                 "현재 포트폴리오를 종합 분석하고 리스크와 액션 포인트를 알려줘",
                 session_id=chat_id
@@ -678,7 +738,7 @@ async def telegram_webhook(body: dict):
 
         elif text == "/positions":
             token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            await _send_telegram("📊 포지션 조회 중...", chat_id, token)
+            await _typing_action(chat_id, token)
             reply = await _ask_openwebui("현재 보유 포지션 현황 알려줘", session_id=chat_id)
             await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)
             return {"ok": True}
@@ -704,7 +764,7 @@ async def telegram_webhook(body: dict):
         else:
             # 자유 대화 → Open-WebUI Jarvis (Tools + 메모리 포함)
             token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            await _send_telegram("💭 생각 중...", chat_id, token)
+            await _typing_action(chat_id, token)
             reply = await _ask_openwebui(text, session_id=chat_id)
             if len(reply) > 3800:
                 reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"

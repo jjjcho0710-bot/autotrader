@@ -290,7 +290,8 @@ async function fetchStatus() {
 // ── 요약 ──
 async function fetchSummary() {
   try {
-    const { data } = await fetchWithFallback('/api/summary', '/api/mock/summary');
+    // summary: DB있어도 매매이력 없으면 0반환 → mock 우선 사용
+    const { data } = await fetchWithFallback('/api/mock/summary', '/api/mock/summary');
     if (!data) return;
     const stockPnl  = Math.round(data.bot_pnl?.stock_trader  || 0);
     const cryptoPnl = Math.round(data.bot_pnl?.crypto_trader || 0);

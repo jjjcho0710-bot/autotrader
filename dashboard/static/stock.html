@@ -194,11 +194,14 @@ async function fetchWithFallback(realPath, mockPath) {
     const res = await fetch(`${API}${realPath}`);
     const json = await res.json();
     const d = json.data;
-    if (json.success && d && (Array.isArray(d) ? d.length > 0 : Object.keys(d).length > 0)) return json;
-    throw new Error('empty');
+    const hasData = d && (Array.isArray(d) ? d.length > 0 : Object.keys(d).length > 0);
+    if (json.success && hasData) return json;
+    throw new Error('empty or no data');
   } catch {
-    const res = await fetch(`${API}${mockPath}`);
-    return res.json();
+    try {
+      const res = await fetch(`${API}${mockPath}`);
+      return res.json();
+    } catch(e2) { return { success: false, data: null }; }
   }
 }
 

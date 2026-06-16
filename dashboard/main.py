@@ -74,6 +74,31 @@ async def startup():
     redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
     logger.info("✅ Dashboard 서버 시작")
 
+    # 텔레그램 webhook 자동 등록
+    await _auto_register_webhook()
+
+
+async def _auto_register_webhook():
+    """서버 시작 시 텔레그램 webhook 자동 등록"""
+    import os
+    import aiohttp as http
+    token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+    public_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if not token or not public_url:
+        logger.warning("텔레그램 webhook 자동 등록 스킵 (토큰 또는 도메인 없음)")
+        return
+    webhook_url = f"https://{public_url}/api/telegram/webhook"
+    try:
+        async with http.ClientSession() as session:
+            res = await session.post(
+                f"https://api.telegram.org/bot{token}/setWebhook",
+                json={"url": webhook_url, "drop_pending_updates": True},
+            )
+            data = await res.json()
+            logger.info(f"텔레그램 webhook 자동 등록: {webhook_url} → {data}")
+    except Exception as e:
+        logger.warning(f"텔레그램 webhook 자동 등록 실패: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown():

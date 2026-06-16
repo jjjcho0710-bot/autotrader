@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTrader — 성과 분석</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+:root{--bg:#12131a;--panel:#1a1c27;--panel2:#1f2133;--border:#272a3d;--stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;--purple:#a78bfa;--muted:#4b5270;--text:#8892b0;--bright:#e2e8f7;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
+.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
+.logo-text{font-size:13px;font-weight:700;color:var(--bright);font-family:var(--mono);}
+.sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
+.nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
+.nav-item span{font-size:11px;font-weight:500;color:inherit;}
+.nav-item:hover{background:var(--panel2);color:var(--text);}
+.nav-item.active{background:var(--panel2);color:var(--bright);}
+.nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;background:var(--green);}
+.sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
+.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
+.sdot{width:6px;height:6px;border-radius:50%;}
+.sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
+.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
+.page-label{font-size:14px;font-weight:600;color:var(--bright);}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
+.clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
+.content{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;}
+
+/* KPI 카드 */
+.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;}
+.kpi-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:4px;}
+.kpi-label{font-size:10px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;}
+.kpi-value{font-size:20px;font-weight:700;color:var(--bright);font-family:var(--mono);}
+.kpi-value.green{color:var(--green);}
+.kpi-value.red{color:var(--red);}
+.kpi-sub{font-size:10px;color:var(--muted);}
+
+/* 차트 카드 */
+.chart-row{display:grid;grid-template-columns:2fr 1fr;gap:14px;}
+.chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
+.card-title{font-size:12px;font-weight:600;color:var(--bright);margin-bottom:12px;display:flex;align-items:center;gap:6px;}
+.card-title .dot{width:6px;height:6px;border-radius:50%;}
+canvas{width:100%!important;}
+
+/* 테이블 */
+.table-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
+.perf-table{width:100%;border-collapse:collapse;font-size:12px;}
+.perf-table th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);font-size:11px;}
+.perf-table td{padding:8px 10px;border-bottom:1px solid rgba(39,42,61,0.5);color:var(--text);}
+.perf-table tr:last-child td{border-bottom:none;}
+.perf-table tr:hover td{background:var(--panel2);}
+.badge{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;font-family:var(--mono);}
+.badge.buy{background:rgba(91,143,255,0.15);color:var(--stock);}
+.badge.sell{background:rgba(248,113,113,0.15);color:var(--red);}
+.pnl-pos{color:var(--green);}
+.pnl-neg{color:var(--red);}
+
+/* 학습 데이터 섹션 */
+.learn-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
+.learn-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
+.learn-stat{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(39,42,61,0.5);}
+.learn-stat:last-child{border-bottom:none;}
+.learn-stat-label{font-size:11px;color:var(--muted);}
+.learn-stat-value{font-size:12px;font-weight:600;color:var(--bright);font-family:var(--mono);}
+
+.section-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px;}
+</style>
+<link rel="stylesheet" href="/static/mobile.css">
+</head>
+<body>
+
+<!-- 사이드바 -->
+<div class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">AT</div>
+    <div class="logo-text">Auto</div>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="nav-item t" onclick="location.href='/jarvis.html'">🤖 <span>Jarvis</span></div>
+    <div class="nav-item d" onclick="location.href='/dashboard-C.html'">📊 <span>대시보드</span></div>
+    <div class="nav-item s" onclick="location.href='/stock.html'">📈 <span>주식</span></div>
+    <div class="nav-item c" onclick="location.href='/crypto.html'">₿ <span>코인</span></div>
+    <div class="nav-item" onclick="location.href='/strategy.html'">⚙️ <span>전략</span></div>
+    <div class="nav-item active">🧠 <span>분석</span></div>
+    <div class="nav-item" onclick="location.href='/logs.html'">📋 <span>로그</span></div>
+  </nav>
+  <div class="sidebar-bottom">
+    <div class="sdot-group">
+      <div class="sdot-wrap"><div class="sdot on" id="dot-stk"></div><div class="sdot-label">STK</div></div>
+      <div class="sdot-wrap"><div class="sdot" id="dot-cry"></div><div class="sdot-label">CRY</div></div>
+      <div class="sdot-wrap"><div class="sdot on" id="dot-dat"></div><div class="sdot-label">DAT</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 메인 -->
+<div class="main">
+  <div class="topbar">
+    <div class="page-label">🧠 성과 분석 & 학습 데이터</div>
+    <div class="topbar-right">
+      <div class="clock" id="clock"></div>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- KPI 카드 -->
+    <div>
+      <div class="section-title">📊 전체 성과</div>
+      <div class="kpi-row" style="margin-top:8px;">
+        <div class="kpi-card">
+          <div class="kpi-label">총 수익률</div>
+          <div class="kpi-value green" id="kpi-total-rate">+0.00%</div>
+          <div class="kpi-sub" id="kpi-total-pnl">0원</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">승률</div>
+          <div class="kpi-value" id="kpi-winrate">0%</div>
+          <div class="kpi-sub" id="kpi-winrate-sub">0승 0패</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">총 매매</div>
+          <div class="kpi-value" id="kpi-trades">0건</div>
+          <div class="kpi-sub" id="kpi-trades-sub">매수 0 / 매도 0</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">평균 수익</div>
+          <div class="kpi-value green" id="kpi-avg-profit">0원</div>
+          <div class="kpi-sub" id="kpi-avg-loss">평균 손실: 0원</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">최대 낙폭(MDD)</div>
+          <div class="kpi-value red" id="kpi-mdd">0%</div>
+          <div class="kpi-sub" id="kpi-sharpe">샤프: 0.00</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 차트 -->
+    <div class="chart-row">
+      <div class="chart-card">
+        <div class="card-title"><div class="dot" style="background:var(--green)"></div>일별 수익 추이</div>
+        <canvas id="pnl-chart" height="160"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="card-title"><div class="dot" style="background:var(--purple)"></div>전략별 성과</div>
+        <canvas id="strategy-chart" height="160"></canvas>
+      </div>
+    </div>
+
+    <!-- 종목별 성과 + 최근 매매 -->
+    <div class="chart-row">
+      <div class="table-card">
+        <div class="card-title"><div class="dot" style="background:var(--stock)"></div>최근 매매 이력</div>
+        <table class="perf-table">
+          <thead>
+            <tr>
+              <th>시간</th><th>봇</th><th>종목</th><th>구분</th>
+              <th style="text-align:right">가격</th><th style="text-align:right">수량</th>
+              <th style="text-align:right">손익</th><th>전략</th>
+            </tr>
+          </thead>
+          <tbody id="trade-tbody"><tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted);">매매 이력 없음</td></tr></tbody>
+        </table>
+      </div>
+      <div class="table-card">
+        <div class="card-title"><div class="dot" style="background:var(--crypto)"></div>종목별 성과</div>
+        <table class="perf-table">
+          <thead><tr><th>종목</th><th style="text-align:right">매매수</th><th style="text-align:right">승률</th><th style="text-align:right">손익</th></tr></thead>
+          <tbody id="symbol-tbody"><tr><td colspan="4" style="text-align:center;padding:20px;color:var(--muted);">데이터 없음</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 학습 데이터 현황 -->
+    <div>
+      <div class="section-title">🧠 학습 데이터 현황</div>
+      <div class="learn-row" style="margin-top:8px;">
+        <div class="learn-card">
+          <div class="card-title"><div class="dot" style="background:var(--stock)"></div>주식 OHLCV 데이터</div>
+          <div class="learn-stat"><span class="learn-stat-label">수집된 캔들</span><span class="learn-stat-value" id="learn-stock-candles">0개</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">감시 종목</span><span class="learn-stat-value" id="learn-stock-symbols">0개</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">수집 기간</span><span class="learn-stat-value" id="learn-stock-period">-</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">마지막 수집</span><span class="learn-stat-value" id="learn-stock-last">-</span></div>
+        </div>
+        <div class="learn-card">
+          <div class="card-title"><div class="dot" style="background:var(--crypto)"></div>코인 OHLCV 데이터</div>
+          <div class="learn-stat"><span class="learn-stat-label">수집된 캔들</span><span class="learn-stat-value" id="learn-crypto-candles">0개</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">감시 페어</span><span class="learn-stat-value" id="learn-crypto-symbols">0개</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">수집 기간</span><span class="learn-stat-value" id="learn-crypto-period">-</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">마지막 수집</span><span class="learn-stat-value" id="learn-crypto-last">-</span></div>
+        </div>
+        <div class="learn-card">
+          <div class="card-title"><div class="dot" style="background:var(--green)"></div>매매 학습 데이터</div>
+          <div class="learn-stat"><span class="learn-stat-label">총 매매 기록</span><span class="learn-stat-value" id="learn-trades">0건</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">수익 패턴</span><span class="learn-stat-value" id="learn-win-pattern">0개</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">손실 패턴</span><span class="learn-stat-value" id="learn-loss-pattern">0개</span></div>
+          <div class="learn-stat"><span class="learn-stat-label">학습 준비도</span><span class="learn-stat-value" id="learn-readiness" style="color:var(--red)">데이터 부족</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const API = '';
+
+// 시계
+function updateClock(){
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleDateString('ko-KR',{month:'2-digit',day:'2-digit'}) + ' ' +
+    now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// 숫자 포맷
+const fmt = n => Number(n||0).toLocaleString('ko-KR');
+const fmtPct = n => (n >= 0 ? '+' : '') + Number(n||0).toFixed(2) + '%';
+
+// ── 성과 데이터 로드 ──────────────────────────────────
+async function loadPerformance() {
+  try {
+    const res = await fetch(`${API}/api/trades?limit=100`);
+    const json = await res.json();
+    const trades = json.data || [];
+
+    if (!trades.length) return;
+
+    // KPI 계산
+    const sells = trades.filter(t => t.side === 'SELL' && t.pnl != null);
+    const wins = sells.filter(t => t.pnl > 0);
+    const losses = sells.filter(t => t.pnl <= 0);
+    const totalPnl = sells.reduce((s, t) => s + (t.pnl || 0), 0);
+    const winrate = sells.length ? (wins.length / sells.length * 100) : 0;
+    const avgProfit = wins.length ? wins.reduce((s,t) => s + t.pnl, 0) / wins.length : 0;
+    const avgLoss = losses.length ? losses.reduce((s,t) => s + t.pnl, 0) / losses.length : 0;
+    const buys = trades.filter(t => t.side === 'BUY');
+
+    document.getElementById('kpi-total-pnl').textContent = `${fmt(totalPnl)}원`;
+    document.getElementById('kpi-total-rate').textContent = totalPnl >= 0 ? `+${fmt(totalPnl)}원` : `${fmt(totalPnl)}원`;
+    document.getElementById('kpi-total-rate').className = `kpi-value ${totalPnl >= 0 ? 'green' : 'red'}`;
+    document.getElementById('kpi-winrate').textContent = winrate.toFixed(1) + '%';
+    document.getElementById('kpi-winrate-sub').textContent = `${wins.length}승 ${losses.length}패`;
+    document.getElementById('kpi-trades').textContent = trades.length + '건';
+    document.getElementById('kpi-trades-sub').textContent = `매수 ${buys.length} / 매도 ${sells.length}`;
+    document.getElementById('kpi-avg-profit').textContent = `+${fmt(avgProfit)}원`;
+    document.getElementById('kpi-avg-loss').textContent = `평균 손실: ${fmt(avgLoss)}원`;
+
+    // 학습 데이터
+    document.getElementById('learn-trades').textContent = trades.length + '건';
+    document.getElementById('learn-win-pattern').textContent = wins.length + '개';
+    document.getElementById('learn-loss-pattern').textContent = losses.length + '개';
+    const readiness = trades.length >= 100 ? '학습 가능 ✅' : `${trades.length}/100건 (부족)`;
+    const readEl = document.getElementById('learn-readiness');
+    readEl.textContent = readiness;
+    readEl.style.color = trades.length >= 100 ? 'var(--green)' : 'var(--red)';
+
+    // 매매 테이블
+    const tbody = document.getElementById('trade-tbody');
+    if (trades.length) {
+      tbody.innerHTML = trades.slice(0, 20).map(t => {
+        const ts = (t.ts || '').substring(0, 16).replace('T', ' ');
+        const pnl = t.pnl != null ? `<span class="${t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}원</span>` : '-';
+        return `<tr>
+          <td style="font-family:var(--mono);font-size:10px;">${ts}</td>
+          <td style="color:var(--muted);font-size:10px;">${t.bot || '-'}</td>
+          <td style="color:var(--bright);font-weight:600;">${t.symbol || '-'}</td>
+          <td><span class="badge ${t.side === 'BUY' ? 'buy' : 'sell'}">${t.side === 'BUY' ? '매수' : '매도'}</span></td>
+          <td style="text-align:right;font-family:var(--mono);">${fmt(t.price)}원</td>
+          <td style="text-align:right;font-family:var(--mono);">${fmt(t.quantity)}</td>
+          <td style="text-align:right;">${pnl}</td>
+          <td style="color:var(--muted);font-size:10px;">${t.strategy || '-'}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // 종목별 성과
+    const symbolMap = {};
+    sells.forEach(t => {
+      if (!symbolMap[t.symbol]) symbolMap[t.symbol] = {trades:0, wins:0, pnl:0};
+      symbolMap[t.symbol].trades++;
+      if (t.pnl > 0) symbolMap[t.symbol].wins++;
+      symbolMap[t.symbol].pnl += t.pnl || 0;
+    });
+    const symTbody = document.getElementById('symbol-tbody');
+    const symEntries = Object.entries(symbolMap).sort((a,b) => b[1].pnl - a[1].pnl);
+    if (symEntries.length) {
+      symTbody.innerHTML = symEntries.map(([sym, d]) => {
+        const wr = (d.wins / d.trades * 100).toFixed(0);
+        return `<tr>
+          <td style="color:var(--bright);font-weight:600;">${sym}</td>
+          <td style="text-align:right;">${d.trades}건</td>
+          <td style="text-align:right;">${wr}%</td>
+          <td style="text-align:right;" class="${d.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${d.pnl >= 0 ? '+' : ''}${fmt(d.pnl)}원</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // 일별 수익 차트
+    drawPnlChart(trades);
+    drawStrategyChart(sells);
+
+  } catch(e) {
+    console.error('성과 데이터 로드 실패:', e);
+  }
+}
+
+// ── 학습 데이터 현황 ──────────────────────────────────
+async function loadLearnStats() {
+  try {
+    const res = await fetch(`${API}/api/learn/stats`);
+    const json = await res.json();
+    if (!json.success) return;
+    const d = json.data;
+    document.getElementById('learn-stock-candles').textContent = fmt(d.stock_candles) + '개';
+    document.getElementById('learn-stock-symbols').textContent = (d.stock_symbols || 8) + '개';
+    document.getElementById('learn-stock-period').textContent = d.stock_period || '-';
+    document.getElementById('learn-stock-last').textContent = d.stock_last || '-';
+    document.getElementById('learn-crypto-candles').textContent = fmt(d.crypto_candles) + '개';
+    document.getElementById('learn-crypto-symbols').textContent = (d.crypto_symbols || 5) + '개';
+    document.getElementById('learn-crypto-period').textContent = d.crypto_period || '-';
+    document.getElementById('learn-crypto-last').textContent = d.crypto_last || '-';
+  } catch(e) {}
+}
+
+// ── 차트 ─────────────────────────────────────────────
+function drawPnlChart(trades) {
+  // 일별 수익 집계
+  const dayMap = {};
+  trades.filter(t => t.side === 'SELL' && t.pnl != null).forEach(t => {
+    const day = (t.ts || '').substring(0, 10);
+    if (!dayMap[day]) dayMap[day] = 0;
+    dayMap[day] += t.pnl || 0;
+  });
+  const labels = Object.keys(dayMap).sort().slice(-14);
+  const data = labels.map(d => dayMap[d]);
+
+  const ctx = document.getElementById('pnl-chart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: '일별 손익',
+        data,
+        backgroundColor: data.map(v => v >= 0 ? 'rgba(52,211,153,0.6)' : 'rgba(248,113,113,0.6)'),
+        borderColor: data.map(v => v >= 0 ? '#34d399' : '#f87171'),
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#4b5270', font: { size: 10 } }, grid: { color: '#272a3d' } },
+        y: { ticks: { color: '#4b5270', font: { size: 10 }, callback: v => fmt(v) + '원' }, grid: { color: '#272a3d' } }
+      }
+    }
+  });
+}
+
+function drawStrategyChart(sells) {
+  const stratMap = {};
+  sells.forEach(t => {
+    const s = t.strategy || '기타';
+    if (!stratMap[s]) stratMap[s] = {wins:0, total:0};
+    stratMap[s].total++;
+    if (t.pnl > 0) stratMap[s].wins++;
+  });
+  const labels = Object.keys(stratMap);
+  const data = labels.map(s => (stratMap[s].wins / stratMap[s].total * 100).toFixed(1));
+  const colors = ['rgba(91,143,255,0.7)', 'rgba(167,139,250,0.7)', 'rgba(52,211,153,0.7)', 'rgba(240,165,0,0.7)'];
+
+  const ctx = document.getElementById('strategy-chart').getContext('2d');
+  new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: labels.length ? labels : ['데이터 없음'],
+      datasets: [{
+        data: data.length ? data : [100],
+        backgroundColor: colors,
+        borderColor: '#1a1c27',
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#8892b0', font: { size: 10 }, padding: 10 } }
+      }
+    }
+  });
+}
+
+// 초기 로드
+loadPerformance();
+loadLearnStats();
+setInterval(loadPerformance, 30000);
+</script>
+</body>
+</html>

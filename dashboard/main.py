@@ -175,6 +175,50 @@ async def jarvis_html():
 
 # ── API 엔드포인트 ──────────────────────────────────────
 
+@app.get("/analysis", response_class=HTMLResponse)
+async def analysis_page():
+    with open("/app/dashboard/static/analysis.html") as f:
+        return f.read()
+
+@app.get("/analysis.html", response_class=HTMLResponse)
+async def analysis_page2():
+    with open("/app/dashboard/static/analysis.html") as f:
+        return f.read()
+
+@app.get("/api/learn/stats")
+async def learn_stats():
+    """학습 데이터 현황 통계"""
+    try:
+        result = {}
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                # 주식 OHLCV
+                stock_cnt = await conn.fetchval("SELECT COUNT(*) FROM stock_ohlcv")
+                stock_min = await conn.fetchval("SELECT MIN(ts) FROM stock_ohlcv")
+                stock_max = await conn.fetchval("SELECT MAX(ts) FROM stock_ohlcv")
+                stock_syms = await conn.fetchval("SELECT COUNT(DISTINCT symbol) FROM stock_ohlcv")
+
+                # 코인 OHLCV
+                crypto_cnt = await conn.fetchval("SELECT COUNT(*) FROM crypto_ohlcv")
+                crypto_min = await conn.fetchval("SELECT MIN(ts) FROM crypto_ohlcv")
+                crypto_max = await conn.fetchval("SELECT MAX(ts) FROM crypto_ohlcv")
+                crypto_syms = await conn.fetchval("SELECT COUNT(DISTINCT pair) FROM crypto_ohlcv")
+
+            result = {
+                "stock_candles": stock_cnt or 0,
+                "stock_symbols": stock_syms or 0,
+                "stock_period": f"{stock_min.strftime('%m/%d') if stock_min else '-'} ~ {stock_max.strftime('%m/%d') if stock_max else '-'}",
+                "stock_last": stock_max.strftime('%H:%M') if stock_max else '-',
+                "crypto_candles": crypto_cnt or 0,
+                "crypto_symbols": crypto_syms or 0,
+                "crypto_period": f"{crypto_min.strftime('%m/%d') if crypto_min else '-'} ~ {crypto_max.strftime('%m/%d') if crypto_max else '-'}",
+                "crypto_last": crypto_max.strftime('%H:%M') if crypto_max else '-',
+            }
+        return {"success": True, "data": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/status")
 async def get_status():
     """봇 상태 조회 (Redis)"""

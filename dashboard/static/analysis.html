@@ -474,19 +474,56 @@ function drawStrategyChart(sells) {
 async function trainAllModels() {
   const el = document.getElementById('ml-result');
   el.innerHTML = '<span style="color:var(--purple)">⏳ 전체 종목 학습 중... (수분 소요)</span>';
+
+  const NAME_MAP = {
+    '005930':'삼성전자','000660':'SK하이닉스','035420':'NAVER','035720':'카카오',
+    '005380':'현대차','068270':'셀트리온','373220':'LG에너지솔루션','323410':'카카오뱅크',
+    '207940':'삼성바이오로직스','051910':'LG화학','006400':'삼성SDI','005490':'POSCO홀딩스',
+    '000270':'기아','096770':'SK이노베이션','015760':'한국전력','017670':'SK텔레콤',
+    '030200':'KT','105560':'KB금융','055550':'신한지주','086790':'하나금융지주'
+  };
+
   try {
     const res = await fetch('/api/ml/train-all', { method: 'POST' });
     const data = await res.json();
-    if (data.success) {
-      const lines = data.results.map(r =>
-        r.success
-          ? `✅ ${r.symbol}: 정확도 ${r.accuracy || '-'}%`
-          : `❌ ${r.symbol}: ${r.error}`
-      ).join('<br>');
-      el.innerHTML = `<b>전체 학습 완료 (${data.trained}/${data.total})</b><br>${lines}`;
-    } else {
+    if (!data.success) {
       el.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+      return;
     }
+
+    const cards = data.results.map(r => {
+      const name = NAME_MAP[r.symbol] || r.symbol;
+      if (!r.success) {
+        return `<div style="background:rgba(255,80,80,0.08);border:1px solid rgba(255,80,80,0.2);border-radius:8px;padding:10px 12px;">
+          <div style="font-size:11px;color:var(--muted)">${r.symbol}</div>
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin:2px 0">${name}</div>
+          <div style="font-size:11px;color:var(--red)">❌ ${r.error}</div>
+        </div>`;
+      }
+      const acc = parseFloat(r.accuracy || 0);
+      const color = acc >= 60 ? 'var(--green)' : acc >= 50 ? 'var(--yellow,#f0b429)' : 'var(--red)';
+      const bar = Math.round(acc);
+      return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+        <div style="font-size:11px;color:var(--muted)">${r.symbol}</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text);margin:2px 0">${name}</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+          <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+            <div style="width:${bar}%;height:100%;background:${color};border-radius:2px;transition:width 0.5s"></div>
+          </div>
+          <span style="font-size:12px;font-weight:700;color:${color}">${acc.toFixed(1)}%</span>
+        </div>
+      </div>`;
+    }).join('');
+
+    el.innerHTML = `
+      <div style="margin-bottom:8px;font-size:12px;color:var(--muted)">
+        ✅ 학습 완료 <b style="color:var(--text)">${data.trained}/${data.total}</b>종목
+        ${data.failed > 0 ? `<span style="color:var(--red)"> · 실패 ${data.failed}개</span>` : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;">
+        ${cards}
+      </div>`;
+
   } catch(e) {
     el.innerHTML = `<span style="color:var(--red)">❌ 오류: ${e.message}</span>`;
   }

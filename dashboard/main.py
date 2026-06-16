@@ -682,6 +682,8 @@ async def set_telegram_webhook(request: fastapi.Request):
 
         # 현재 서버 URL 자동 감지
         base_url = str(request.base_url).rstrip("/")
+        # Railway는 항상 HTTPS
+        base_url = base_url.replace("http://", "https://")
         webhook_url = f"{base_url}/api/telegram/webhook"
 
         async with http.ClientSession() as session:

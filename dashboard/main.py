@@ -511,8 +511,7 @@ async def jarvis_analyze():
         )
 
         portfolio_ctx = await get_portfolio_context()
-        prompt = f"""현재 포트폴리오를 분석하고 간단한 리포트를 작성해주세요.
-다음을 포함하세요:
+        prompt = f"""현재 포트폴리오를 분석하고 간단한 리포트를 작성해주세요.\n다음을 포함하세요:
 1. 전체 수익/손실 현황 요약
 2. 가장 주목할 종목 1-2개
 3. 리스크 경고 (있다면)
@@ -1202,8 +1201,7 @@ async def jarvis_signal(request: Request):
         chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
 
         # 1. Jarvis에게 분석 요청
-        analysis_prompt = f"""
-{name}({symbol}) {action_kr} 신호 발생!
+        analysis_prompt = f"""\n{name}({symbol}) {action_kr} 신호 발생!
 전략: {strategy}
 현재가: {price:,}원
 수량: {qty}주
@@ -1245,14 +1243,10 @@ async def jarvis_signal(request: Request):
                 # 텔레그램 보고
                 emoji = "📈" if action == "buy" else "📉"
                 msg = (
-                    f"{emoji} <b>{name} {action_kr} 완료</b>
-"
-                    f"가격: {price:,}원 × {qty}주
-"
-                    f"금액: {price*qty:,}원
-"
-                    f"전략: {strategy}
-"
+                    f"{emoji} <b>{name} {action_kr} 완료</b>\n"
+                    f"가격: {price:,}원 × {qty}주\n"
+                    f"금액: {price*qty:,}원\n"
+                    f"전략: {strategy}\n"
                     f"Jarvis 판단: {jarvis_reply[:80]}"
                 )
                 await _send_telegram(msg, chat_id, token)
@@ -1260,15 +1254,13 @@ async def jarvis_signal(request: Request):
                 return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
             else:
                 await _send_telegram(
-                    f"❌ {name} {action_kr} 실패
-{result.get('error')}",
+                    f"❌ {name} {action_kr} 실패\n{result.get('error')}",
                     chat_id, token
                 )
                 return {"success": False, "executed": False, "error": result.get("error")}
         else:
             # 4. 건너뜀 보고
-            msg = f"⏭️ <b>{name} {action_kr} 신호 건너뜀</b>
-Jarvis 판단: {jarvis_reply[:100]}"
+            msg = f"⏭️ <b>{name} {action_kr} 신호 건너뜀</b>\nJarvis 판단: {jarvis_reply[:100]}"
             await _send_telegram(msg, chat_id, token)
             logger.info(f"⏭️ Jarvis가 {action_kr} 신호 건너뜀: {symbol}")
             return {"success": True, "executed": False, "jarvis_reply": jarvis_reply}

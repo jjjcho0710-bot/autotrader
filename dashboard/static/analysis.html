@@ -222,6 +222,7 @@ canvas{width:100%!important;max-height:200px;}
               <option value="005380">현대차</option>
             </select>
             <button onclick="trainModel()" style="background:var(--purple);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🎓 학습</button>
+            <button onclick="trainAllModels()" style="background:var(--blue,#4f8ef7);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🎓 전체 학습</button>
             <button onclick="predictSignal()" style="background:var(--stock);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🔮 예측</button>
           </div>
           <div id="ml-result" style="font-size:12px;color:var(--muted);">종목 선택 후 학습 → 예측 순서로 실행하세요</div>
@@ -470,6 +471,27 @@ function drawStrategyChart(sells) {
 }
 
 // ── ML 예측 ──────────────────────────────────────────
+async function trainAllModels() {
+  const el = document.getElementById('ml-result');
+  el.innerHTML = '<span style="color:var(--purple)">⏳ 전체 종목 학습 중... (수분 소요)</span>';
+  try {
+    const res = await fetch('/api/ml/train-all', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      const lines = data.results.map(r =>
+        r.success
+          ? `✅ ${r.symbol}: 정확도 ${r.accuracy || '-'}%`
+          : `❌ ${r.symbol}: ${r.error}`
+      ).join('<br>');
+      el.innerHTML = `<b>전체 학습 완료 (${data.trained}/${data.total})</b><br>${lines}`;
+    } else {
+      el.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+    }
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">❌ 오류: ${e.message}</span>`;
+  }
+}
+
 async function trainModel() {
   const symbol = document.getElementById('ml-symbol').value;
   const el = document.getElementById('ml-result');

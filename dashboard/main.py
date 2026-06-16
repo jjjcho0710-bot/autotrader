@@ -357,7 +357,7 @@ async def train_model(symbol: str):
         from ml.model import MLModelManager
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM stock_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts DESC LIMIT 500",
+                "SELECT * FROM stock_daily_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts ASC",
                 symbol
             )
         if len(rows) < 70:
@@ -365,11 +365,58 @@ async def train_model(symbol: str):
 
         ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
                   "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
-                 for r in reversed(rows)]
+                 for r in rows]
 
         manager = MLModelManager(db_pool)
         result = await manager.train(symbol, ohlcv)
         return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/ml/train-all")
+async def train_all_models():
+    """전체 감시 종목 ML 모델 일괄 학습"""
+    try:
+        from ml.model import MLModelManager
+        symbols = await db.get_watchlist_symbols()
+        if not symbols:
+            symbols = config.STOCK_SYMBOLS
+
+        manager = MLModelManager(db_pool)
+        results = []
+
+        for symbol in symbols:
+            try:
+                async with db_pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT * FROM stock_daily_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts ASC",
+                        symbol
+                    )
+                if len(rows) < 70:
+                    results.append({"symbol": symbol, "success": False, "error": f"데이터 부족 ({len(rows)}개)"})
+                    continue
+
+                ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
+                          "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
+                         for r in rows]
+
+                result = await manager.train(symbol, ohlcv)
+                results.append({"symbol": symbol, **result})
+                logger.info(f"✅ [{symbol}] 학습 완료: {result}")
+
+            except Exception as e:
+                results.append({"symbol": symbol, "success": False, "error": str(e)})
+                logger.error(f"❌ [{symbol}] 학습 실패: {e}")
+
+        success_count = sum(1 for r in results if r.get("success"))
+        return {
+            "success": True,
+            "total": len(symbols),
+            "trained": success_count,
+            "failed": len(symbols) - success_count,
+            "results": results
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -381,7 +428,7 @@ async def predict_signal(symbol: str):
         from ml.model import MLModelManager
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM stock_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts DESC LIMIT 200",
+                "SELECT * FROM stock_daily_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts ASC",
                 symbol
             )
         if len(rows) < 70:
@@ -389,7 +436,7 @@ async def predict_signal(symbol: str):
 
         ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
                   "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
-                 for r in reversed(rows)]
+                 for r in rows]
 
         manager = MLModelManager(db_pool)
         result = await manager.predict(symbol, ohlcv)

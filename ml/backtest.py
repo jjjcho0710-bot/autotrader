@@ -115,6 +115,8 @@ class Backtest:
 
         for i in range(long, len(ohlcv)):
             price = closes[i]
+            if price <= 0:
+                continue
             ts = ohlcv[i].get("ts", "")
 
             # 포지션 없을 때 매수 신호
@@ -183,6 +185,8 @@ class Backtest:
 
         for i in range(period + 1, len(ohlcv)):
             price = closes[i]
+            if price <= 0:
+                continue
             ts = ohlcv[i].get("ts", "")
             rsi_val = rsi_vals[i]
 

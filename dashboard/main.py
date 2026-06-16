@@ -484,10 +484,6 @@ async def jarvis_chat(body: dict):
         # 히스토리 업데이트
         _jarvis_history = list(chat.history)
 
-        # 텔레그램으로도 전송
-        tg_msg = f"🤖 <b>Jarvis 분석</b>\n\n질문: {user_msg}\n\n{reply}"
-        await _send_telegram(tg_msg)
-
         logger.info(f"Jarvis 응답: {reply[:100]}...")
         return {"success": True, "reply": reply, "context_used": True}
 

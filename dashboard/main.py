@@ -75,6 +75,59 @@ async def startup():
     redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
     logger.info("✅ Dashboard 서버 시작")
 
+    # ML 테이블 생성
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS ml_models (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    model_name VARCHAR(50) NOT NULL,
+                    model_data TEXT NOT NULL,
+                    accuracy NUMERIC(6,2),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(symbol, model_name)
+                );
+                CREATE TABLE IF NOT EXISTS ml_predictions (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    ts TIMESTAMPTZ NOT NULL,
+                    model_name VARCHAR(50),
+                    buy_prob NUMERIC(6,4),
+                    sell_prob NUMERIC(6,4),
+                    signal VARCHAR(10),
+                    features JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS stock_daily_ohlcv (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    ts DATE NOT NULL,
+                    open BIGINT, high BIGINT, low BIGINT, close BIGINT,
+                    volume BIGINT, change_rate NUMERIC(8,2),
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(symbol, ts)
+                );
+                CREATE TABLE IF NOT EXISTS stock_indicators (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    ts DATE NOT NULL,
+                    rsi14 NUMERIC(8,2), macd NUMERIC(12,2),
+                    macd_signal NUMERIC(12,2), macd_hist NUMERIC(12,2),
+                    bb_upper NUMERIC(12,2), bb_middle NUMERIC(12,2),
+                    bb_lower NUMERIC(12,2), bb_pct NUMERIC(8,4),
+                    atr14 NUMERIC(12,2), stoch_k NUMERIC(8,2), stoch_d NUMERIC(8,2),
+                    sma5 NUMERIC(12,2), sma20 NUMERIC(12,2), sma60 NUMERIC(12,2),
+                    ema12 NUMERIC(12,2), ema26 NUMERIC(12,2),
+                    golden_cross BOOLEAN, dead_cross BOOLEAN,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(symbol, ts)
+                );
+            """)
+        logger.info("✅ ML 테이블 확인 완료")
+    except Exception as e:
+        logger.warning(f"ML 테이블 생성 오류 (무시): {e}")
+
     # 텔레그램 webhook 자동 등록
     await _auto_register_webhook()
 
@@ -293,6 +346,66 @@ async def get_features(symbol: str, limit: int = 200):
 
         return {"success": True, "symbol": symbol,
                 "summary": summary, "data": features[-20:]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/ml/train/{symbol}")
+async def train_model(symbol: str):
+    """종목 ML 모델 학습"""
+    try:
+        from ml.model import MLModelManager
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM stock_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts DESC LIMIT 500",
+                symbol
+            )
+        if len(rows) < 70:
+            return {"success": False, "error": f"데이터 부족 ({len(rows)}개, 최소 70개 필요)"}
+
+        ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
+                  "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
+                 for r in reversed(rows)]
+
+        manager = MLModelManager(db_pool)
+        result = await manager.train(symbol, ohlcv)
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/ml/predict/{symbol}")
+async def predict_signal(symbol: str):
+    """종목 매수/매도 신호 예측"""
+    try:
+        from ml.model import MLModelManager
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM stock_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts DESC LIMIT 200",
+                symbol
+            )
+        if len(rows) < 70:
+            return {"success": False, "error": f"데이터 부족 ({len(rows)}개)"}
+
+        ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
+                  "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
+                 for r in reversed(rows)]
+
+        manager = MLModelManager(db_pool)
+        result = await manager.predict(symbol, ohlcv)
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/ml/predictions")
+async def get_all_predictions():
+    """모든 종목 최신 ML 예측"""
+    try:
+        from ml.model import MLModelManager
+        manager = MLModelManager(db_pool)
+        predictions = await manager.get_all_predictions()
+        return {"success": True, "data": predictions}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

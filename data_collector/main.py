@@ -13,6 +13,7 @@ from common.config import config
 from common.database import db, cache
 from collectors.kis_collector import KISCollector
 from collectors.upbit_collector import UpbitCollector
+from collectors.daily_collector import DailyCollector
 
 # ── 로깅 설정 ──────────────────────────────────────────
 logging.basicConfig(
@@ -28,6 +29,8 @@ class DataCollector:
         self.running = False
         self.kis = KISCollector()
         self.upbit = UpbitCollector()
+        self.daily = DailyCollector()
+        self.last_daily_collect = None
 
     async def start(self):
         logger.info("=" * 50)
@@ -44,6 +47,7 @@ class DataCollector:
         # 수집기 시작
         await self.kis.start()
         await self.upbit.start()
+        await self.daily.start()
 
         # 봇 상태 Redis에 등록
         await cache.set_bot_status("data_collector", {
@@ -69,6 +73,16 @@ class DataCollector:
                     self.upbit.collect_all(),
                     return_exceptions=True,
                 )
+
+                # 일봉 수집 (하루 1번 16:00 이후)
+                now = datetime.now()
+                if (now.hour >= 16 and
+                    (self.last_daily_collect is None or
+                     self.last_daily_collect.date() < now.date())):
+                    logger.info("📅 일봉 + 지표 수집 시작")
+                    await self.daily.collect_all()
+                    self.last_daily_collect = now
+                    logger.info("✅ 일봉 + 지표 수집 완료")
 
                 # 상태 업데이트
                 await cache.set_bot_status("data_collector", {
@@ -97,6 +111,7 @@ class DataCollector:
         self.running = False
         await self.kis.stop()
         await self.upbit.stop()
+        await self.daily.stop()
         await db.disconnect()
         await cache.disconnect()
         logger.info("✅ 종료 완료")

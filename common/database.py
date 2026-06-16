@@ -63,6 +63,47 @@ class Database:
                     ts TIMESTAMPTZ DEFAULT NOW()
                 );
 
+                CREATE TABLE IF NOT EXISTS stock_daily_ohlcv (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    ts DATE NOT NULL,
+                    open BIGINT, high BIGINT, low BIGINT, close BIGINT,
+                    volume BIGINT, change_rate NUMERIC(8,2),
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_daily_symbol_ts
+                    ON stock_daily_ohlcv (symbol, ts);
+
+                CREATE TABLE IF NOT EXISTS stock_indicators (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    ts DATE NOT NULL,
+                    rsi14 NUMERIC(8,2),
+                    macd NUMERIC(12,2), macd_signal NUMERIC(12,2), macd_hist NUMERIC(12,2),
+                    bb_upper NUMERIC(12,2), bb_middle NUMERIC(12,2), bb_lower NUMERIC(12,2),
+                    bb_pct NUMERIC(8,4),
+                    atr14 NUMERIC(12,2),
+                    stoch_k NUMERIC(8,2), stoch_d NUMERIC(8,2),
+                    sma5 NUMERIC(12,2), sma20 NUMERIC(12,2), sma60 NUMERIC(12,2),
+                    ema12 NUMERIC(12,2), ema26 NUMERIC(12,2),
+                    golden_cross BOOLEAN, dead_cross BOOLEAN,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_indicators_symbol_ts
+                    ON stock_indicators (symbol, ts);
+
+                CREATE TABLE IF NOT EXISTS ml_predictions (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    ts TIMESTAMPTZ NOT NULL,
+                    model_name VARCHAR(50),
+                    buy_prob NUMERIC(6,4),
+                    sell_prob NUMERIC(6,4),
+                    signal VARCHAR(10),
+                    features JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+
                 CREATE TABLE IF NOT EXISTS strategy_config (
                     id SERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
                     name VARCHAR(50) NOT NULL, is_active BOOLEAN DEFAULT FALSE,

@@ -442,6 +442,82 @@ function drawStrategyChart(sells) {
   });
 }
 
+// ── ML 예측 ──────────────────────────────────────────
+async function trainModel() {
+  const symbol = document.getElementById('ml-symbol').value;
+  const el = document.getElementById('ml-result');
+  el.innerHTML = '<span style="color:var(--purple)">⏳ 모델 학습 중... (30초 정도 걸릴 수 있어요)</span>';
+  try {
+    const res = await fetch(`/api/ml/train/${symbol}`, {method:'POST'});
+    const json = await res.json();
+    if (!json.success) { el.innerHTML = `<span style="color:var(--red)">❌ ${json.error}</span>`; return; }
+    el.innerHTML = `
+      <div style="color:var(--green);font-weight:600;margin-bottom:8px;">✅ 학습 완료!</div>
+      <div class="learn-stat"><span class="learn-stat-label">학습 샘플</span><span class="learn-stat-value">${json.samples}개</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">정확도</span><span class="learn-stat-value" style="color:var(--green)">${json.accuracy}%</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">피처 수</span><span class="learn-stat-value">${json.feature_count}개</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">매수 신호 비율</span><span class="learn-stat-value">${json.buy_ratio}%</span></div>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted);">이제 예측 버튼을 눌러보세요!</div>`;
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+  }
+}
+
+async function predictSignal() {
+  const symbol = document.getElementById('ml-symbol').value;
+  const el = document.getElementById('ml-result');
+  el.innerHTML = '<span style="color:var(--purple)">⏳ 예측 중...</span>';
+  try {
+    const res = await fetch(`/api/ml/predict/${symbol}`);
+    const json = await res.json();
+    if (!json.success) { el.innerHTML = `<span style="color:var(--red)">❌ ${json.error}</span>`; return; }
+
+    const signalColor = json.signal === 'BUY' ? 'var(--green)' : json.signal === 'SELL' ? 'var(--red)' : 'var(--muted)';
+    const signalEmoji = json.signal === 'BUY' ? '📈' : json.signal === 'SELL' ? '📉' : '⏸️';
+
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+        <div style="font-size:32px;">${signalEmoji}</div>
+        <div>
+          <div style="font-size:20px;font-weight:700;color:${signalColor}">${json.signal}</div>
+          <div style="font-size:11px;color:var(--muted)">신뢰도 ${json.confidence}%</div>
+        </div>
+        <div style="margin-left:auto;text-align:right;">
+          <div style="font-size:12px;color:var(--green)">매수 확률: ${(json.buy_prob*100).toFixed(1)}%</div>
+          <div style="font-size:12px;color:var(--red)">매도 확률: ${(json.sell_prob*100).toFixed(1)}%</div>
+        </div>
+      </div>
+      ${(json.top_features||[]).map(f => `
+        <div class="learn-stat">
+          <span class="learn-stat-label">${f.name}</span>
+          <span class="learn-stat-value">${f.value} (${f.signal})</span>
+        </div>`).join('')}`;
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+  }
+}
+
+async function loadAllPredictions() {
+  const el = document.getElementById('ml-all-result');
+  try {
+    const res = await fetch('/api/ml/predictions');
+    const json = await res.json();
+    if (!json.success || !json.data.length) {
+      el.innerHTML = '<span style="color:var(--muted)">예측 데이터 없음 (학습 후 예측 실행하세요)</span>';
+      return;
+    }
+    el.innerHTML = json.data.map(p => {
+      const color = p.signal === 'BUY' ? 'var(--green)' : p.signal === 'SELL' ? 'var(--red)' : 'var(--muted)';
+      return `<div class="learn-stat">
+        <span class="learn-stat-label">${p.symbol}</span>
+        <span class="learn-stat-value" style="color:${color}">${p.signal} (${(p.buy_prob*100).toFixed(0)}%)</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<span style="color:var(--muted)">데이터 없음</span>';
+  }
+}
+
 // ── 백테스트 ─────────────────────────────────────────
 async function runBacktest() {
   const symbol = document.getElementById('bt-symbol').value;

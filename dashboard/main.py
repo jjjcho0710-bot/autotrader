@@ -595,11 +595,7 @@ async def _ask_gemini_direct(message: str) -> str:
     """Gemini 직접 호출 (Open-WebUI fallback)"""
     try:
         portfolio_ctx = await get_portfolio_context()
-        full_msg = f"{message}
-
----
-현재 데이터:
-{portfolio_ctx}"
+        full_msg = f"{message}\n\n---\n현재 데이터:\n{portfolio_ctx}"
         genai.configure(api_key=config.GEMINI_API_KEY)
         model = genai.GenerativeModel(
             model_name="gemini-2.5-flash",

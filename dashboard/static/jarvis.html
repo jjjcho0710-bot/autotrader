@@ -8,20 +8,23 @@
 :root{
   --bg:#0e0d15;--panel:#13111f;--panel2:#1a1829;--border:#252338;
   --stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;
-  --purple:#9b6dff;--purple-dim:rgba(155,109,255,0.12);
-  --gold:#f0c060;--gold-dim:rgba(240,192,96,0.12);
-  --muted:#4a4568;--text:#8882b0;--bright:#e8e4f7;
+  --purple:#9b6dff;--gold:#f0c060;--muted:#4a4568;--text:#8882b0;--bright:#e8e4f7;
   --grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
+*::-webkit-scrollbar{display:none;}
+*{scrollbar-width:none;}
 body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
 
 /* Sidebar */
-.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;}
 .sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
+.logo-text{font-size:13px;font-weight:700;color:var(--bright);font-family:var(--mono);}
 .sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
-.nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
+.nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:16px;transition:background 0.15s,color 0.15s;position:relative;}
+.nav-item span{font-size:11px;font-weight:500;color:inherit;}
+.nav-divider{width:80%;height:1px;background:var(--border);margin:4px 6px;}
 .nav-item:hover{background:var(--panel2);color:var(--text);}
 .nav-item.active{background:var(--panel2);color:var(--bright);}
 .nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;}
@@ -31,19 +34,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .nav-item.c.active::before{background:var(--crypto);}
 .nav-item.t.active::before{background:var(--purple);}
 .nav-item.l.active::before{background:var(--text);}
-.nav-tooltip{display:none;}
-
-.nav-divider{width:24px;height:1px;background:var(--border);margin:4px 0;}
 .sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
 .sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
-.sdot{width:6px;height:6px;border-radius:50%;}
+.sdot{width:6px;height:6px;border-radius:50%;background:var(--muted);}
 .sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
-.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);letter-spacing:0.5px;}
+.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
 
 /* Main */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;flex-shrink:0;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
 .page-label{font-size:14px;font-weight:600;color:var(--bright);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
 .status-badge{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--purple);font-family:var(--mono);}
@@ -51,514 +51,418 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(155,109,255,0.4)}50%{opacity:0.8;box-shadow:0 0 0 6px rgba(155,109,255,0)}}
 .clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
 
-/* Page */
+/* Page layout */
 .page{flex:1;display:flex;overflow:hidden;}
 
-/* Left: character area */
-.char-area{
-  width:340px;flex-shrink:0;
-  border-right:1px solid var(--border);
-  display:flex;flex-direction:column;
-  align-items:center;
-  background: radial-gradient(ellipse at 50% 30%, rgba(155,109,255,0.08) 0%, transparent 70%),
-              var(--bg);
-  position:relative;
-  overflow:hidden;
-}
-
-/* ambient ring */
-.char-area::before{
-  content:'';position:absolute;
-  width:320px;height:320px;
-  border-radius:50%;
-  border:1px solid rgba(155,109,255,0.1);
-  top:60px;left:50%;transform:translateX(-50%);
-  animation:ring-pulse 4s ease-in-out infinite;
-}
-.char-area::after{
-  content:'';position:absolute;
-  width:260px;height:260px;
-  border-radius:50%;
-  border:1px solid rgba(155,109,255,0.15);
-  top:90px;left:50%;transform:translateX(-50%);
-  animation:ring-pulse 4s ease-in-out infinite 0.5s;
-}
-@keyframes ring-pulse{0%,100%{opacity:0.6;transform:translateX(-50%) scale(1)}50%{opacity:1;transform:translateX(-50%) scale(1.02)}}
-
-/* Avatar */
-.avatar-wrap{
-  margin-top:40px;
-  width:180px;height:180px;
-  border-radius:50%;
-  position:relative;
-  z-index:2;
-  flex-shrink:0;
-}
-.avatar-ring{
-  position:absolute;inset:-6px;
-  border-radius:50%;
-  background:conic-gradient(from 0deg, var(--purple), var(--gold), var(--purple));
-  animation:spin 8s linear infinite;
-}
-@keyframes spin{to{transform:rotate(360deg)}}
-.avatar-inner{
-  position:absolute;inset:3px;
-  border-radius:50%;
-  background:var(--panel2);
-  display:flex;align-items:center;justify-content:center;
-  overflow:hidden;
-}
-/* SVG face placeholder — elegant geometric AI face */
-.avatar-face{
-  width:100%;height:100%;
-  background:
-    radial-gradient(ellipse at 50% 35%, rgba(155,109,255,0.3) 0%, transparent 60%),
-    radial-gradient(ellipse at 50% 80%, rgba(240,192,96,0.15) 0%, transparent 50%),
-    linear-gradient(180deg, #1a1535 0%, #0e0d15 100%);
-  display:flex;align-items:center;justify-content:center;
-  font-size:72px;
-  user-select:none;
-}
-
-/* Name + status */
-.char-name{
-  margin-top:16px;
-  font-size:22px;font-weight:700;color:var(--bright);
-  letter-spacing:3px;text-transform:uppercase;
-  font-family:var(--mono);
-  z-index:2;
-}
-.char-role{
-  font-size:10px;color:var(--purple);
-  letter-spacing:2px;text-transform:uppercase;
-  margin-top:4px;z-index:2;
-}
-.char-status{
-  display:flex;align-items:center;gap:8px;
-  margin-top:10px;z-index:2;
-  font-size:11px;color:var(--muted);font-family:var(--mono);
-}
-.cs-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);}
-
-/* Wave bars (listening indicator) */
-.wave-bars{
-  display:flex;align-items:center;gap:3px;
-  margin-top:16px;height:24px;z-index:2;
-}
-.wb{
-  width:3px;border-radius:3px;
-  background:linear-gradient(to top, var(--purple), var(--gold));
-  animation:wave 1.2s ease-in-out infinite;
-}
-.wb:nth-child(1){height:8px;animation-delay:0s;}
-.wb:nth-child(2){height:16px;animation-delay:0.1s;}
-.wb:nth-child(3){height:24px;animation-delay:0.2s;}
-.wb:nth-child(4){height:18px;animation-delay:0.3s;}
-.wb:nth-child(5){height:12px;animation-delay:0.4s;}
-.wb:nth-child(6){height:20px;animation-delay:0.5s;}
-.wb:nth-child(7){height:14px;animation-delay:0.6s;}
-.wb:nth-child(8){height:8px;animation-delay:0.7s;}
-@keyframes wave{0%,100%{transform:scaleY(0.4);opacity:0.5}50%{transform:scaleY(1);opacity:1}}
+/* Left: chat */
+.chat-area{flex:1;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border);}
 
 /* Quick commands */
-.cmd-area{
-  width:100%;padding:20px 20px 0;z-index:2;
-  display:flex;flex-direction:column;gap:10px;
-  margin-top:20px;
+.quick-cmds{display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0;background:var(--panel);}
+.qcmd{padding:6px 14px;border-radius:20px;border:1px solid var(--border);background:var(--panel2);color:var(--text);font-size:11px;font-weight:500;cursor:pointer;transition:all 0.15s;white-space:nowrap;}
+.qcmd:hover{border-color:rgba(155,109,255,0.5);color:var(--purple);background:rgba(155,109,255,0.08);}
+
+/* Messages */
+.messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
+.msg{display:flex;gap:10px;max-width:100%;}
+.msg.user{flex-direction:row-reverse;}
+.msg-bubble{
+  max-width:75%;padding:11px 15px;border-radius:12px;
+  font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;
 }
-.cmd-label{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:2px;}
-.cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
-.cmd-btn{
-  padding:8px 10px;border-radius:8px;
+.msg.jarvis .msg-bubble{
   background:var(--panel2);border:1px solid var(--border);
-  color:var(--text);font-size:11px;font-weight:500;
-  cursor:pointer;text-align:center;
-  transition:border-color 0.15s,color 0.15s,background 0.15s;
+  border-bottom-left-radius:3px;color:var(--bright);
 }
-.cmd-btn:hover{border-color:rgba(155,109,255,0.4);color:var(--purple);background:var(--purple-dim);}
+.msg.user .msg-bubble{
+  background:linear-gradient(135deg,rgba(155,109,255,0.2),rgba(240,192,96,0.15));
+  border:1px solid rgba(155,109,255,0.3);
+  border-bottom-right-radius:3px;color:var(--bright);
+}
+.msg-avatar{
+  width:32px;height:32px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:14px;
+  background:var(--panel2);border:1px solid var(--border);margin-top:2px;
+}
+.msg.jarvis .msg-avatar{background:rgba(155,109,255,0.15);border-color:rgba(155,109,255,0.3);}
+.msg-time{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:4px;text-align:right;}
+.msg.jarvis .msg-time{text-align:left;}
+.msg-wrap{display:flex;flex-direction:column;flex:1;min-width:0;}
+
+/* Typing indicator */
+.typing{display:flex;align-items:center;gap:5px;padding:10px 14px;}
+.typing span{width:7px;height:7px;border-radius:50%;background:var(--purple);animation:typing 1.2s ease-in-out infinite;}
+.typing span:nth-child(2){animation-delay:0.2s;}
+.typing span:nth-child(3){animation-delay:0.4s;}
+@keyframes typing{0%,60%,100%{transform:translateY(0);opacity:0.4}30%{transform:translateY(-6px);opacity:1}}
 
 /* Input */
-.input-area{
-  width:100%;padding:16px 20px;
-  margin-top:auto;border-top:1px solid var(--border);
-  background:var(--panel);z-index:2;
-}
-.input-row{display:flex;gap:8px;align-items:center;}
-.jarvis-input{
+.input-area{padding:14px 16px;border-top:1px solid var(--border);background:var(--panel);flex-shrink:0;}
+.input-row{display:flex;gap:8px;align-items:flex-end;}
+.msg-input{
   flex:1;background:var(--panel2);border:1px solid var(--border);
-  border-radius:8px;padding:9px 14px;
-  font-family:var(--grotesk);font-size:12px;color:var(--bright);
-  outline:none;
+  border-radius:10px;padding:10px 14px;
+  font-family:var(--grotesk);font-size:13px;color:var(--bright);
+  outline:none;resize:none;min-height:40px;max-height:120px;line-height:1.5;
 }
-.jarvis-input:focus{border-color:rgba(155,109,255,0.5);}
-.jarvis-input::placeholder{color:var(--muted);}
+.msg-input:focus{border-color:rgba(155,109,255,0.5);}
+.msg-input::placeholder{color:var(--muted);}
 .send-btn{
-  width:36px;height:36px;border-radius:8px;flex-shrink:0;
+  width:40px;height:40px;border-radius:10px;flex-shrink:0;
   background:linear-gradient(135deg,var(--purple),var(--gold));
   border:none;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
-  font-size:14px;color:white;
+  font-size:16px;color:white;transition:opacity 0.15s;
 }
+.send-btn:hover{opacity:0.85;}
+.send-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.analyze-btn{
+  padding:8px 14px;border-radius:10px;
+  background:rgba(155,109,255,0.1);border:1px solid rgba(155,109,255,0.3);
+  color:var(--purple);font-size:11px;font-weight:600;cursor:pointer;
+  white-space:nowrap;transition:all 0.15s;
+}
+.analyze-btn:hover{background:rgba(155,109,255,0.2);}
 
-/* Right: info panels */
-.info-area{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+/* Right: portfolio panel */
+.info-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden;}
+.panel-section{border-bottom:1px solid var(--border);padding:14px 16px;flex-shrink:0;}
+.ps-title{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;}
+.kpi-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.kpi-box{background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:9px 11px;}
+.kpi-label{font-size:9px;color:var(--muted);margin-bottom:3px;}
+.kpi-val{font-size:14px;font-weight:700;font-family:var(--mono);color:var(--bright);}
+.kpi-val.pos{color:var(--green);}.kpi-val.neg{color:var(--red);}.kpi-val.purple{color:var(--purple);}
 
-/* Bot overview */
-.bots-strip{
-  display:grid;grid-template-columns:repeat(3,1fr);
-  border-bottom:1px solid var(--border);flex-shrink:0;
-}
-.bot-cell{
-  padding:14px 18px;border-right:1px solid var(--border);
-}
-.bot-cell:last-child{border-right:none;}
-.bc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
-.bc-name{font-size:11px;font-weight:600;color:var(--bright);}
-.bc-pill{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;}
+/* Bot status */
+.bot-list{display:flex;flex-direction:column;gap:6px;}
+.bot-row{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;}
+.bot-name{font-size:12px;font-weight:600;color:var(--bright);}
+.bot-pill{font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;}
 .pill-on{background:rgba(52,211,153,0.12);color:var(--green);}
-.pill-off{background:rgba(74,69,104,0.4);color:var(--muted);}
-.bc-label{font-size:9px;color:var(--muted);letter-spacing:0.5px;margin-bottom:2px;}
-.bc-value{font-size:13px;font-weight:700;font-family:var(--mono);}
-.bc-value.pos{color:var(--green);}
-.bc-value.stock{color:var(--stock);}
-.bc-value.crypto{color:var(--crypto);}
-.bc-value.purple{color:var(--purple);}
-.bc-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
-.bc-mini{background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 8px;}
+.pill-off{background:rgba(74,69,104,0.3);color:var(--muted);}
 
-/* Portfolio summary */
-.portfolio-area{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--border);flex-shrink:0;}
-.pa-cell{padding:16px 18px;border-right:1px solid var(--border);}
-.pa-cell:last-child{border-right:none;}
-.pa-title{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:12px;}
-.pa-big{font-size:26px;font-weight:700;font-family:var(--mono);color:var(--bright);letter-spacing:-1px;line-height:1;}
-.pa-sub{font-size:11px;color:var(--muted);margin-top:4px;}
-.pa-sub.pos{color:var(--green);}
-.pa-sub.neg{color:var(--red);}
-.sparkline{display:flex;align-items:flex-end;gap:3px;height:36px;margin-top:8px;}
-.sb{flex:1;border-radius:2px 2px 0 0;min-height:3px;}
-.sb-pos{background:linear-gradient(to top,rgba(155,109,255,0.6),rgba(240,192,96,0.6));}
-.sb-neg{background:rgba(248,113,113,0.5);}
-
-/* Activity feed */
-.activity-area{flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:6px;}
-.act-title{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;flex-shrink:0;}
-.act-item{
-  display:flex;align-items:center;gap:10px;
-  padding:9px 12px;border-radius:8px;
-  background:var(--panel2);border:1px solid var(--border);
-  font-size:11px;
-}
-.act-item.jarvis-item{border-color:rgba(155,109,255,0.25);background:rgba(155,109,255,0.05);}
-.act-icon{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
-.icon-jarvis{background:var(--purple-dim);border:1px solid rgba(155,109,255,0.3);}
-.icon-stock{background:rgba(91,143,255,0.1);border:1px solid rgba(91,143,255,0.25);}
-.icon-crypto{background:rgba(240,165,0,0.1);border:1px solid rgba(240,165,0,0.25);}
-.icon-data{background:rgba(74,69,104,0.3);border:1px solid var(--border);}
-.act-content{flex:1;}
-.act-main{color:var(--bright);font-weight:500;margin-bottom:2px;}
-.act-sub{color:var(--muted);font-size:10px;}
-.act-time{font-family:var(--mono);font-size:10px;color:var(--muted);flex-shrink:0;}
-.act-result{font-family:var(--mono);font-size:11px;font-weight:600;flex-shrink:0;}
-.act-result.pos{color:var(--green);}
-.act-result.neg{color:var(--red);}
+/* Positions */
+.pos-scroll{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:6px;}
+.pos-card{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;border-left:3px solid var(--stock);}
+.pos-card.crypto{border-left-color:var(--crypto);}
+.pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;}
+.pos-name{font-size:13px;font-weight:600;color:var(--bright);}
+.pos-pct{font-size:12px;font-weight:700;font-family:var(--mono);}
+.pos-pct.pos{color:var(--green);}.pos-pct.neg{color:var(--red);}
+.pos-meta{font-size:10px;color:var(--muted);font-family:var(--mono);}
 </style>
 </head>
 <body>
 
-<!-- Sidebar -->
 <div class="sidebar">
-  <div class="sidebar-logo"><div class="logo-mark">AT</div></div>
+  <div class="sidebar-logo"><div class="logo-mark">AT</div><span class="logo-text">AutoTrader</span></div>
   <div class="sidebar-nav">
-    <!-- JARVIS — 첫 번째 -->
-    <div class="nav-item j active" onclick="location.href='jarvis.html'" style="font-size:15px;">
-      🤖<div class="nav-tooltip">Jarvis</div>
-    </div>
+    <div class="nav-item j active" onclick="location.href='jarvis.html'">🤖<span>Jarvis</span></div>
     <div class="nav-divider"></div>
-    <div class="nav-item d" onclick="location.href='dashboard-C.html'">⊞<span style="font-size:11px;font-weight:500;color:inherit;">대시보드</span></div>
-    <div class="nav-item s" onclick="location.href='stock.html'">📈<span style="font-size:11px;font-weight:500;color:inherit;">주식</span></div>
-    <div class="nav-item c" onclick="location.href='crypto.html'">₿<span style="font-size:11px;font-weight:500;color:inherit;">코인</span></div>
-    <div class="nav-item t" onclick="location.href='strategy.html'">⚙<span style="font-size:11px;font-weight:500;color:inherit;">전략</span></div>
-    <div class="nav-item l" onclick="location.href='logs.html'">≡<span style="font-size:11px;font-weight:500;color:inherit;">로그</span></div>
+    <div class="nav-item d" onclick="location.href='dashboard-C.html'">⊞<span>대시보드</span></div>
+    <div class="nav-item s" onclick="location.href='stock.html'">📈<span>주식</span></div>
+    <div class="nav-item c" onclick="location.href='crypto.html'">₿<span>코인</span></div>
+    <div class="nav-item t" onclick="location.href='strategy.html'">⚙<span>전략</span></div>
+    <div class="nav-item l" onclick="location.href='logs.html'">≡<span>로그</span></div>
   </div>
   <div class="sidebar-bottom">
     <div class="sdot-group">
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">STK</div></div>
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">CRY</div></div>
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">DAT</div></div>
+      <div class="sdot-wrap"><div class="sdot" id="dot-stk"></div><div class="sdot-label">STK</div></div>
+      <div class="sdot-wrap"><div class="sdot" id="dot-cry"></div><div class="sdot-label">CRY</div></div>
+      <div class="sdot-wrap"><div class="sdot" id="dot-dat"></div><div class="sdot-label">DAT</div></div>
     </div>
   </div>
 </div>
 
-<!-- Main -->
 <div class="main">
   <div class="topbar">
-    <div class="page-label">Jarvis</div>
+    <div class="page-label">Jarvis AI</div>
     <div class="topbar-right">
-      <div class="status-badge"><div class="status-dot"></div>AI 대기중</div>
+      <div class="status-badge"><div class="status-dot"></div><span id="ai-status">AI 대기중</span></div>
       <div class="clock" id="clock">-</div>
     </div>
   </div>
 
   <div class="page">
+    <!-- 채팅 영역 -->
+    <div class="chat-area">
+      <!-- 빠른 명령 -->
+      <div class="quick-cmds">
+        <div class="qcmd" onclick="sendQuick('현재 포트폴리오 수익률과 리스크를 분석해줘')">📊 포트폴리오 분석</div>
+        <div class="qcmd" onclick="sendQuick('오늘 주목할 보유 종목 알려줘')">📈 종목 점검</div>
+        <div class="qcmd" onclick="sendQuick('현재 활성 전략의 성과를 분석하고 개선점을 제안해줘')">⚙️ 전략 점검</div>
+        <div class="qcmd" onclick="sendQuick('BTC 현재 시세와 단기 흐름을 분석해줘')">₿ BTC 분석</div>
+        <div class="qcmd" onclick="sendQuick('현재 포트폴리오의 리스크 요인을 체크해줘')">⚠️ 리스크 체크</div>
+        <div class="qcmd" onclick="analyzeNow()">🔍 전체 리포트</div>
+      </div>
 
-    <!-- Character area -->
-    <div class="char-area">
-      <!-- Avatar -->
-      <div class="avatar-wrap">
-        <div class="avatar-ring"></div>
-        <div class="avatar-inner">
-          <div class="avatar-face">🤖</div>
+      <!-- 메시지 -->
+      <div class="messages" id="messages">
+        <div class="msg jarvis">
+          <div class="msg-avatar">🤖</div>
+          <div class="msg-wrap">
+            <div class="msg-bubble">안녕하세요! 저는 Jarvis입니다.<br><br>현재 포트폴리오 데이터를 실시간으로 연결해서 분석해드릴 수 있어요. 위 빠른 명령을 클릭하거나 자유롭게 질문하세요.<br><br>텔레그램에서도 저에게 메시지를 보낼 수 있어요!</div>
+            <div class="msg-time">Jarvis · 지금</div>
+          </div>
         </div>
       </div>
 
-      <div class="char-name">JARVIS</div>
-      <div class="char-role">Trading Intelligence · Mission Control</div>
-      <div class="char-status">
-        <div class="cs-dot"></div>
-        <span>온라인 · 모든 봇 정상</span>
-      </div>
-
-      <!-- Wave animation -->
-      <div class="wave-bars">
-        <div class="wb"></div><div class="wb"></div><div class="wb"></div>
-        <div class="wb"></div><div class="wb"></div><div class="wb"></div>
-        <div class="wb"></div><div class="wb"></div>
-      </div>
-
-      <!-- Quick commands -->
-      <div class="cmd-area">
-        <div class="cmd-label">빠른 명령</div>
-        <div class="cmd-grid">
-          <div class="cmd-btn">📊 수익 분석</div>
-          <div class="cmd-btn">₿ BTC 현황</div>
-          <div class="cmd-btn">📈 주식 신호</div>
-          <div class="cmd-btn">⚠️ 리스크 체크</div>
-        </div>
-      </div>
-
-      <!-- Input -->
+      <!-- 입력 -->
       <div class="input-area">
         <div class="input-row">
-          <input class="jarvis-input" placeholder="Jarvis에게 명령하기..." type="text">
-          <button class="send-btn">↑</button>
+          <textarea class="msg-input" id="msg-input" placeholder="Jarvis에게 질문하기... (Enter로 전송, Shift+Enter 줄바꿈)" rows="1"></textarea>
+          <button class="analyze-btn" onclick="analyzeNow()">리포트</button>
+          <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
         </div>
       </div>
     </div>
 
-    <!-- Info area -->
-    <div class="info-area">
-
-      <!-- Bot status strip -->
-      <div class="bots-strip">
-        <div class="bot-cell">
-          <div class="bc-header">
-            <span class="bc-name" style="color:var(--purple)">Jarvis</span>
-            <span class="bc-pill pill-on">ON</span>
-          </div>
-          <div class="bc-row">
-            <div class="bc-mini"><div class="bc-label">총괄 관리</div><div class="bc-value purple">정상</div></div>
-            <div class="bc-mini"><div class="bc-label">오늘 명령</div><div class="bc-value">12건</div></div>
-          </div>
-        </div>
-        <div class="bot-cell">
-          <div class="bc-header">
-            <span class="bc-name" style="color:var(--stock)">stock-trader</span>
-            <span class="bc-pill pill-on">ON</span>
-          </div>
-          <div class="bc-row">
-            <div class="bc-mini"><div class="bc-label">오늘 수익</div><div class="bc-value pos" id="j-stock-pnl">0</div></div>
-            <div class="bc-mini"><div class="bc-label">체결</div><div class="bc-value" id="j-stock-trades">-</div></div>
-          </div>
-        </div>
-        <div class="bot-cell">
-          <div class="bc-header">
-            <span class="bc-name" style="color:var(--crypto)">crypto-trader</span>
-            <span class="bc-pill pill-on">ON</span>
-          </div>
-          <div class="bc-row">
-            <div class="bc-mini"><div class="bc-label">오늘 수익</div><div class="bc-value pos" id="j-crypto-pnl">0</div></div>
-            <div class="bc-mini"><div class="bc-label">체결</div><div class="bc-value" id="j-crypto-trades">-</div></div>
-          </div>
+    <!-- 오른쪽 포트폴리오 패널 -->
+    <div class="info-panel">
+      <!-- KPI -->
+      <div class="panel-section">
+        <div class="ps-title">포트폴리오 현황</div>
+        <div class="kpi-row">
+          <div class="kpi-box"><div class="kpi-label">총 평가금액</div><div class="kpi-val" id="p-total">-</div></div>
+          <div class="kpi-box"><div class="kpi-label">평가손익</div><div class="kpi-val" id="p-pnl">-</div></div>
+          <div class="kpi-box"><div class="kpi-label">예수금</div><div class="kpi-val" id="p-cash">-</div></div>
+          <div class="kpi-box"><div class="kpi-label">보유 종목</div><div class="kpi-val purple" id="p-count">-</div></div>
         </div>
       </div>
 
-      <!-- Portfolio -->
-      <div class="portfolio-area">
-        <div class="pa-cell">
-          <div class="pa-title">총 포트폴리오</div>
-          <div class="pa-big" id="j-total-eval">-</div>
-          <div class="pa-sub">원</div>
-          <div class="pa-sub pos" style="margin-top:6px;">오늘 +0 (+0.87%)</div>
-          <div class="sparkline" style="margin-top:10px;">
-            <div class="sb sb-pos" style="height:30%"></div>
-            <div class="sb sb-neg" style="height:20%"></div>
-            <div class="sb sb-pos" style="height:55%"></div>
-            <div class="sb sb-pos" style="height:45%"></div>
-            <div class="sb sb-neg" style="height:18%"></div>
-            <div class="sb sb-pos" style="height:70%"></div>
-            <div class="sb sb-pos" style="height:85%"></div>
-            <div class="sb sb-pos" style="height:60%"></div>
-            <div class="sb sb-pos" style="height:90%"></div>
-            <div class="sb sb-pos" style="height:75%"></div>
-          </div>
-        </div>
-        <div class="pa-cell">
-          <div class="pa-title">누적 수익</div>
-          <div class="pa-big" style="color:var(--green);" id="j-total-pnl">0</div>
-          <div class="pa-sub">원 (전체 기간)</div>
-          <div class="pa-sub pos" style="margin-top:6px;">수익률 +9.48% · 승률 61.8%</div>
-          <div class="sparkline" style="margin-top:10px;">
-            <div class="sb sb-pos" style="height:20%"></div>
-            <div class="sb sb-pos" style="height:30%"></div>
-            <div class="sb sb-pos" style="height:40%"></div>
-            <div class="sb sb-neg" style="height:15%"></div>
-            <div class="sb sb-pos" style="height:50%"></div>
-            <div class="sb sb-pos" style="height:65%"></div>
-            <div class="sb sb-pos" style="height:70%"></div>
-            <div class="sb sb-pos" style="height:80%"></div>
-            <div class="sb sb-pos" style="height:88%"></div>
-            <div class="sb sb-pos" style="height:100%"></div>
-          </div>
+      <!-- 봇 상태 -->
+      <div class="panel-section">
+        <div class="ps-title">봇 상태</div>
+        <div class="bot-list">
+          <div class="bot-row"><span class="bot-name">stock-trader</span><span class="bot-pill" id="pill-stk">-</span></div>
+          <div class="bot-row"><span class="bot-name">crypto-trader</span><span class="bot-pill" id="pill-cry">-</span></div>
+          <div class="bot-row"><span class="bot-name">data-collector</span><span class="bot-pill" id="pill-dat">-</span></div>
         </div>
       </div>
 
-      <!-- Activity feed -->
-      <div class="activity-area">
-        <div class="act-title">최근 활동</div>
-        <div id="j-activity-empty" style="color:var(--muted);font-size:11px;padding:10px;">매매 이력 없음</div>
-      </div></div>
-          <div class="act-time">14:28</div>
-          <div class="act-result pos">-</div>
-        </div>
-
-        <div class="act-item">
-          <div class="act-icon icon-stock">📈</div>
-          <div class="act-content">
-            <div class="act-main">삼성전자 MA 골든크로스 — 매수 체결</div>
-            <div class="act-sub">stock-trader · 74,200 × 10주</div>
-          </div>
-          <div class="act-time">14:31</div>
-          <div class="act-result" style="color:var(--muted);font-size:10px;">보유중</div>
-        </div>
-
-        <div class="act-item">
-          <div class="act-icon icon-data">🗄</div>
-          <div class="act-content">
-            <div class="act-main">1분봉 수집 완료</div>
-            <div class="act-sub">data-collector · KIS 240 / 업비트 18페어</div>
-          </div>
-          <div class="act-time">14:15</div>
-          <div class="act-result" style="color:var(--muted)">—</div>
-        </div>
-
-        <div class="act-item">
-          <div class="act-icon icon-stock">📈</div>
-          <div class="act-content">
-            <div class="act-main">SK하이닉스 손절 -1.5% 트리거 → 매도</div>
-            <div class="act-sub">stock-trader · 187,000 × 5주</div>
-          </div>
-          <div class="act-time">13:52</div>
-          <div class="act-result neg">-</div>
-        </div>
-
-        <div class="act-item jarvis-item">
-          <div class="act-icon icon-jarvis">🤖</div>
-          <div class="act-content">
-            <div class="act-main">KIS API 지연 감지 → 자동 재시도 명령</div>
-            <div class="act-sub">응답시간 2.3s · 재시도 성공 · 복구 완료</div>
-          </div>
-          <div class="act-time">13:30</div>
-          <div class="act-result" style="color:var(--green)">복구</div>
-        </div>
-
-        <div class="act-item">
-          <div class="act-icon icon-crypto">₿</div>
-          <div class="act-content">
-            <div class="act-main">ETH/KRW MACD 골든크로스 — 매수 체결</div>
-            <div class="act-sub">crypto-trader · 4,820,000 × -</div>
-          </div>
-          <div class="act-time">11:14</div>
-          <div class="act-result" style="color:var(--muted);font-size:10px;">보유중</div>
-        </div>
-
+      <!-- 보유 포지션 -->
+      <div class="ps-title" style="padding:14px 16px 0;">보유 포지션</div>
+      <div class="pos-scroll" id="pos-list">
+        <div style="color:var(--muted);font-size:11px;">로딩 중...</div>
       </div>
     </div>
   </div>
 </div>
 
-</body>
-</html>
-
 <script>
-function updateClock(){const now=new Date();const d=now.toLocaleDateString("ko-KR",{year:"numeric",month:"2-digit",day:"2-digit"}).replace(/\. /g,".").replace(".","");const t=now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});const el=document.getElementById("clock");if(el)el.textContent=d+" "+t;}setInterval(updateClock,1000);updateClock();
-const API = '';
+const API = '';          // AutoTrader dashboard
+const RAILCLAW = '';    // railclaw 서비스 (같은 도메인이면 빈값, 별도 배포시 URL 입력)
+let isLoading = false;
 
-async function fetchJarvisData() {
+// 시계
+function updateClock() {
+  const now = new Date();
+  const d = now.toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).replace(/\. /g,'.').replace('.','');
+  const t = now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  document.getElementById('clock').textContent = `${d} ${t}`;
+}
+setInterval(updateClock, 1000); updateClock();
+
+// 포트폴리오 패널 갱신
+async function refreshPanel() {
   try {
     // 봇 상태
-    const statusRes = await fetch(`${API}/api/status`);
-    const { data: status } = await statusRes.json();
+    const stRes = await fetch('/api/mock/status');
+    const { data: st } = await stRes.json();
+    if (st) {
+      const setPill = (id, bot) => {
+        const el = document.getElementById(id);
+        const on = st[bot]?.status === 'running';
+        el.textContent = on ? 'ON' : 'OFF';
+        el.className = 'bot-pill ' + (on ? 'pill-on' : 'pill-off');
+        const dot = document.getElementById(id.replace('pill','dot'));
+        if (dot) { dot.style.background = on ? 'var(--green)' : 'var(--red)'; dot.style.boxShadow = on ? '0 0 5px var(--green)' : 'none'; }
+      };
+      setPill('pill-stk','stock_trader');
+      setPill('pill-cry','crypto_trader');
+      setPill('pill-dat','data_collector');
+    }
+  } catch(e) {}
 
-    if (status) {
-      // 봇 상태 도트
-      const dots = document.querySelectorAll('.sdot');
-      const bots = ['stock_trader', 'crypto_trader', 'data_collector'];
-      bots.forEach((bot, i) => {
-        if (dots[i]) {
-          dots[i].style.background = status[bot]?.status === 'running' ? 'var(--green)' : 'var(--red)';
-          dots[i].style.boxShadow = status[bot]?.status === 'running' ? '0 0 5px var(--green)' : 'none';
-        }
+  try {
+    // 주식 포지션 + 계좌
+    const sRes = await fetch('/api/positions/stock');
+    const sData = await sRes.json();
+    const account = sData.account || {};
+    const stockPos = sData.data || [];
+
+    if (account.total_eval) {
+      document.getElementById('p-total').textContent = Math.round(account.total_eval).toLocaleString();
+      const pnl = account.pnl || 0;
+      const pEl = document.getElementById('p-pnl');
+      pEl.textContent = (pnl >= 0 ? '+' : '') + Math.round(pnl).toLocaleString();
+      pEl.className = 'kpi-val ' + (pnl >= 0 ? 'pos' : 'neg');
+      document.getElementById('p-cash').textContent = Math.round(account.cash || 0).toLocaleString();
+    }
+
+    // 코인 포지션
+    const cRes = await fetch('/api/positions/crypto');
+    const { data: cryptoPos } = await cRes.json();
+    const allPos = [
+      ...(stockPos || []).map(p => ({...p, type:'stock'})),
+      ...(cryptoPos || []).map(p => ({...p, type:'crypto'})),
+    ];
+
+    document.getElementById('p-count').textContent = allPos.length + '종목';
+    const list = document.getElementById('pos-list');
+    if (!allPos.length) {
+      list.innerHTML = '<div style="color:var(--muted);font-size:11px;">보유 포지션 없음</div>';
+    } else {
+      list.innerHTML = '';
+      allPos.forEach(p => {
+        const name = p.name || p.pair || p.symbol;
+        const code = p.symbol || p.pair;
+        const rate = (p.pnl_rate || 0).toFixed(1);
+        const cls = p.pnl_rate >= 0 ? 'pos' : 'neg';
+        const pnl = Math.round(p.pnl || 0).toLocaleString();
+        list.innerHTML += `
+          <div class="pos-card ${p.type === 'crypto' ? 'crypto' : ''}">
+            <div class="pos-head">
+              <span class="pos-name">${name}</span>
+              <span class="pos-pct ${cls}">${p.pnl_rate >= 0 ? '+' : ''}${rate}%</span>
+            </div>
+            <div class="pos-meta">${code} · ${p.pnl_rate >= 0 ? '+' : ''}${pnl}원</div>
+          </div>`;
       });
-
-      // 캐릭터 상태 텍스트
-      const statusText = document.querySelector('.char-status span:last-child');
-      const allRunning = bots.every(b => status[b]?.status === 'running');
-      if (statusText) statusText.textContent = allRunning ? '온라인 · 모든 봇 정상' : '일부 봇 오류 확인 필요';
     }
-
-    // 요약
-    const sumRes = await fetch(`${API}/api/summary`);
-    const { data: sum } = await sumRes.json();
-    if (sum) {
-      const bigNums = document.querySelectorAll('.pa-big');
-      if (bigNums[1]) bigNums[1].textContent = (sum.today_pnl >= 0 ? '+' : '') + Math.round(sum.today_pnl).toLocaleString();
-    }
-
-    // 최근 활동
-    const tradeRes = await fetch(`${API}/api/trades?limit=5`);
-    const { data: trades } = await tradeRes.json();
-    if (trades && trades.length) {
-      const feed = document.querySelector('.activity-area');
-      if (feed) {
-        // 타이틀 유지
-        const title = feed.querySelector('.act-title');
-        feed.innerHTML = '';
-        if (title) feed.appendChild(title);
-
-        trades.forEach(t => {
-          const time = new Date(t.ts).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
-          const isStock = t.bot === 'stock_trader';
-          const iconClass = isStock ? 'icon-stock' : t.bot === 'crypto_trader' ? 'icon-crypto' : 'icon-data';
-          const icon = isStock ? '📈' : t.bot === 'crypto_trader' ? '₿' : '🗄';
-          const pnl = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + Math.round(t.pnl/1000) + 'K' : '보유중';
-          const pnlClass = t.pnl != null ? (t.pnl >= 0 ? 'pos' : 'neg') : '';
-          feed.innerHTML += `
-            <div class="act-item">
-              <div class="act-icon ${iconClass}">${icon}</div>
-              <div class="act-content">
-                <div class="act-main">${t.symbol} ${t.side === 'BUY' ? '매수' : '매도'} 체결</div>
-                <div class="act-sub">${t.bot} · ${t.price?.toLocaleString()}원 × ${parseFloat(t.quantity).toFixed(4)}</div>
-              </div>
-              <div class="act-time">${time}</div>
-              <div class="act-result ${pnlClass}">${pnl}</div>
-            </div>`;
-        });
-      }
-    }
-  } catch(e) { console.log('jarvis error', e); }
+  } catch(e) {}
 }
 
-fetchJarvisData();
-setInterval(fetchJarvisData, 15000);
+// 메시지 추가
+function addMessage(role, text) {
+  const messages = document.getElementById('messages');
+  const now = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+  const isJarvis = role === 'jarvis';
+  const div = document.createElement('div');
+  div.className = `msg ${isJarvis ? 'jarvis' : 'user'}`;
+  div.innerHTML = `
+    ${isJarvis ? '<div class="msg-avatar">🤖</div>' : ''}
+    <div class="msg-wrap">
+      <div class="msg-bubble">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}</div>
+      <div class="msg-time">${isJarvis ? 'Jarvis' : '나'} · ${now}</div>
+    </div>
+    ${!isJarvis ? '<div class="msg-avatar">👤</div>' : ''}`;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  return div;
+}
+
+// 타이핑 인디케이터
+function showTyping() {
+  const messages = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg jarvis';
+  div.id = 'typing-indicator';
+  div.innerHTML = `
+    <div class="msg-avatar">🤖</div>
+    <div class="msg-wrap">
+      <div class="msg-bubble" style="padding:8px 14px;">
+        <div class="typing"><span></span><span></span><span></span></div>
+      </div>
+    </div>`;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+function hideTyping() {
+  const el = document.getElementById('typing-indicator');
+  if (el) el.remove();
+}
+
+// 메시지 전송
+async function sendMessage() {
+  if (isLoading) return;
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  addMessage('user', text);
+  showTyping();
+  isLoading = true;
+  document.getElementById('send-btn').disabled = true;
+  document.getElementById('ai-status').textContent = '분석 중...';
+
+  try {
+    const endpoint = RAILCLAW ? `${RAILCLAW}/api/chat` : '/api/jarvis/chat';
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text}),
+    });
+    const data = await res.json();
+    hideTyping();
+    if (data.success) {
+      addMessage('jarvis', data.reply);
+    } else {
+      addMessage('jarvis', `❌ 오류: ${data.error}`);
+    }
+  } catch(e) {
+    hideTyping();
+    addMessage('jarvis', '❌ 서버 연결 오류가 발생했어요.');
+  } finally {
+    isLoading = false;
+    document.getElementById('send-btn').disabled = false;
+    document.getElementById('ai-status').textContent = 'AI 대기중';
+  }
+}
+
+// 빠른 명령
+async function sendQuick(text) {
+  document.getElementById('msg-input').value = text;
+  await sendMessage();
+}
+
+// 전체 리포트
+async function analyzeNow() {
+  if (isLoading) return;
+  isLoading = true;
+  showTyping();
+  document.getElementById('ai-status').textContent = '리포트 생성 중...';
+
+  try {
+    const endpoint = RAILCLAW ? `${RAILCLAW}/api/chat` : '/api/jarvis/analyze';
+    const msg = RAILCLAW ? {message:'현재 포트폴리오를 종합 분석하고 리스크와 액션 포인트를 알려줘'} : {};
+    const res = await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(msg)});
+    const data = await res.json();
+    hideTyping();
+    if (data.success) {
+      addMessage('jarvis', '📊 **포트폴리오 분석 리포트**\n\n' + data.reply);
+    } else {
+      addMessage('jarvis', `❌ 분석 실패: ${data.error}`);
+    }
+  } catch(e) {
+    hideTyping();
+    addMessage('jarvis', '❌ 서버 연결 오류가 발생했어요.');
+  } finally {
+    isLoading = false;
+    document.getElementById('ai-status').textContent = 'AI 대기중';
+  }
+}
+
+// Enter 전송
+document.getElementById('msg-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// 텍스트에어리어 자동 높이
+document.getElementById('msg-input').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// 초기 로드
+refreshPanel();
+setInterval(refreshPanel, 30000);
 </script>
+</body>
+</html>

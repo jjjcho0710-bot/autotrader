@@ -60,11 +60,21 @@ class UpbitTrader:
             return 0.0
 
     async def get_all_balances(self) -> list:
-        async with self.session.get(
-            f"{UPBIT_API}/accounts",
-            headers=self._auth_header(),
-        ) as resp:
-            return await resp.json()
+        try:
+            async with self.session.get(
+                f"{UPBIT_API}/accounts",
+                headers=self._auth_header(),
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                data = await resp.json()
+                # 에러 응답 체크 (리스트가 아닌 경우)
+                if not isinstance(data, list):
+                    logger.error(f"업비트 잔고 조회 오류: {data}")
+                    return []
+                return data
+        except Exception as e:
+            logger.error(f"업비트 잔고 조회 실패: {e}")
+            return []
 
     # ── 현재가 조회 ─────────────────────────────────────
     async def get_current_price(self, pair: str) -> float:

@@ -279,14 +279,14 @@ async def run_backtest(request: Request):
             return {"success": False, "error": "DB 연결 없음"}
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM stock_ohlcv WHERE symbol=$1 ORDER BY ts DESC LIMIT 500",
+                "SELECT * FROM stock_daily_ohlcv WHERE symbol=$1 AND close > 0 ORDER BY ts ASC",
                 symbol
             )
         if len(rows) < 60:
             return {"success": False, "error": f"데이터 부족 ({len(rows)}개, 최소 60개 필요)"}
         ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
                   "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
-                 for r in reversed(rows)]
+                 for r in rows]
 
         bt = Backtest(initial_capital=capital)
 

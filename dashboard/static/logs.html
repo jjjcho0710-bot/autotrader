@@ -8,11 +8,11 @@
 :root{--bg:#12131a;--panel:#1a1c27;--panel2:#1f2133;--border:#272a3d;--stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;--purple:#a78bfa;--blue:#38bdf8;--muted:#4b5270;--text:#8892b0;--bright:#e2e8f7;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
-.sidebar{width:52px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
-.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border);flex-shrink:0;}
+.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
-.sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:4px;}
-.nav-item{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
+.sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
+.nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
 .nav-divider{width:24px;height:1px;background:var(--border);margin:4px 0;}
 .nav-item:hover{background:var(--panel2);color:var(--text);}
 .nav-item.active{background:var(--panel2);color:var(--bright);}
@@ -22,10 +22,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .nav-item.s.active::before{background:var(--stock);}
 .nav-item.c.active::before{background:var(--crypto);}
 .nav-item.t.active::before{background:var(--purple);}
-.nav-tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);background:var(--panel2);border:1px solid var(--border);color:var(--bright);font-size:11px;font-weight:500;padding:4px 10px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;z-index:100;}
-.nav-item:hover .nav-tooltip{opacity:1;}
+.nav-tooltip{display:none;}
+
 .sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
-.sdot-group{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
 .sdot{width:6px;height:6px;border-radius:50%;}
 .sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
@@ -115,13 +115,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 <div class="sidebar">
   <div class="sidebar-logo"><div class="logo-mark">AT</div></div>
   <div class="sidebar-nav">
-    <div class="nav-item j" onclick="location.href='jarvis.html'">🤖<div class="nav-tooltip">Jarvis</div></div>
+    <div class="nav-item j" onclick="location.href='jarvis.html'">🤖<span style="font-size:11px;font-weight:500;color:inherit;">Jarvis</span></div>
     <div class="nav-divider"></div>
     <div class="nav-item d" onclick="location.href='dashboard-C.html'"">⊞<div class="nav-tooltip">대시보드</div></div>
-    <div class="nav-item s" onclick="location.href='stock.html'">📈<div class="nav-tooltip">주식</div></div>
-    <div class="nav-item c" onclick="location.href='crypto.html'">₿<div class="nav-tooltip">코인</div></div>
-    <div class="nav-item t" onclick="location.href='strategy.html'">⚙<div class="nav-tooltip">전략</div></div>
-    <div class="nav-item l active" onclick="location.href='logs.html'">≡<div class="nav-tooltip">로그</div></div>
+    <div class="nav-item s" onclick="location.href='stock.html'">📈<span style="font-size:11px;font-weight:500;color:inherit;">주식</span></div>
+    <div class="nav-item c" onclick="location.href='crypto.html'">₿<span style="font-size:11px;font-weight:500;color:inherit;">코인</span></div>
+    <div class="nav-item t" onclick="location.href='strategy.html'">⚙<span style="font-size:11px;font-weight:500;color:inherit;">전략</span></div>
+    <div class="nav-item l active" onclick="location.href='logs.html'">≡<span style="font-size:11px;font-weight:500;color:inherit;">로그</span></div>
   </div>
   <div class="sidebar-bottom">
     <div class="sdot-group">

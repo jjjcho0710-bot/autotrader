@@ -152,11 +152,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       </div>
     </div>
     <div class="kpi-strip">
-      <div class="kpi"><div class="kpi-label">주식 평가금액</div><div class="kpi-value stock" id="s-eval">-</div><div class="kpi-sub">원</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="s-pnl">0</div><div class="kpi-sub" id="s-pnl-sub">-</div></div>
-      <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright" id="s-pos-cnt">0</div><div class="kpi-sub">종목</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="s-trades">0</div><div class="kpi-sub">건</div></div>
-      <div class="kpi"><div class="kpi-label">모의투자</div><div class="kpi-value stock">PAPER</div><div class="kpi-sub">KIS 가상계좌</div></div>
+      <div class="kpi"><div class="kpi-label">총 평가금액</div><div class="kpi-value stock" id="s-total-eval">-</div><div class="kpi-sub">원</div></div>
+      <div class="kpi"><div class="kpi-label">주식 평가금액</div><div class="kpi-value bright" id="s-eval">-</div><div class="kpi-sub">원</div></div>
+      <div class="kpi"><div class="kpi-label">예수금 (주문가능)</div><div class="kpi-value bright" id="s-cash">-</div><div class="kpi-sub">원</div></div>
+      <div class="kpi"><div class="kpi-label">평가손익</div><div class="kpi-value pos" id="s-pnl">-</div><div class="kpi-sub" id="s-pnl-rate">-</div></div>
+      <div class="kpi"><div class="kpi-label">보유 종목</div><div class="kpi-value bright" id="s-pos-cnt">0</div><div class="kpi-sub" id="s-trades-sub">오늘 0건</div></div>
     </div>
     <div class="content-grid">
       <div class="pbox">
@@ -268,22 +268,44 @@ async function fetchSummary() {
 // 보유 포지션
 async function fetchPositions() {
   try {
-    const { data } = await fetchWithFallback('/api/positions/stock','/api/mock/positions/stock');
+    const res = await fetchWithFallback('/api/positions/stock','/api/mock/positions/stock');
+    const data = res.data;
+    const account = res.account; // KIS output2 계좌 요약
     const tbody=document.getElementById('pos-tbody');
+
+    // 계좌 요약 KPI 업데이트 (실계좌 데이터 우선)
+    if (account && account.total_eval > 0) {
+      const el=id=>document.getElementById(id);
+      el('s-total-eval').textContent = account.total_eval.toLocaleString();
+      el('s-eval').textContent        = account.stock_eval.toLocaleString();
+      el('s-cash').textContent        = account.cash.toLocaleString();
+      el('s-pnl').textContent         = fmt(account.pnl);
+      el('s-pnl').className           = 'kpi-value ' + pc(account.pnl);
+      el('s-pnl-rate').textContent    = (account.pnl_rate>=0?'+':'') + account.pnl_rate.toFixed(2) + '%';
+    }
+
     if (!data||!data.length) {
       tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">보유 종목 없음</td></tr>';
-      document.getElementById('s-pos-cnt').textContent='0';
-      document.getElementById('s-eval').textContent='-';
+      document.getElementById('s-pos-cnt').textContent='0종목';
       return;
     }
-    document.getElementById('s-pos-cnt').textContent=data.length;
-    let totalEval=0;
+    document.getElementById('s-pos-cnt').textContent = data.length + '종목';
+
+    // account 없으면(mock) 직접 계산
+    if (!account || !account.total_eval) {
+      let totalEval=0, totalPnl=0;
+      data.forEach(p=>{ totalEval+=(p.cur_price||0)*(p.qty||0); totalPnl+=(p.pnl||0); });
+      document.getElementById('s-eval').textContent = Math.round(totalEval).toLocaleString();
+      document.getElementById('s-total-eval').textContent = Math.round(totalEval).toLocaleString();
+      document.getElementById('s-pnl').textContent = fmt(totalPnl);
+      document.getElementById('s-pnl').className = 'kpi-value ' + pc(totalPnl);
+    }
+
     tbody.innerHTML='';
     data.forEach(p=>{
       const cls=pc(p.pnl||0);
       const barW=Math.min(Math.abs(p.pnl_rate||0)*8,100);
       const barColor=p.pnl_rate>=0?'var(--green)':'var(--red)';
-      totalEval+=(p.cur_price||0)*(p.qty||0);
       tbody.innerHTML+=`<tr>
         <td><div class="tk-name">${p.name||p.symbol}</div><div class="tk-code">${p.symbol}</div></td>
         <td class="nr2 neu">${p.qty}주</td>
@@ -293,8 +315,7 @@ async function fetchPositions() {
         <td><div class="pct-row"><div class="pct-bar"><div class="pct-fill" style="width:${barW}%;background:${barColor}"></div></div><span class="nr2 ${cls}">${p.pnl_rate>=0?'+':''}${(p.pnl_rate||0).toFixed(1)}%</span></div></td>
       </tr>`;
     });
-    document.getElementById('s-eval').textContent=Math.round(totalEval).toLocaleString();
-  } catch(e){}
+  } catch(e){ console.warn('positions', e); }
 }
 
 // 전략

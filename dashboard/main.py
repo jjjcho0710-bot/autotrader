@@ -331,7 +331,18 @@ async def get_stock_positions():
                     "pnl":       int(row.get("evlu_pfls_amt", 0)),
                     "pnl_rate":  float(row.get("evlu_pfls_rt", 0)),
                 })
-            return {"success": True, "data": positions}
+            # output2: 계좌 총평가 요약
+            out2 = data.get("output2", [{}])
+            summary = out2[0] if out2 else {}
+            account = {
+                "total_eval":   int(summary.get("tot_evlu_amt", 0)),      # 총평가금액
+                "stock_eval":   int(summary.get("scts_evlu_amt", 0)),     # 유가증권평가금액
+                "cash":         int(summary.get("dnca_tot_amt", 0)),      # 예수금총금액
+                "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),# 매입금액합계
+                "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),# 평가손익합계
+                "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0)), # 수익률
+            }
+            return {"success": True, "data": positions, "account": account}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 

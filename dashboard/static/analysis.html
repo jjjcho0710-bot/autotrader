@@ -221,9 +221,8 @@ canvas{width:100%!important;max-height:200px;}
               <option value="035720">카카오</option>
               <option value="005380">현대차</option>
             </select>
-            <button onclick="trainModel()" style="background:var(--purple);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🎓 학습</button>
-            <button onclick="trainAllModels()" style="background:var(--blue,#4f8ef7);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🎓 전체 학습</button>
-            <button onclick="predictSignal()" style="background:var(--stock);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🔮 예측</button>
+            <button onclick="analyzeSymbol()" style="background:var(--purple);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🔍 분석하기</button>
+            <button onclick="analyzeAll()" style="background:var(--stock);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">🔍 전체 분석</button>
           </div>
           <div id="ml-result" style="font-size:12px;color:var(--muted);">종목 선택 후 학습 → 예측 순서로 실행하세요</div>
         </div>
@@ -471,7 +470,142 @@ function drawStrategyChart(sells) {
 }
 
 // ── ML 예측 ──────────────────────────────────────────
-async function trainAllModels() {
+// ── 단일 종목 분석 (학습 → 예측) ─────────────────────
+async function analyzeSymbol() {
+  const symbol = document.getElementById('ml-symbol').value;
+  const el = document.getElementById('ml-result');
+  el.innerHTML = '<span style="color:var(--purple)">⏳ 학습 중...</span>';
+
+  // 1. 학습
+  const trainRes = await fetch(`/api/ml/train/${symbol}`, { method: 'POST' });
+  const trainData = await trainRes.json();
+  if (!trainData.success) {
+    el.innerHTML = `<span style="color:var(--red)">❌ 학습 실패: ${trainData.error}</span>`;
+    return;
+  }
+
+  el.innerHTML = `<span style="color:var(--purple)">✅ 학습 완료 (정확도 ${trainData.accuracy}%) → 예측 중...</span>`;
+
+  // 2. 예측
+  const predRes = await fetch(`/api/ml/predict/${symbol}`);
+  const predData = await predRes.json();
+  if (!predData.success) {
+    el.innerHTML = `<span style="color:var(--red)">❌ 예측 실패: ${predData.error}</span>`;
+    return;
+  }
+
+  const signal = predData.signal;
+  const color = signal === 'BUY' ? 'var(--green)' : signal === 'SELL' ? 'var(--red)' : 'var(--muted)';
+  el.innerHTML = `
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+      <div>🎓 정확도 <b style="color:var(--purple)">${trainData.accuracy}%</b></div>
+      <div>🔮 신호 <b style="color:${color};font-size:14px">${signal}</b></div>
+      <div>📊 매수확률 <b>${((predData.buy_prob||0)*100).toFixed(1)}%</b></div>
+      <div>신뢰도 <b>${predData.confidence||'-'}%</b></div>
+    </div>`;
+}
+
+// ── 전체 종목 분석 (학습 → 예측) ─────────────────────
+async function analyzeAll() {
+  const el = document.getElementById('ml-result');
+  el.innerHTML = '<span style="color:var(--purple)">⏳ 전체 종목 분석 중... (수분 소요)</span>';
+
+  const NAME_MAP = {
+    '005930':'삼성전자','000660':'SK하이닉스','035420':'NAVER','035720':'카카오',
+    '005380':'현대차','068270':'셀트리온','373220':'LG에너지솔루션','323410':'카카오뱅크',
+    '207940':'삼성바이오로직스','051910':'LG화학','006400':'삼성SDI','005490':'POSCO홀딩스',
+    '000270':'기아','096770':'SK이노베이션','015760':'한국전력','017670':'SK텔레콤',
+    '030200':'KT','105560':'KB금융','055550':'신한지주','086790':'하나금융지주'
+  };
+
+  // 1. 전체 학습
+  const trainRes = await fetch('/api/ml/train-all', { method: 'POST' });
+  const trainData = await trainRes.json();
+  if (!trainData.success) {
+    el.innerHTML = `<span style="color:var(--red)">❌ ${trainData.error}</span>`;
+    return;
+  }
+
+  el.innerHTML = `<span style="color:var(--purple)">✅ 학습 완료 (${trainData.trained}/${trainData.total}) → 예측 중...</span>`;
+
+  // 2. 전체 예측
+  const predRes = await fetch('/api/ml/predictions');
+  const predData = await predRes.json();
+  const preds = {};
+  if (predData.success && predData.data) {
+    predData.data.forEach(p => { preds[p.symbol] = p; });
+  }
+
+  // 카드 렌더링
+  let allResults = trainData.results.map(r => {
+    const pred = preds[r.symbol];
+    return { ...r, signal: pred?.signal || '-', buy_prob: pred?.buy_prob || 0 };
+  });
+
+  // 전역 저장 (필터용)
+  window._mlResults = allResults;
+  window._mlNameMap = NAME_MAP;
+  renderMlCards('ALL');
+
+  el.innerHTML = `
+    <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:12px;color:var(--muted)">✅ <b style="color:var(--text)">${trainData.trained}/${trainData.total}</b>종목 분석완료</span>
+      <div style="margin-left:auto;display:flex;gap:4px;">
+        <button onclick="renderMlCards('ALL')" id="f-all" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">전체</button>
+        <button onclick="renderMlCards('BUY')" id="f-buy" style="background:var(--panel);border:1px solid var(--border);color:var(--green);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟢 BUY</button>
+        <button onclick="renderMlCards('HOLD')" id="f-hold" style="background:var(--panel);border:1px solid var(--border);color:#f0b429;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟡 HOLD</button>
+        <button onclick="renderMlCards('SELL')" id="f-sell" style="background:var(--panel);border:1px solid var(--border);color:var(--red);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔴 SELL</button>
+      </div>
+    </div>
+    <div id="ml-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;"></div>`;
+
+  renderMlCards('ALL');
+}
+
+function renderMlCards(filter) {
+  const NAME_MAP = window._mlNameMap || {};
+  let results = (window._mlResults || []).filter(r => r.success);
+  if (filter !== 'ALL') results = results.filter(r => r.signal === filter);
+  results.sort((a, b) => parseFloat(b.accuracy||0) - parseFloat(a.accuracy||0));
+
+  const grid = document.getElementById('ml-cards-grid');
+  if (!grid) return;
+
+  // 필터 버튼 활성화
+  ['ALL','BUY','HOLD','SELL'].forEach(f => {
+    const btn = document.getElementById(`f-${f.toLowerCase()}`);
+    if (btn) btn.style.fontWeight = f === filter ? '700' : '400';
+  });
+
+  if (!results.length) {
+    grid.innerHTML = `<div style="color:var(--muted);font-size:12px;grid-column:1/-1;">해당 신호 종목 없음</div>`;
+    return;
+  }
+
+  grid.innerHTML = results.map(r => {
+    const name = NAME_MAP[r.symbol] || r.symbol;
+    const acc = parseFloat(r.accuracy || 0);
+    const accColor = acc >= 60 ? 'var(--green)' : acc >= 50 ? '#f0b429' : 'var(--red)';
+    const sigColor = r.signal === 'BUY' ? 'var(--green)' : r.signal === 'SELL' ? 'var(--red)' : 'var(--muted)';
+    const sigEmoji = r.signal === 'BUY' ? '🟢' : r.signal === 'SELL' ? '🔴' : '🟡';
+    return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;" onclick="document.getElementById('ml-symbol').value='${r.symbol}'">
+      <div style="font-size:11px;color:var(--muted)">${r.symbol}</div>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+        <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+          <div style="width:${acc}%;height:100%;background:${accColor};border-radius:2px"></div>
+        </div>
+        <span style="font-size:11px;font-weight:700;color:${accColor}">${acc.toFixed(1)}%</span>
+      </div>
+      <div style="margin-top:6px;font-size:12px;font-weight:700;color:${sigColor}">${sigEmoji} ${r.signal}</div>
+    </div>`;
+  }).join('');
+}
+}
+
+async function trainAllModels() { await analyzeAll(); }
+async function trainModel() { await analyzeSymbol(); }
+async function predictSignal() { await analyzeSymbol(); }
   const el = document.getElementById('ml-result');
   el.innerHTML = '<span style="color:var(--purple)">⏳ 전체 종목 학습 중... (수분 소요)</span>';
 

@@ -722,6 +722,93 @@ async def get_portfolio_context() -> str:
     return "\n".join(ctx_parts)
 
 
+# 종목명 → 코드 매핑
+STOCK_NAME_MAP = {
+    "삼성전자": ("005930", "삼성전자"),
+    "sk하이닉스": ("000660", "SK하이닉스"),
+    "sk하이닉스": ("000660", "SK하이닉스"),
+    "하이닉스": ("000660", "SK하이닉스"),
+    "naver": ("035420", "NAVER"),
+    "네이버": ("035420", "NAVER"),
+    "카카오": ("035720", "카카오"),
+    "현대차": ("005380", "현대차"),
+    "현대자동차": ("005380", "현대차"),
+    "셀트리온": ("068270", "셀트리온"),
+    "lg에너지솔루션": ("373220", "LG에너지솔루션"),
+    "카카오뱅크": ("323410", "카카오뱅크"),
+    "삼성바이오로직스": ("207940", "삼성바이오로직스"),
+    "삼성바이오": ("207940", "삼성바이오로직스"),
+    "lg화학": ("051910", "LG화학"),
+    "포스코": ("005490", "POSCO홀딩스"),
+    "기아": ("000270", "기아"),
+    "삼성sdi": ("006400", "삼성SDI"),
+    "sk이노베이션": ("096770", "SK이노베이션"),
+    "한국전력": ("015760", "한국전력"),
+}
+
+async def _handle_watchlist_command(msg: str) -> str | None:
+    """감시 종목 추가/삭제/조회 명령 감지 후 실행"""
+    msg_lower = msg.lower().strip()
+
+    # ── 조회 ──────────────────────────────────────────
+    if any(k in msg_lower for k in ["감시 종목 보여", "감시종목 보여", "감시 종목 목록", "watchlist"]):
+        rows = await db.get_watchlist()
+        if not rows:
+            return "📋 현재 감시 종목이 없어요."
+        lines = [f"  {r['symbol']} {r['name'] or ''}" for r in rows]
+        return "📋 **현재 감시 종목**\n" + "\n".join(lines)
+
+    # ── 추가 ──────────────────────────────────────────
+    is_add = any(k in msg_lower for k in ["감시 종목 추가", "감시종목 추가", "추가해줘", "추가해", "등록해"])
+    if is_add:
+        # 종목명 매칭
+        for name_key, (symbol, name) in STOCK_NAME_MAP.items():
+            if name_key in msg_lower:
+                # 이미 있는지 확인
+                existing = await db.get_watchlist_symbols()
+                if symbol in existing:
+                    return f"📋 **{name}**({symbol})은 이미 감시 종목이에요."
+                ok = await db.add_watchlist(symbol, name, added_by="jarvis", reason=msg)
+                if ok:
+                    return f"✅ **{name}**({symbol})을 감시 종목에 추가했어요!"
+                return f"❌ {name} 추가 실패"
+
+        # 6자리 숫자 코드로 직접 입력한 경우
+        import re
+        codes = re.findall(r'\b\d{6}\b', msg)
+        if codes:
+            results = []
+            for code in codes:
+                ok = await db.add_watchlist(code, added_by="jarvis", reason=msg)
+                results.append(f"✅ {code} 추가" if ok else f"❌ {code} 실패")
+            return "\n".join(results)
+
+        return "❓ 종목명을 찾지 못했어요. 예: '삼성전자 감시 종목 추가해줘'"
+
+    # ── 삭제/제거 ──────────────────────────────────────
+    is_remove = any(k in msg_lower for k in ["감시 종목 제거", "감시종목 제거", "제거해줘", "삭제해줘", "빼줘"])
+    if is_remove:
+        for name_key, (symbol, name) in STOCK_NAME_MAP.items():
+            if name_key in msg_lower:
+                ok = await db.remove_watchlist(symbol)
+                if ok:
+                    return f"🗑️ **{name}**({symbol})을 감시 종목에서 제거했어요."
+                return f"❌ {name} 제거 실패"
+
+        import re
+        codes = re.findall(r'\b\d{6}\b', msg)
+        if codes:
+            results = []
+            for code in codes:
+                ok = await db.remove_watchlist(code)
+                results.append(f"🗑️ {code} 제거" if ok else f"❌ {code} 실패")
+            return "\n".join(results)
+
+        return "❓ 종목명을 찾지 못했어요. 예: '삼성전자 감시 종목 제거해줘'"
+
+    return None  # 일반 채팅으로 처리
+
+
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
     """Jarvis AI 채팅 — Gemini 2.5 Flash"""
@@ -734,6 +821,11 @@ async def jarvis_chat(body: dict):
         api_key = config.GEMINI_API_KEY
         if not api_key:
             return {"success": False, "error": "GEMINI_API_KEY 환경변수가 없어요"}
+
+        # ── 감시 종목 추가/삭제 명령 감지 ──────────────────
+        action_result = await _handle_watchlist_command(user_msg)
+        if action_result:
+            return {"success": True, "reply": action_result, "context_used": False}
 
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(

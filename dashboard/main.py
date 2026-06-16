@@ -7,7 +7,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+import fastapi
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -304,6 +305,397 @@ async def get_summary():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
+
+# ── Jarvis AI (Gemini 2.5 Flash) ────────────────────────────────
+
+import google.generativeai as genai
+from datetime import datetime
+
+# 대화 히스토리 (메모리)
+_jarvis_history: list = []
+
+JARVIS_SYSTEM_PROMPT = """
+당신은 AutoTrader의 AI 트레이딩 어시스턴트 **Jarvis**입니다.
+
+## 역할
+- 실시간 포트폴리오 데이터를 분석하고 인사이트를 제공합니다
+- 주식/코인 매매 전략에 대해 조언합니다
+- 리스크를 감지하고 경고합니다
+- 사용자의 명령을 이해하고 봇 제어를 도웁니다
+
+## 성격
+- 전문적이지만 친근하게 대화합니다
+- 데이터 기반으로 명확하게 분석합니다
+- 중요한 리스크는 반드시 짚어줍니다
+- 답변은 간결하게, 핵심만 먼저 말합니다
+
+## 답변 형식
+- 한국어로 답변합니다
+- 숫자는 한국 원화 형식(,구분자)으로 표시합니다
+- 텔레그램 메시지에 적합하게 이모지를 적절히 사용합니다
+- 중요 수치는 **볼드** 처리합니다
+- 답변은 3-5문장 이내로 간결하게 (길면 핵심만)
+
+## 제한사항
+- 투자는 항상 본인 책임임을 인지시킵니다
+- 확실하지 않은 정보는 추측이라고 명시합니다
+"""
+
+async def get_portfolio_context() -> str:
+    """현재 포트폴리오 데이터를 Gemini 컨텍스트로 변환"""
+    ctx_parts = []
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    ctx_parts.append(f"[현재 시각: {now}]")
+
+    try:
+        # 주식 포지션
+        stock_pos = await get_stock_positions()
+        if stock_pos.get("success") and stock_pos.get("data"):
+            positions = stock_pos["data"]
+            account = stock_pos.get("account", {})
+            ctx_parts.append(f"\n[주식 계좌]")
+            ctx_parts.append(f"총평가금액: {account.get('total_eval', 0):,}원")
+            ctx_parts.append(f"주식평가금액: {account.get('stock_eval', 0):,}원")
+            ctx_parts.append(f"예수금: {account.get('cash', 0):,}원")
+            ctx_parts.append(f"평가손익: {account.get('pnl', 0):+,}원 ({account.get('pnl_rate', 0):+.2f}%)")
+            if positions:
+                ctx_parts.append(f"보유종목 {len(positions)}개:")
+                for p in positions:
+                    ctx_parts.append(
+                        f"  - {p['name']}({p['symbol']}): {p['qty']}주 "
+                        f"평균{p['avg_price']:,} 현재{p['cur_price']:,} "
+                        f"손익{p['pnl']:+,}원({p['pnl_rate']:+.1f}%)"
+                    )
+    except Exception as e:
+        ctx_parts.append(f"[주식 데이터 조회 실패: {e}]")
+
+    try:
+        # 코인 포지션
+        crypto_pos = await get_crypto_positions()
+        if crypto_pos.get("success") and crypto_pos.get("data"):
+            positions = crypto_pos["data"]
+            ctx_parts.append(f"\n[코인 계좌]")
+            if positions:
+                ctx_parts.append(f"보유코인 {len(positions)}개:")
+                for p in positions:
+                    ctx_parts.append(
+                        f"  - {p['name']}({p['pair']}): {p['qty']:.4f} "
+                        f"평균{p['avg_price']:,} 현재{p['cur_price']:,} "
+                        f"손익{p['pnl']:+,.0f}원({p['pnl_rate']:+.1f}%)"
+                    )
+    except Exception as e:
+        ctx_parts.append(f"[코인 데이터 조회 실패: {e}]")
+
+    try:
+        # 코인 시세
+        crypto_prices = await get_crypto_prices()
+        if crypto_prices.get("success") and crypto_prices.get("data"):
+            prices = crypto_prices["data"]
+            ctx_parts.append(f"\n[실시간 코인 시세]")
+            for pair, p in list(prices.items())[:5]:
+                ctx_parts.append(
+                    f"  {pair}: {p.get('price', 0):,}원 ({p.get('change_rate', 0):+.2f}%)"
+                )
+    except:
+        pass
+
+    try:
+        # 전략 상태
+        strategies = await get_strategies()
+        if strategies.get("success") and strategies.get("data"):
+            active = [s for s in strategies["data"] if s["is_active"]]
+            ctx_parts.append(f"\n[활성 전략 {len(active)}개]")
+            for s in active:
+                ctx_parts.append(f"  - {s['bot']}: {s['name']} ON")
+    except:
+        pass
+
+    try:
+        # 최근 매매 이력
+        trades_res = await get_trades(limit=5)
+        if trades_res.get("success") and trades_res.get("data"):
+            trades = trades_res["data"]
+            ctx_parts.append(f"\n[최근 매매 {len(trades)}건]")
+            for t in trades:
+                ts = t["ts"][:16] if t["ts"] else "-"
+                pnl_str = f" 손익:{t['pnl']:+,.0f}원" if t.get("pnl") else " 보유중"
+                ctx_parts.append(
+                    f"  {ts} [{t['bot']}] {t['side']} {t['symbol']} "
+                    f"{t['price']:,}×{t['quantity']}{pnl_str}"
+                )
+    except:
+        pass
+
+    return "\n".join(ctx_parts)
+
+
+@app.post("/api/jarvis/chat")
+async def jarvis_chat(body: dict):
+    """Jarvis AI 채팅 — Gemini 2.5 Flash"""
+    global _jarvis_history
+    user_msg = body.get("message", "").strip()
+    if not user_msg:
+        return {"success": False, "error": "메시지가 없어요"}
+
+    try:
+        api_key = config.GEMINI_API_KEY
+        if not api_key:
+            return {"success": False, "error": "GEMINI_API_KEY 환경변수가 없어요"}
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            system_instruction=JARVIS_SYSTEM_PROMPT,
+        )
+
+        # 포트폴리오 컨텍스트 수집
+        portfolio_ctx = await get_portfolio_context()
+
+        # 사용자 메시지에 컨텍스트 첨부
+        full_user_msg = f"{user_msg}\n\n---\n현재 포트폴리오 데이터:\n{portfolio_ctx}"
+
+        # 대화 히스토리 유지 (최근 10턴)
+        if len(_jarvis_history) > 20:
+            _jarvis_history = _jarvis_history[-20:]
+
+        # Gemini 채팅
+        chat = model.start_chat(history=_jarvis_history)
+        response = chat.send_message(full_user_msg)
+        reply = response.text
+
+        # 히스토리 업데이트
+        _jarvis_history = list(chat.history)
+
+        # 텔레그램으로도 전송
+        tg_msg = f"🤖 <b>Jarvis 분석</b>\n\n질문: {user_msg}\n\n{reply}"
+        await _send_telegram(tg_msg)
+
+        logger.info(f"Jarvis 응답: {reply[:100]}...")
+        return {"success": True, "reply": reply, "context_used": True}
+
+    except Exception as e:
+        logger.error(f"Jarvis 오류: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/jarvis/analyze")
+async def jarvis_analyze():
+    """정기 포트폴리오 분석 — 자동 호출용"""
+    try:
+        api_key = config.GEMINI_API_KEY
+        if not api_key:
+            return {"success": False, "error": "GEMINI_API_KEY 없음"}
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            system_instruction=JARVIS_SYSTEM_PROMPT,
+        )
+
+        portfolio_ctx = await get_portfolio_context()
+        prompt = f"""현재 포트폴리오를 분석하고 간단한 리포트를 작성해주세요.
+다음을 포함하세요:
+1. 전체 수익/손실 현황 요약
+2. 가장 주목할 종목 1-2개
+3. 리스크 경고 (있다면)
+4. 단기 액션 제안
+
+포트폴리오 데이터:
+{portfolio_ctx}"""
+
+        response = model.generate_content(prompt)
+        reply = response.text
+
+        # 텔레그램 전송
+        tg_msg = f"📊 <b>Jarvis 정기 분석</b>\n\n{reply}"
+        await _send_telegram(tg_msg)
+
+        return {"success": True, "reply": reply}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/jarvis/history")
+async def jarvis_history():
+    """대화 히스토리 조회"""
+    history = []
+    for msg in _jarvis_history:
+        history.append({
+            "role": msg.role,
+            "text": msg.parts[0].text if msg.parts else "",
+        })
+    return {"success": True, "data": history}
+
+
+@app.delete("/api/jarvis/history")
+async def jarvis_clear_history():
+    """대화 히스토리 초기화"""
+    global _jarvis_history
+    _jarvis_history = []
+    return {"success": True, "message": "대화 초기화 완료"}
+
+
+# ── 텔레그램 Webhook ─────────────────────────────────────────────
+
+async def _send_telegram(text: str, chat_id: str = None):
+    """텔레그램 메시지 전송 (내부용)"""
+    token = config.TELEGRAM_TOKEN
+    cid = chat_id or config.TELEGRAM_CHAT_ID
+    if not token or not cid:
+        return
+    try:
+        import aiohttp as http
+        async with http.ClientSession() as session:
+            await session.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": cid, "text": text, "parse_mode": "HTML"},
+                timeout=http.ClientTimeout(total=10),
+            )
+    except Exception as e:
+        logger.warning(f"텔레그램 전송 실패: {e}")
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(body: dict):
+    """텔레그램 Bot webhook — 메시지 수신 → Jarvis 처리"""
+    try:
+        message = body.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        text = message.get("text", "").strip()
+
+        if not text or not chat_id:
+            return {"ok": True}
+
+        logger.info(f"텔레그램 수신: {text} (chat_id: {chat_id})")
+
+        # 명령어 처리
+        if text == "/start":
+            await _send_telegram(
+                "🤖 <b>Jarvis 트레이딩 AI입니다</b>\n\n"
+                "사용 가능한 명령어:\n"
+                "/analyze — 포트폴리오 분석\n"
+                "/status — 봇 상태 확인\n"
+                "/positions — 보유 포지션\n"
+                "/history — 오늘 매매 이력\n"
+                "또는 자유롭게 질문하세요!", chat_id
+            )
+            return {"ok": True}
+
+        elif text == "/analyze":
+            await _send_telegram("🔍 분석 중...", chat_id)
+            result = await jarvis_analyze()
+            if not result.get("success"):
+                await _send_telegram(f"❌ 분석 실패: {result.get('error')}", chat_id)
+            return {"ok": True}
+
+        elif text == "/status":
+            try:
+                status_data = await get_status()
+                data = status_data.get("data", {})
+                lines = ["🟢 <b>봇 상태</b>\n"]
+                for bot, info in data.items():
+                    emoji = "✅" if info.get("status") == "running" else "❌"
+                    lines.append(f"{emoji} {bot}: {info.get('status', 'unknown')}")
+                await _send_telegram("\n".join(lines), chat_id)
+            except Exception as e:
+                await _send_telegram(f"❌ 상태 조회 실패: {e}", chat_id)
+            return {"ok": True}
+
+        elif text == "/positions":
+            try:
+                stock = await get_stock_positions()
+                crypto = await get_crypto_positions()
+                lines = ["📊 <b>보유 포지션</b>\n"]
+
+                stock_data = stock.get("data", [])
+                if stock_data:
+                    lines.append("📈 <b>주식</b>")
+                    for p in stock_data:
+                        lines.append(
+                            f"  {p['name']}: {p['qty']}주 "
+                            f"{p['pnl_rate']:+.1f}% ({p['pnl']:+,}원)"
+                        )
+                else:
+                    lines.append("📈 주식: 보유 없음")
+
+                crypto_data = crypto.get("data", [])
+                if crypto_data:
+                    lines.append("₿ <b>코인</b>")
+                    for p in crypto_data:
+                        lines.append(
+                            f"  {p['name']}: {p['qty']:.4f} "
+                            f"{p['pnl_rate']:+.1f}% ({p['pnl']:+,.0f}원)"
+                        )
+                else:
+                    lines.append("₿ 코인: 보유 없음")
+
+                await _send_telegram("\n".join(lines), chat_id)
+            except Exception as e:
+                await _send_telegram(f"❌ 포지션 조회 실패: {e}", chat_id)
+            return {"ok": True}
+
+        elif text == "/history":
+            try:
+                trades_res = await get_trades(limit=10)
+                trades = trades_res.get("data", [])
+                if not trades:
+                    await _send_telegram("📋 오늘 매매 이력 없음", chat_id)
+                else:
+                    lines = [f"📋 <b>최근 매매 {len(trades)}건</b>\n"]
+                    for t in trades:
+                        ts = t["ts"][11:16] if t["ts"] else "-"
+                        side = "매수" if t["side"] == "BUY" else "매도"
+                        pnl = f" {t['pnl']:+,}원" if t.get("pnl") else ""
+                        lines.append(f"  {ts} {side} {t['symbol']}{pnl}")
+                    await _send_telegram("\n".join(lines), chat_id)
+            except Exception as e:
+                await _send_telegram(f"❌ 이력 조회 실패: {e}", chat_id)
+            return {"ok": True}
+
+        else:
+            # 일반 질문 → Jarvis AI 처리
+            await _send_telegram("💭 생각 중...", chat_id)
+            result = await jarvis_chat({"message": text})
+            if result.get("success"):
+                reply = result["reply"]
+                # 텔레그램 길이 제한(4096자) 처리
+                if len(reply) > 3800:
+                    reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"
+                await _send_telegram(f"🤖 <b>Jarvis</b>\n\n{reply}", chat_id)
+            else:
+                await _send_telegram(f"❌ Jarvis 오류: {result.get('error')}", chat_id)
+
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"텔레그램 webhook 오류: {e}")
+        return {"ok": True}
+
+
+@app.get("/api/telegram/set-webhook")
+async def set_telegram_webhook(request: fastapi.Request):
+    """텔레그램 webhook URL 등록"""
+    try:
+        import aiohttp as http
+        token = config.TELEGRAM_TOKEN
+        if not token:
+            return {"success": False, "error": "TELEGRAM_TOKEN 없음"}
+
+        # 현재 서버 URL 자동 감지
+        base_url = str(request.base_url).rstrip("/")
+        webhook_url = f"{base_url}/api/telegram/webhook"
+
+        async with http.ClientSession() as session:
+            res = await session.post(
+                f"https://api.telegram.org/bot{token}/setWebhook",
+                json={"url": webhook_url, "drop_pending_updates": True},
+            )
+            data = await res.json()
+
+        logger.info(f"텔레그램 webhook 등록: {webhook_url} → {data}")
+        return {"success": data.get("ok"), "webhook_url": webhook_url, "result": data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 @app.get("/api/debug/stock-account")
 async def debug_stock_account():

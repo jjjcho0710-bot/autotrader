@@ -164,7 +164,7 @@ class StockTrader:
             results = []
             for symbol in config.STOCK_SYMBOLS:
                 try:
-                    ohlcv = await db.get_recent_ohlcv(symbol, limit=200, asset="stock")
+                    ohlcv = await db.get_recent_ohlcv(symbol, limit=1500, asset="stock", daily=True)
                     if len(ohlcv) < 60:
                         logger.warning(f"[{symbol}] OHLCV 데이터 부족 ({len(ohlcv)}개) → 스킵")
                         continue

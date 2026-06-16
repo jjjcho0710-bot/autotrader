@@ -157,12 +157,16 @@ class Database:
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
             """, bot, asset_type, symbol, side, price, quantity, amount, strategy, pnl)
 
-    async def get_recent_ohlcv(self, symbol, limit=60, asset="stock"):
-        table = "stock_ohlcv" if asset == "stock" else "crypto_ohlcv"
-        col = "symbol" if asset == "stock" else "pair"
+    async def get_recent_ohlcv(self, symbol, limit=60, asset="stock", daily=False):
+        if daily:
+            table = "stock_daily_ohlcv"
+            col = "symbol"
+        else:
+            table = "stock_ohlcv" if asset == "stock" else "crypto_ohlcv"
+            col = "symbol" if asset == "stock" else "pair"
         async with self.pool.acquire() as conn:
             return await conn.fetch(f"""
-                SELECT * FROM {table} WHERE {col}=$1 ORDER BY ts DESC LIMIT $2
+                SELECT * FROM {table} WHERE {col}=$1 ORDER BY ts ASC LIMIT $2
             """, symbol, limit)
 
 

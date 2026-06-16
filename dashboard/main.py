@@ -192,7 +192,13 @@ async def get_indicators(symbol: str, limit: int = 100):
     """종목의 기술적 지표 계산"""
     try:
         from ml.indicators import calculate_all
-        rows = await db.get_recent_ohlcv(symbol, limit=limit, asset="stock")
+        if not db_pool:
+            return {"success": False, "error": "DB 연결 없음"}
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM stock_ohlcv WHERE symbol=$1 ORDER BY ts DESC LIMIT $2",
+                symbol, limit
+            )
         if not rows:
             return {"success": False, "error": "데이터 없음"}
         ohlcv = [{"ts": str(r["ts"]), "open": r["open"], "high": r["high"],
@@ -216,10 +222,15 @@ async def run_backtest(request: Request):
         params   = body.get("params", {})
         capital  = int(body.get("capital", 10_000_000))
 
-        rows = await db.get_recent_ohlcv(symbol, limit=500, asset="stock")
+        if not db_pool:
+            return {"success": False, "error": "DB 연결 없음"}
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM stock_ohlcv WHERE symbol=$1 ORDER BY ts DESC LIMIT 500",
+                symbol
+            )
         if len(rows) < 60:
             return {"success": False, "error": f"데이터 부족 ({len(rows)}개, 최소 60개 필요)"}
-
         ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
                   "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
                  for r in reversed(rows)]
@@ -264,10 +275,15 @@ async def get_features(symbol: str, limit: int = 200):
     try:
         from ml.features import build_features, feature_summary
 
-        rows = await db.get_recent_ohlcv(symbol, limit=limit, asset="stock")
+        if not db_pool:
+            return {"success": False, "error": "DB 연결 없음"}
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM stock_ohlcv WHERE symbol=$1 ORDER BY ts DESC LIMIT $2",
+                symbol, limit
+            )
         if len(rows) < 70:
             return {"success": False, "error": f"데이터 부족 ({len(rows)}개)"}
-
         ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
                   "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
                  for r in reversed(rows)]

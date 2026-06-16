@@ -110,6 +110,17 @@ class Database:
                     params JSONB DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE(bot, name)
                 );
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL UNIQUE,
+                    name VARCHAR(50),
+                    added_by VARCHAR(20) DEFAULT 'manual',
+                    reason TEXT,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+
                 INSERT INTO strategy_config (bot, name, is_active, params) VALUES
                 ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
                 ('stock_trader','RSI반등',false,'{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
@@ -187,6 +198,54 @@ class Cache:
     async def get_all_bot_status(self):
         raw = await self.client.hgetall("bot:status")
         return {k: json.loads(v) for k, v in raw.items()}
+
+
+    async def get_watchlist(self, active_only: bool = True) -> list:
+        """감시 종목 전체 조회"""
+        async with self.pool.acquire() as conn:
+            if active_only:
+                rows = await conn.fetch(
+                    "SELECT * FROM watchlist WHERE is_active=TRUE ORDER BY created_at"
+                )
+            else:
+                rows = await conn.fetch("SELECT * FROM watchlist ORDER BY created_at")
+        return [dict(r) for r in rows]
+
+    async def get_watchlist_symbols(self) -> list:
+        """감시 종목 심볼 리스트만 반환"""
+        rows = await self.get_watchlist(active_only=True)
+        return [r["symbol"] for r in rows]
+
+    async def add_watchlist(self, symbol: str, name: str = None, added_by: str = "jarvis", reason: str = None) -> bool:
+        """감시 종목 추가"""
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                    VALUES ($1, $2, $3, $4, TRUE)
+                    ON CONFLICT (symbol) DO UPDATE
+                    SET is_active=TRUE, name=COALESCE($2, watchlist.name),
+                        added_by=$3, reason=$4, updated_at=NOW()
+                """, symbol, name, added_by, reason)
+            logger.info(f"✅ 감시 종목 추가: {symbol} ({name})")
+            return True
+        except Exception as e:
+            logger.error(f"감시 종목 추가 실패: {e}")
+            return False
+
+    async def remove_watchlist(self, symbol: str) -> bool:
+        """감시 종목 비활성화"""
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1",
+                    symbol
+                )
+            logger.info(f"✅ 감시 종목 제거: {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"감시 종목 제거 실패: {e}")
+            return False
 
 
 # 싱글톤

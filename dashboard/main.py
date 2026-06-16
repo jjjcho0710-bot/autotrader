@@ -623,6 +623,12 @@ JARVIS_SYSTEM_PROMPT = """너는 트레이딩 AI TradeJarvis야. 주인님을 �
 - 중요 수치는 **볼드** 처리합니다
 - 답변은 3-5문장 이내로 간결하게 (길면 핵심만)
 
+감시 종목 관리 권한:
+- "OO 감시 종목 추가해" → /api/watchlist POST 호출
+- "OO 감시 종목 제거해" → /api/watchlist/{symbol} DELETE 호출
+- 종목명으로 말하면 종목코드로 변환해서 처리
+- 추가/제거 후 결과 보고
+
 ## 제한사항
 - 투자는 항상 본인 책임임을 인지시킵니다
 - 확실하지 않은 정보는 추측이라고 명시합니다
@@ -1439,6 +1445,45 @@ def _jitter(base: float, pct: float = 0.015) -> float:
 
 def _change_rate(base: float, cur: float) -> float:
     return round((cur - base) / base * 100, 2)
+
+
+@app.get("/api/watchlist")
+async def get_watchlist():
+    """감시 종목 전체 조회"""
+    try:
+        rows = await db.get_watchlist(active_only=False)
+        for r in rows:
+            if r.get("created_at"):
+                r["created_at"] = r["created_at"].isoformat()
+            if r.get("updated_at"):
+                r["updated_at"] = r["updated_at"].isoformat()
+        return {"success": True, "data": rows}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/watchlist")
+async def add_watchlist(body: dict):
+    """감시 종목 추가 — Jarvis 또는 수동"""
+    symbol  = body.get("symbol", "").strip().upper()
+    name    = body.get("name", "")
+    added_by = body.get("added_by", "manual")
+    reason  = body.get("reason", "")
+    if not symbol:
+        return {"success": False, "error": "종목 코드 필요"}
+    ok = await db.add_watchlist(symbol, name, added_by, reason)
+    if ok:
+        return {"success": True, "message": f"{name or symbol} 감시 종목 추가 완료"}
+    return {"success": False, "error": "추가 실패"}
+
+
+@app.delete("/api/watchlist/{symbol}")
+async def remove_watchlist(symbol: str):
+    """감시 종목 제거"""
+    ok = await db.remove_watchlist(symbol.upper())
+    if ok:
+        return {"success": True, "message": f"{symbol} 감시 종목 제거 완료"}
+    return {"success": False, "error": "제거 실패"}
 
 
 @app.post("/api/jarvis/signal")

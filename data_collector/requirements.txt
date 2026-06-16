@@ -2,3 +2,4 @@ aiohttp==3.9.5
 asyncpg==0.29.0
 redis==5.0.4
 python-dotenv==1.0.1
+pykrx==1.0.47

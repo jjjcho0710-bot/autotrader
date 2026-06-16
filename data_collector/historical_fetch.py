@@ -1,22 +1,18 @@
 """
-과거 데이터 일괄 수집 스크립트
-2025-01-01 부터 오늘까지 일봉 데이터 한 번에 수집
-Railway에서 한 번만 실행하면 됨
+과거 데이터 일괄 수집 스크립트 (pykrx 버전)
+2021-01-01 부터 오늘까지 일봉 데이터 한 번에 수집
+KIS API 불필요 — 한국거래소 공식 데이터
 
 실행법:
-  python historical_fetch.py
+  cd /app && python data_collector/historical_fetch.py
 """
 import asyncio
 import logging
 import sys
-import os
-from datetime import datetime, timedelta
-
-sys.path.insert(0, "/app")   # ml 모듈 경로 추가
-
-import aiohttp
+from datetime import datetime
 
 sys.path.insert(0, "/app")
+
 from common.config import config
 from common.database import db
 
@@ -27,125 +23,47 @@ logging.basicConfig(
 )
 logger = logging.getLogger("historical-fetch")
 
-# ── 설정 ──────────────────────────────────────────────
-START_DATE = "20250101"   # 수집 시작일 (여기서 조정)
-BASE_URL   = config.kis_base_url
+START_DATE = "20210101"
+END_DATE   = datetime.now().strftime("%Y%m%d")
 
 
 class HistoricalFetcher:
 
-    def __init__(self):
-        self.access_token = ""
-        self.session: aiohttp.ClientSession = None
-
-    async def start(self):
-        self.session = aiohttp.ClientSession()
-        await self._get_token()
-
-    async def stop(self):
-        if self.session:
-            await self.session.close()
-
-    async def _get_token(self):
-        url = f"{BASE_URL}/oauth2/tokenP"
-        payload = {
-            "grant_type": "client_credentials",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
-        }
-        async with self.session.post(url, json=payload) as resp:
-            data = await resp.json()
-            self.access_token = data.get("access_token", "")
-            logger.info("✅ KIS 토큰 발급 완료")
-
-    def _headers(self, tr_id: str) -> dict:
-        return {
-            "Content-Type": "application/json",
-            "authorization": f"Bearer {self.access_token}",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
-            "tr_id": tr_id,
-            "custtype": "P",
-        }
-
-    async def fetch_period(self, symbol: str, start: str, end: str) -> list:
-        """특정 기간 일봉 조회 (KIS API 1회 호출 = 최대 100개)"""
-        url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": symbol,
-            "FID_INPUT_DATE_1": start,
-            "FID_INPUT_DATE_2": end,
-            "FID_PERIOD_DIV_CODE": "D",
-            "FID_ORG_ADJ_PRC": "0",
-        }
+    async def fetch_ohlcv(self, symbol: str) -> list:
+        """pykrx로 일봉 데이터 조회"""
         try:
-            async with self.session.get(
-                url,
-                headers=self._headers("FHKST03010100"),
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                data = await resp.json()
-                candles = []
-                for row in data.get("output2", []):
-                    close = int(row.get("stck_clpr", 0))
-                    if close <= 0:
-                        continue
-                    candles.append({
-                        "date":        row.get("stck_bsop_date", ""),
-                        "open":        int(row.get("stck_oprc", 0)),
-                        "high":        int(row.get("stck_hgpr", 0)),
-                        "low":         int(row.get("stck_lwpr", 0)),
-                        "close":       close,
-                        "volume":      int(row.get("acml_vol", 0)),
-                        "change_rate": float(row.get("prdy_ctrt", 0)),
-                    })
-                return list(reversed(candles))
+            from pykrx import stock
+            df = stock.get_market_ohlcv(START_DATE, END_DATE, symbol)
+            if df is None or df.empty:
+                return []
+
+            candles = []
+            for date, row in df.iterrows():
+                candles.append({
+                    "date":        date.strftime("%Y%m%d"),
+                    "open":        int(row.get("시가", 0)),
+                    "high":        int(row.get("고가", 0)),
+                    "low":         int(row.get("저가", 0)),
+                    "close":       int(row.get("종가", 0)),
+                    "volume":      int(row.get("거래량", 0)),
+                    "change_rate": float(row.get("등락률", 0)),
+                })
+            logger.info(f"  [{symbol}] pykrx {len(candles)}개 수집 완료")
+            return candles
         except Exception as e:
-            logger.error(f"조회 실패 [{symbol} {start}~{end}]: {e}")
+            logger.error(f"pykrx 조회 실패 [{symbol}]: {e}")
             return []
 
-    async def fetch_all_history(self, symbol: str) -> list:
-        """START_DATE ~ 오늘까지 100일 단위로 나눠서 전체 수집"""
-        all_candles = []
-        seen_dates = set()
-
-        start_dt = datetime.strptime(START_DATE, "%Y%m%d")
-        end_dt   = datetime.now()
-
-        # 100일씩 슬라이딩
-        cursor = start_dt
-        while cursor < end_dt:
-            chunk_end = min(cursor + timedelta(days=100), end_dt)
-            start_str = cursor.strftime("%Y%m%d")
-            end_str   = chunk_end.strftime("%Y%m%d")
-
-            candles = await self.fetch_period(symbol, start_str, end_str)
-
-            for c in candles:
-                if c["date"] not in seen_dates:
-                    seen_dates.add(c["date"])
-                    all_candles.append(c)
-
-            logger.info(f"  [{symbol}] {start_str}~{end_str}: {len(candles)}개 수집")
-            cursor = chunk_end + timedelta(days=1)
-            await asyncio.sleep(0.3)   # API 레이트 리밋 방지
-
-        # 날짜 오름차순 정렬
-        all_candles.sort(key=lambda x: x["date"])
-        return all_candles
-
     async def save_ohlcv(self, symbol: str, candles: list):
-        """DB에 저장 (중복 무시)"""
+        """DB에 저장"""
         if not candles:
-            return
+            return 0
+        count = 0
         async with db.pool.acquire() as conn:
             for c in candles:
-                date_str = c["date"]
-                if len(date_str) != 8:
+                if len(c["date"]) != 8 or c["close"] <= 0:
                     continue
-                ts = datetime.strptime(date_str, "%Y%m%d")
+                ts = datetime.strptime(c["date"], "%Y%m%d")
                 await conn.execute("""
                     INSERT INTO stock_daily_ohlcv
                         (symbol, ts, open, high, low, close, volume, change_rate)
@@ -155,7 +73,9 @@ class HistoricalFetcher:
                 """, symbol, ts,
                     c["open"], c["high"], c["low"], c["close"],
                     c["volume"], c["change_rate"])
-        logger.info(f"✅ [{symbol}] {len(candles)}개 저장 완료")
+                count += 1
+        logger.info(f"✅ [{symbol}] {count}개 저장 완료")
+        return count
 
     async def save_indicators(self, symbol: str, candles: list):
         """기술적 지표 계산 후 DB 저장"""
@@ -184,10 +104,9 @@ class HistoricalFetcher:
 
             async with db.pool.acquire() as conn:
                 for i in range(len(candles)):
-                    date_str = candles[i]["date"]
-                    if len(date_str) != 8:
+                    if len(candles[i]["date"]) != 8:
                         continue
-                    ts = datetime.strptime(date_str, "%Y%m%d")
+                    ts = datetime.strptime(candles[i]["date"], "%Y%m%d")
                     await conn.execute("""
                         INSERT INTO stock_indicators
                             (symbol, ts, rsi14, macd, macd_signal, macd_hist,
@@ -206,8 +125,7 @@ class HistoricalFetcher:
                         symbol, ts,
                         rsi14[i], macd_vals["macd"][i], macd_vals["signal"][i], macd_vals["histogram"][i],
                         bb["upper"][i], bb["middle"][i], bb["lower"][i], bb["percent_b"][i],
-                        atr14[i], stoch[i]["k"] if isinstance(stoch, list) else stoch["k"][i],
-                        stoch[i]["d"] if isinstance(stoch, list) else stoch["d"][i],
+                        atr14[i], stoch["k"][i], stoch["d"][i],
                         sma5[i], sma20[i], sma60[i], ema12[i], ema26[i],
                         bool(sma5[i] and sma20[i] and sma5[i] > sma20[i] and
                              i > 0 and sma5[i-1] and sma20[i-1] and sma5[i-1] <= sma20[i-1]),
@@ -220,27 +138,30 @@ class HistoricalFetcher:
 
     async def run(self):
         await db.connect()
-        await self.start()
 
-        symbols = config.STOCK_SYMBOLS
-        logger.info(f"🚀 과거 데이터 수집 시작: {START_DATE} ~ 오늘 / {len(symbols)}종목")
+        # DB watchlist에서 종목 읽기 (없으면 환경변수 fallback)
+        symbols = await db.get_watchlist_symbols()
+        if not symbols:
+            symbols = config.STOCK_SYMBOLS
+            logger.info("⚠️ watchlist 비어있음 → 환경변수 STOCK_SYMBOLS 사용")
+        else:
+            logger.info(f"✅ DB watchlist에서 종목 로드: {symbols}")
+        logger.info(f"🚀 과거 데이터 수집 시작: {START_DATE} ~ {END_DATE} / {len(symbols)}종목")
         logger.info(f"📋 대상 종목: {symbols}")
 
         total_saved = 0
         for symbol in symbols:
             logger.info(f"\n{'='*40}")
             logger.info(f"📈 [{symbol}] 수집 시작...")
-            candles = await self.fetch_all_history(symbol)
+            candles = await self.fetch_ohlcv(symbol)
             if candles:
-                await self.save_ohlcv(symbol, candles)
+                count = await self.save_ohlcv(symbol, candles)
                 await self.save_indicators(symbol, candles)
-                total_saved += len(candles)
-                logger.info(f"✅ [{symbol}] 총 {len(candles)}개 완료")
+                total_saved += count
             else:
                 logger.warning(f"⚠️ [{symbol}] 데이터 없음")
-            await asyncio.sleep(1)   # 종목 간 딜레이
+            await asyncio.sleep(1)   # pykrx 레이트 리밋 방지
 
-        await self.stop()
         await db.disconnect()
         logger.info(f"\n{'='*40}")
         logger.info(f"🎉 전체 완료! 총 {total_saved}개 캔들 저장")

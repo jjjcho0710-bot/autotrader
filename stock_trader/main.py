@@ -253,7 +253,16 @@ class StockTrader:
             logger.info(f"⚠️ 최대 보유 종목수 ({len(self.positions)}/{max_positions})")
             return
 
-        for symbol in config.STOCK_SYMBOLS:
+        # DB watchlist에서 감시 종목 읽기 (없으면 환경변수 fallback)
+        try:
+            symbols = await db.get_watchlist_symbols()
+            if not symbols:
+                symbols = config.STOCK_SYMBOLS
+                logger.info("⚠️ watchlist 비어있음 → 환경변수 STOCK_SYMBOLS 사용")
+        except Exception:
+            symbols = config.STOCK_SYMBOLS
+
+        for symbol in symbols:
             if symbol in self.positions:
                 continue
 

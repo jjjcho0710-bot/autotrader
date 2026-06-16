@@ -276,6 +276,47 @@ async def get_summary():
 async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
 
+@app.get("/api/debug/stock-account")
+async def debug_stock_account():
+    """KIS output2 raw 데이터 확인용 (디버그)"""
+    try:
+        import aiohttp as http
+        base = config.kis_base_url
+        async with http.ClientSession() as session:
+            token_res = await session.post(f"{base}/oauth2/tokenP", json={
+                "grant_type": "client_credentials",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+            })
+            token_data = await token_res.json()
+            token = token_data.get("access_token", "")
+            headers = {
+                "authorization": f"Bearer {token}",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+                "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
+                "custtype": "P",
+            }
+            acct = config.KIS_ACCOUNT_NO.split("-")
+            params = {
+                "CANO": acct[0],
+                "ACNT_PRDT_CD": acct[1] if len(acct) > 1 else "01",
+                "AFHR_FLPR_YN": "N", "OFL_YN": "",
+                "INQR_DVSN": "02", "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+            }
+            res = await session.get(
+                f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
+                headers=headers, params=params
+            )
+            raw = await res.json()
+            out2 = raw.get("output2", [{}])
+            summary = out2[0] if out2 else {}
+            return {"success": True, "output2_keys": list(summary.keys()), "output2_data": summary}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 # ── 보유 포지션 API ──────────────────────────────────────
 
@@ -334,13 +375,21 @@ async def get_stock_positions():
             # output2: 계좌 총평가 요약
             out2 = data.get("output2", [{}])
             summary = out2[0] if out2 else {}
+            # 예수금: 필드명 후보 순서대로 시도
+            cash_val = (
+                int(summary.get("dnca_tot_amt", 0)) or
+                int(summary.get("ord_psbl_cash", 0)) or
+                int(summary.get("cma_evlu_amt", 0)) or
+                int(summary.get("thdt_buyable_qty", 0))
+            )
             account = {
-                "total_eval":   int(summary.get("tot_evlu_amt", 0)),      # 총평가금액
-                "stock_eval":   int(summary.get("scts_evlu_amt", 0)),     # 유가증권평가금액
-                "cash":         int(summary.get("dnca_tot_amt", 0)),      # 예수금총금액
-                "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),# 매입금액합계
-                "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),# 평가손익합계
-                "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0)), # 수익률
+                "total_eval":   int(summary.get("tot_evlu_amt", 0)),
+                "stock_eval":   int(summary.get("scts_evlu_amt", 0)),
+                "cash":         cash_val,
+                "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),
+                "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),
+                "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0) or 0),
+                "_raw_keys":    list(summary.keys()),  # 디버그용
             }
             return {"success": True, "data": positions, "account": account}
     except Exception as e:

@@ -43,10 +43,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 
 /* 차트 카드 */
 .chart-row{display:grid;grid-template-columns:2fr 1fr;gap:14px;}
-.chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
+.chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;overflow:hidden;}
 .card-title{font-size:12px;font-weight:600;color:var(--bright);margin-bottom:12px;display:flex;align-items:center;gap:6px;}
 .card-title .dot{width:6px;height:6px;border-radius:50%;}
-canvas{width:100%!important;}
+canvas{width:100%!important;max-height:200px;}
+.chart-card{min-height:0;}
 
 /* 테이블 */
 .table-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
@@ -146,11 +147,11 @@ canvas{width:100%!important;}
     <div class="chart-row">
       <div class="chart-card">
         <div class="card-title"><div class="dot" style="background:var(--green)"></div>일별 수익 추이</div>
-        <canvas id="pnl-chart" height="160"></canvas>
+        <canvas id="pnl-chart" style="height:160px;max-height:160px;"></canvas>
       </div>
       <div class="chart-card">
         <div class="card-title"><div class="dot" style="background:var(--purple)"></div>전략별 성과</div>
-        <canvas id="strategy-chart" height="160"></canvas>
+        <canvas id="strategy-chart" style="height:160px;max-height:160px;"></canvas>
       </div>
     </div>
 
@@ -397,10 +398,11 @@ function drawPnlChart(trades) {
     },
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: '#4b5270', font: { size: 10 } }, grid: { color: '#272a3d' } },
-        y: { ticks: { color: '#4b5270', font: { size: 10 }, callback: v => fmt(v) + '원' }, grid: { color: '#272a3d' } }
+        x: { ticks: { color: '#4b5270', font: { size: 10 }, maxTicksLimit: 7 }, grid: { color: '#272a3d' } },
+        y: { ticks: { color: '#4b5270', font: { size: 10 }, callback: v => fmt(v) + '원', maxTicksLimit: 5 }, grid: { color: '#272a3d' } }
       }
     }
   });
@@ -432,8 +434,9 @@ function drawStrategyChart(sells) {
     },
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#8892b0', font: { size: 10 }, padding: 10 } }
+        legend: { position: 'bottom', labels: { color: '#8892b0', font: { size: 10 }, padding: 8 } }
       }
     }
   });

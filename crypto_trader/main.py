@@ -214,6 +214,10 @@ class CryptoTrader:
             logger.warning(f"텔레그램 전송 실패: {e}")
 
     async def _notify_error(self, error: str):
+        # crypto-trader는 Static IP 설정 전까지 에러 알림 비활성화
+        import os
+        if os.getenv("CRYPTO_NOTIFY_ERRORS", "false").lower() != "true":
+            return
         try:
             from common.telegram import notify_error
             await notify_error("crypto_trader", error)

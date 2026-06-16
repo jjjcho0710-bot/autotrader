@@ -570,3 +570,226 @@ async def add_strategy(body: dict):
         return {"success": True, "message": f"{name} 전략 추가 완료"}
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+# ── 모의 데이터 API ──────────────────────────────────────
+import random, math
+from datetime import datetime, timedelta
+
+# 종목/코인 기준 가격 (실제와 비슷한 수준)
+_STOCK_BASE = {
+    "005930": {"name": "삼성전자",    "price": 74200},
+    "000660": {"name": "SK하이닉스",  "price": 198000},
+    "035420": {"name": "NAVER",       "price": 215000},
+    "035720": {"name": "카카오",      "price": 43500},
+    "005380": {"name": "현대차",      "price": 232000},
+    "068270": {"name": "셀트리온",    "price": 178000},
+    "373220": {"name": "LG에너지솔루션", "price": 310000},
+    "323410": {"name": "카카오뱅크",  "price": 24800},
+}
+
+_CRYPTO_BASE = {
+    "KRW-BTC": {"name": "비트코인",  "price": 142_850_000},
+    "KRW-ETH": {"name": "이더리움",  "price": 5_230_000},
+    "KRW-SOL": {"name": "솔라나",    "price": 318_000},
+    "KRW-XRP": {"name": "리플",      "price": 3_250},
+    "KRW-ADA": {"name": "에이다",    "price": 810},
+}
+
+def _jitter(base: float, pct: float = 0.015) -> float:
+    """기준가에서 ±pct 범위 랜덤 변동"""
+    return round(base * (1 + random.uniform(-pct, pct)))
+
+def _change_rate(base: float, cur: float) -> float:
+    return round((cur - base) / base * 100, 2)
+
+
+@app.get("/api/mock/prices/stock")
+async def mock_stock_prices():
+    """모의 주식 실시간 시세"""
+    prices = {}
+    for sym, info in _STOCK_BASE.items():
+        cur = _jitter(info["price"])
+        prev = _jitter(info["price"], 0.01)
+        prices[sym] = {
+            "name":        info["name"],
+            "price":       cur,
+            "prev":        prev,
+            "change":      cur - prev,
+            "change_rate": _change_rate(prev, cur),
+            "volume":      random.randint(500_000, 30_000_000),
+        }
+    return {"success": True, "data": prices}
+
+
+@app.get("/api/mock/prices/crypto")
+async def mock_crypto_prices():
+    """모의 코인 실시간 시세 (업비트 공개 API 시도 → 실패시 모의)"""
+    import aiohttp as http
+    prices = {}
+    pairs = list(_CRYPTO_BASE.keys())
+    try:
+        async with http.ClientSession() as session:
+            res = await session.get(
+                "https://api.upbit.com/v1/ticker",
+                params={"markets": ",".join(pairs)},
+                timeout=http.ClientTimeout(total=4),
+            )
+            tickers = await res.json()
+            for t in tickers:
+                pair = t["market"]
+                info = _CRYPTO_BASE.get(pair, {})
+                prices[pair] = {
+                    "name":        info.get("name", pair),
+                    "price":       float(t.get("trade_price", 0)),
+                    "prev":        float(t.get("prev_closing_price", 0)),
+                    "change":      float(t.get("signed_change_price", 0)),
+                    "change_rate": float(t.get("signed_change_rate", 0)) * 100,
+                    "volume":      float(t.get("acc_trade_volume_24h", 0)),
+                    "high":        float(t.get("high_price", 0)),
+                    "low":         float(t.get("low_price", 0)),
+                    "source":      "live",
+                }
+        return {"success": True, "data": prices}
+    except Exception as e:
+        logger.warning(f"업비트 실시간 실패, 모의 데이터 사용: {e}")
+        for pair, info in _CRYPTO_BASE.items():
+            cur = _jitter(info["price"], 0.008)
+            prev = _jitter(info["price"], 0.005)
+            prices[pair] = {
+                "name":        info["name"],
+                "price":       cur,
+                "prev":        prev,
+                "change":      cur - prev,
+                "change_rate": _change_rate(prev, cur),
+                "volume":      random.uniform(100, 5000),
+                "high":        round(cur * 1.02),
+                "low":         round(cur * 0.98),
+                "source":      "mock",
+            }
+        return {"success": True, "data": prices}
+
+
+@app.get("/api/mock/summary")
+async def mock_summary():
+    """모의 요약 데이터"""
+    stock_pnl  = random.randint(-50000, 300000)
+    crypto_pnl = random.randint(-80000, 500000)
+    total_pnl  = stock_pnl + crypto_pnl
+    today_trades = random.randint(0, 12)
+    return {
+        "success": True,
+        "data": {
+            "today_trades": today_trades,
+            "today_pnl":    total_pnl,
+            "total_pnl":    total_pnl + random.randint(500000, 3000000),
+            "bot_pnl": {
+                "stock_trader":  stock_pnl,
+                "crypto_trader": crypto_pnl,
+            },
+            "source": "mock",
+        }
+    }
+
+
+@app.get("/api/mock/positions/stock")
+async def mock_stock_positions():
+    """모의 주식 보유 포지션"""
+    # 3~5개 랜덤 종목 보유
+    symbols = random.sample(list(_STOCK_BASE.keys()), k=random.randint(2, 5))
+    positions = []
+    for sym in symbols:
+        info = _STOCK_BASE[sym]
+        avg  = round(info["price"] * random.uniform(0.88, 1.05))
+        cur  = _jitter(info["price"])
+        qty  = random.randint(5, 50)
+        pnl  = (cur - avg) * qty
+        positions.append({
+            "symbol":    sym,
+            "name":      info["name"],
+            "qty":       qty,
+            "avg_price": avg,
+            "cur_price": cur,
+            "pnl":       round(pnl),
+            "pnl_rate":  round((cur - avg) / avg * 100, 2),
+        })
+    return {"success": True, "data": positions}
+
+
+@app.get("/api/mock/positions/crypto")
+async def mock_crypto_positions():
+    """모의 코인 보유 포지션"""
+    pairs = random.sample(list(_CRYPTO_BASE.keys()), k=random.randint(1, 3))
+    positions = []
+    for pair in pairs:
+        info = _CRYPTO_BASE[pair]
+        avg  = round(info["price"] * random.uniform(0.85, 1.08))
+        cur  = _jitter(info["price"])
+        qty  = round(random.uniform(0.001, 0.5) if "BTC" in pair else random.uniform(0.1, 10), 6)
+        pnl  = (cur - avg) * qty
+        currency = pair.replace("KRW-", "")
+        positions.append({
+            "pair":      pair,
+            "currency":  currency,
+            "name":      info["name"],
+            "qty":       qty,
+            "avg_price": avg,
+            "cur_price": cur,
+            "pnl":       round(pnl),
+            "pnl_rate":  round((cur - avg) / avg * 100, 2),
+        })
+    return {"success": True, "data": positions}
+
+
+@app.get("/api/mock/trades")
+async def mock_trades(limit: int = 10, bot: str = None):
+    """모의 매매 이력"""
+    all_trades = []
+    now = datetime.now()
+    stock_syms  = list(_STOCK_BASE.items())
+    crypto_syms = list(_CRYPTO_BASE.items())
+    for i in range(limit):
+        is_stock = (bot == "stock_trader") or (bot is None and random.random() > 0.4)
+        if is_stock:
+            sym, info = random.choice(stock_syms)
+            price = _jitter(info["price"])
+            qty   = random.randint(1, 20)
+            b     = "stock_trader"
+            atype = "stock"
+        else:
+            pair, info = random.choice(crypto_syms)
+            sym   = pair
+            price = _jitter(info["price"])
+            qty   = round(random.uniform(0.0001, 0.05) if "BTC" in pair else random.uniform(0.01, 2), 6)
+            b     = "crypto_trader"
+            atype = "crypto"
+        side = random.choice(["BUY", "SELL"])
+        pnl  = round(random.uniform(-50000, 150000)) if side == "SELL" else None
+        ts   = now - timedelta(minutes=i * random.randint(5, 30))
+        all_trades.append({
+            "id":         i + 1,
+            "bot":        b,
+            "asset_type": atype,
+            "symbol":     sym,
+            "side":       side,
+            "price":      price,
+            "quantity":   qty,
+            "amount":     round(price * qty),
+            "strategy":   random.choice(["MA크로스", "MACD", "RSI반등", "볼린저밴드"]),
+            "pnl":        pnl,
+            "ts":         ts.isoformat(),
+        })
+    return {"success": True, "data": all_trades}
+
+
+@app.get("/api/mock/status")
+async def mock_status():
+    """모의 봇 상태"""
+    return {
+        "success": True,
+        "data": {
+            "stock_trader":  {"status": "running", "last_tick": datetime.now().isoformat()},
+            "crypto_trader": {"status": "running", "last_tick": datetime.now().isoformat()},
+            "data_collector":{"status": "running", "last_tick": datetime.now().isoformat()},
+        }
+    }

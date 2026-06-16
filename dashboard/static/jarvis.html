@@ -296,7 +296,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     <div class="page-label">Jarvis</div>
     <div class="topbar-right">
       <div class="status-badge"><div class="status-dot"></div>AI 대기중</div>
-      <div class="clock">2026.06.13 &nbsp;14:32:07</div>
+      <div class="clock" id="clock">-</div>
     </div>
   </div>
 
@@ -491,6 +491,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 </html>
 
 <script>
+function updateClock(){const now=new Date();const d=now.toLocaleDateString("ko-KR",{year:"numeric",month:"2-digit",day:"2-digit"}).replace(/\. /g,".").replace(".","");const t=now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});const el=document.getElementById("clock");if(el)el.textContent=d+" "+t;}setInterval(updateClock,1000);updateClock();
 const API = '';
 
 async function fetchJarvisData() {

@@ -116,6 +116,22 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 }
 .send-btn:hover{opacity:0.85;}
 .send-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.mic-btn{
+  width:40px;height:40px;border-radius:10px;flex-shrink:0;
+  background:var(--panel2);border:1px solid var(--border);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-size:18px;transition:all 0.15s;color:var(--text);
+}
+.mic-btn:hover{border-color:rgba(155,109,255,0.5);color:var(--purple);}
+.mic-btn.listening{background:rgba(248,113,113,0.15);border-color:var(--red);color:var(--red);animation:mic-pulse 1s ease-in-out infinite;}
+@keyframes mic-pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+.wake-indicator{
+  display:none;position:fixed;top:60px;right:20px;z-index:100;
+  background:rgba(155,109,255,0.15);border:1px solid rgba(155,109,255,0.4);
+  border-radius:12px;padding:8px 16px;font-size:12px;color:var(--purple);
+  font-family:var(--mono);font-weight:600;
+}
+.wake-indicator.show{display:block;}
 .analyze-btn{
   padding:8px 14px;border-radius:10px;
   background:rgba(155,109,255,0.1);border:1px solid rgba(155,109,255,0.3);
@@ -213,6 +229,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div class="input-row">
           <textarea class="msg-input" id="msg-input" placeholder="Jarvis에게 질문하기... (Enter로 전송, Shift+Enter 줄바꿈)" rows="1"></textarea>
           <button class="analyze-btn" onclick="analyzeNow()">리포트</button>
+          <button class="mic-btn" id="mic-btn" onclick="toggleMic()" title="음성 입력 (자비스! 라고 부르세요)">🎤</button>
           <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
         </div>
       </div>
@@ -249,6 +266,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     </div>
   </div>
 </div>
+<div class="wake-indicator" id="wake-indicator">🎤 듣는 중...</div>
 
 <script>
 const API = '';          // AutoTrader dashboard
@@ -459,6 +477,90 @@ document.getElementById('msg-input').addEventListener('input', function() {
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
 });
+
+// ── 음성 인식 (Web Speech API) ──────────────────────
+const WAKE_WORDS = ['자비스', 'jarvis', '재비스', '자버스'];
+let recognition = null;
+let isListening = false;
+let wakeDetected = false;
+let wakeTimer = null;
+
+function initSpeech() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    document.getElementById('mic-btn').title = '이 브라우저는 음성 인식을 지원하지 않아요';
+    return null;
+  }
+  const rec = new SpeechRecognition();
+  rec.lang = 'ko-KR';
+  rec.continuous = true;
+  rec.interimResults = true;
+
+  rec.onresult = (e) => {
+    const transcript = Array.from(e.results)
+      .map(r => r[0].transcript).join('').trim().toLowerCase();
+
+    // 웨이크워드 감지
+    const hasWake = WAKE_WORDS.some(w => transcript.includes(w));
+    if (hasWake && !wakeDetected) {
+      wakeDetected = true;
+      document.getElementById('wake-indicator').textContent = '🤖 말씀하세요...';
+      document.getElementById('wake-indicator').classList.add('show');
+      clearTimeout(wakeTimer);
+      wakeTimer = setTimeout(() => { wakeDetected = false; hideWake(); }, 8000);
+      return;
+    }
+
+    // 웨이크워드 감지 후 명령 처리
+    if (wakeDetected && e.results[e.results.length-1].isFinal) {
+      let cmd = transcript;
+      WAKE_WORDS.forEach(w => { cmd = cmd.replace(w, '').trim(); });
+      cmd = cmd.replace(/^[,\s]+/, '').trim();
+      if (cmd.length > 2) {
+        hideWake();
+        wakeDetected = false;
+        document.getElementById('msg-input').value = cmd;
+        sendMessage();
+      }
+    }
+  };
+
+  rec.onerror = (e) => {
+    if (e.error !== 'no-speech') console.warn('음성 인식 오류:', e.error);
+  };
+
+  rec.onend = () => {
+    if (isListening) rec.start(); // 연속 감지 유지
+  };
+
+  return rec;
+}
+
+function hideWake() {
+  document.getElementById('wake-indicator').classList.remove('show');
+}
+
+function toggleMic() {
+  const btn = document.getElementById('mic-btn');
+  if (!recognition) recognition = initSpeech();
+  if (!recognition) { alert('음성 인식을 지원하지 않는 브라우저예요.'); return; }
+
+  if (isListening) {
+    isListening = false;
+    recognition.stop();
+    btn.classList.remove('listening');
+    btn.textContent = '🎤';
+    btn.title = '음성 입력 시작';
+    hideWake();
+  } else {
+    isListening = true;
+    recognition.start();
+    btn.classList.add('listening');
+    btn.textContent = '⏹';
+    btn.title = '"자비스!" 라고 부른 후 명령하세요';
+    addMessage('jarvis', '🎤 음성 인식 시작됐어요! "자비스!" 라고 부른 후 명령하세요.');
+  }
+}
 
 // 초기 로드
 refreshPanel();

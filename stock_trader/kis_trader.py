@@ -42,6 +42,18 @@ class KISTrader:
             self.access_token = data.get("access_token", "")
             logger.info("✅ KIS 토큰 발급")
 
+    @property
+    def _cano(self) -> str:
+        """계좌번호 앞자리"""
+        parts = config.KIS_ACCOUNT_NO.split("-")
+        return parts[0] if parts else config.KIS_ACCOUNT_NO
+
+    @property
+    def _acnt_prdt_cd(self) -> str:
+        """계좌번호 뒷자리 (상품코드)"""
+        parts = config.KIS_ACCOUNT_NO.split("-")
+        return parts[1] if len(parts) > 1 else "01"
+
     def _headers(self, tr_id: str) -> dict:
         return {
             "Content-Type": "application/json",
@@ -67,8 +79,8 @@ class KISTrader:
         """예수금 + 총평가금액 조회"""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
         params = {
-            "CANO": config.KIS_ACCOUNT_NO.split("-")[0],
-            "ACNT_PRDT_CD": config.KIS_ACCOUNT_NO.split("-")[1],
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
             "PDNO": "005930",
             "ORD_UNPR": "0",
             "ORD_DVSN": "01",
@@ -90,8 +102,8 @@ class KISTrader:
     async def get_positions(self) -> list:
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
         params = {
-            "CANO": config.KIS_ACCOUNT_NO.split("-")[0],
-            "ACNT_PRDT_CD": config.KIS_ACCOUNT_NO.split("-")[1],
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
             "AFHR_FLPR_YN": "N",
             "OFL_YN": "",
             "INQR_DVSN": "02",
@@ -129,8 +141,8 @@ class KISTrader:
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0802U" if config.KIS_IS_PAPER else "TTTC0802U"
         payload = {
-            "CANO": config.KIS_ACCOUNT_NO.split("-")[0],
-            "ACNT_PRDT_CD": config.KIS_ACCOUNT_NO.split("-")[1],
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
             "PDNO": symbol,
             "ORD_DVSN": "00",         # 지정가
             "ORD_QTY": str(qty),
@@ -154,8 +166,8 @@ class KISTrader:
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0801U" if config.KIS_IS_PAPER else "TTTC0801U"
         payload = {
-            "CANO": config.KIS_ACCOUNT_NO.split("-")[0],
-            "ACNT_PRDT_CD": config.KIS_ACCOUNT_NO.split("-")[1],
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
             "PDNO": symbol,
             "ORD_DVSN": "00",
             "ORD_QTY": str(qty),

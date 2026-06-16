@@ -185,6 +185,106 @@ async def analysis_page2():
     with open("/app/dashboard/static/analysis.html") as f:
         return f.read()
 
+# ── ML / 백테스트 API ──────────────────────────────────
+@app.get("/api/ml/indicators/{symbol}")
+async def get_indicators(symbol: str, limit: int = 100):
+    """종목의 기술적 지표 계산"""
+    try:
+        sys.path.insert(0, "/app")
+        from ml.indicators import calculate_all
+        rows = await db.get_recent_ohlcv(symbol, limit=limit, asset="stock")
+        if not rows:
+            return {"success": False, "error": "데이터 없음"}
+        ohlcv = [{"ts": str(r["ts"]), "open": r["open"], "high": r["high"],
+                  "low": r["low"], "close": r["close"], "volume": r["volume"]}
+                 for r in reversed(rows)]
+        indicators = calculate_all(ohlcv)
+        return {"success": True, "symbol": symbol, "data": indicators}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/ml/backtest")
+async def run_backtest(request: Request):
+    """백테스트 실행"""
+    try:
+        import sys
+        sys.path.insert(0, "/app")
+        from ml.backtest import Backtest
+
+        body = await request.json()
+        symbol   = body.get("symbol", "005930")
+        strategy = body.get("strategy", "ma_cross")
+        params   = body.get("params", {})
+        capital  = int(body.get("capital", 10_000_000))
+
+        rows = await db.get_recent_ohlcv(symbol, limit=500, asset="stock")
+        if len(rows) < 60:
+            return {"success": False, "error": f"데이터 부족 ({len(rows)}개, 최소 60개 필요)"}
+
+        ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
+                  "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
+                 for r in reversed(rows)]
+
+        bt = Backtest(initial_capital=capital)
+
+        if strategy == "ma_cross":
+            result = bt.run_ma_cross(
+                ohlcv,
+                short=int(params.get("short", 5)),
+                long=int(params.get("long", 20)),
+                stop_loss=float(params.get("stop_loss", -0.02)),
+                take_profit=float(params.get("take_profit", 0.05)),
+                buy_amount=int(params.get("buy_amount", 500000))
+            )
+        elif strategy == "rsi":
+            result = bt.run_rsi(
+                ohlcv,
+                period=int(params.get("period", 14)),
+                entry=float(params.get("entry", 30)),
+                exit_=float(params.get("exit", 70)),
+                stop_loss=float(params.get("stop_loss", -0.03)),
+                buy_amount=int(params.get("buy_amount", 500000))
+            )
+        elif strategy == "optimize":
+            result = bt.optimize_ma_cross(ohlcv, buy_amount=int(params.get("buy_amount", 500000)))
+            return {"success": True, "strategy": "optimize", "data": result}
+        else:
+            return {"success": False, "error": f"알 수 없는 전략: {strategy}"}
+
+        return {"success": True, "strategy": strategy, "symbol": symbol,
+                "data": result.to_dict()}
+
+    except Exception as e:
+        logger.error(f"백테스트 오류: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/ml/features/{symbol}")
+async def get_features(symbol: str, limit: int = 200):
+    """피처 엔지니어링 결과"""
+    try:
+        import sys
+        sys.path.insert(0, "/app")
+        from ml.features import build_features, feature_summary
+
+        rows = await db.get_recent_ohlcv(symbol, limit=limit, asset="stock")
+        if len(rows) < 70:
+            return {"success": False, "error": f"데이터 부족 ({len(rows)}개)"}
+
+        ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
+                  "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
+                 for r in reversed(rows)]
+
+        features = build_features(ohlcv)
+        summary = feature_summary(features)
+
+        return {"success": True, "symbol": symbol,
+                "summary": summary, "data": features[-20:]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/learn/stats")
 async def learn_stats():
     """학습 데이터 현황 통계"""

@@ -206,6 +206,43 @@ canvas{width:100%!important;}
       </div>
     </div>
 
+  <!-- 백테스트 -->
+    <div>
+      <div class="section-title">🔬 백테스트</div>
+      <div class="learn-row" style="margin-top:8px;">
+        <div class="learn-card" style="grid-column:span 2;">
+          <div class="card-title"><div class="dot" style="background:var(--purple)"></div>전략 백테스트</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+            <select id="bt-symbol" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
+              <option value="005930">삼성전자</option>
+              <option value="000660">SK하이닉스</option>
+              <option value="035420">NAVER</option>
+              <option value="035720">카카오</option>
+              <option value="005380">현대차</option>
+            </select>
+            <select id="bt-strategy" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
+              <option value="ma_cross">MA 크로스</option>
+              <option value="rsi">RSI 반등</option>
+              <option value="optimize">파라미터 최적화</option>
+            </select>
+            <button onclick="runBacktest()" style="background:var(--purple);color:white;border:none;border-radius:6px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600;">▶ 실행</button>
+          </div>
+          <div id="bt-result" style="font-size:12px;color:var(--muted);">백테스트를 실행해보세요</div>
+        </div>
+        <div class="learn-card">
+          <div class="card-title"><div class="dot" style="background:var(--green)"></div>지표 분석</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px;">
+            <select id="ind-symbol" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;flex:1;">
+              <option value="005930">삼성전자</option>
+              <option value="000660">SK하이닉스</option>
+            </select>
+            <button onclick="loadIndicators()" style="background:var(--green);color:#12131a;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600;">조회</button>
+          </div>
+          <div id="ind-result" style="font-size:12px;color:var(--muted);">종목 선택 후 조회하세요</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -400,6 +437,100 @@ function drawStrategyChart(sells) {
       }
     }
   });
+}
+
+// ── 백테스트 ─────────────────────────────────────────
+async function runBacktest() {
+  const symbol = document.getElementById('bt-symbol').value;
+  const strategy = document.getElementById('bt-strategy').value;
+  const el = document.getElementById('bt-result');
+  el.innerHTML = '<span style="color:var(--purple)">⏳ 백테스트 실행 중...</span>';
+
+  try {
+    const res = await fetch('/api/ml/backtest', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({symbol, strategy, capital: 10000000})
+    });
+    const json = await res.json();
+    if (!json.success) { el.innerHTML = `<span style="color:var(--red)">❌ ${json.error}</span>`; return; }
+
+    const d = json.data;
+    if (strategy === 'optimize') {
+      const best = d.best;
+      el.innerHTML = `
+        <div style="color:var(--bright);font-weight:600;margin-bottom:8px;">🏆 최적 파라미터: 단기 ${best.params.short}일 / 장기 ${best.params.long}일</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <tr style="color:var(--muted)"><th style="text-align:left;padding:4px;">단기</th><th>장기</th><th>수익률</th><th>승률</th><th>MDD</th><th>거래수</th></tr>
+          ${(d.all||[]).slice(0,5).map(r => `<tr>
+            <td style="padding:4px;color:var(--bright);">${r.short}</td>
+            <td>${r.long}</td>
+            <td style="color:${r.total_return>=0?'var(--green)':'var(--red)'}">${r.total_return>=0?'+':''}${r.total_return}%</td>
+            <td>${r.win_rate}%</td>
+            <td style="color:var(--red)">-${r.max_drawdown}%</td>
+            <td>${r.trades}</td>
+          </tr>`).join('')}
+        </table>`;
+    } else {
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;">
+          <div style="background:var(--panel);border-radius:6px;padding:10px;text-align:center;">
+            <div style="font-size:10px;color:var(--muted);">총 수익률</div>
+            <div style="font-size:16px;font-weight:700;color:${d.total_return>=0?'var(--green)':'var(--red)'}">${d.total_return>=0?'+':''}${d.total_return}%</div>
+          </div>
+          <div style="background:var(--panel);border-radius:6px;padding:10px;text-align:center;">
+            <div style="font-size:10px;color:var(--muted);">승률</div>
+            <div style="font-size:16px;font-weight:700;color:var(--bright)">${d.win_rate}%</div>
+          </div>
+          <div style="background:var(--panel);border-radius:6px;padding:10px;text-align:center;">
+            <div style="font-size:10px;color:var(--muted);">MDD</div>
+            <div style="font-size:16px;font-weight:700;color:var(--red)">-${d.max_drawdown}%</div>
+          </div>
+          <div style="background:var(--panel);border-radius:6px;padding:10px;text-align:center;">
+            <div style="font-size:10px;color:var(--muted);">샤프</div>
+            <div style="font-size:16px;font-weight:700;color:var(--bright)">${d.sharpe_ratio}</div>
+          </div>
+          <div style="background:var(--panel);border-radius:6px;padding:10px;text-align:center;">
+            <div style="font-size:10px;color:var(--muted);">총 거래</div>
+            <div style="font-size:16px;font-weight:700;color:var(--bright)">${d.total_trades}건</div>
+          </div>
+          <div style="background:var(--panel);border-radius:6px;padding:10px;text-align:center;">
+            <div style="font-size:10px;color:var(--muted);">수익배수</div>
+            <div style="font-size:16px;font-weight:700;color:var(--purple)">${d.profit_factor}</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);">초기자본: ${fmt(d.initial_capital)}원 → 최종: ${fmt(d.final_capital)}원</div>`;
+    }
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+  }
+}
+
+async function loadIndicators() {
+  const symbol = document.getElementById('ind-symbol').value;
+  const el = document.getElementById('ind-result');
+  el.innerHTML = '<span style="color:var(--purple)">⏳ 조회 중...</span>';
+
+  try {
+    const res = await fetch(`/api/ml/indicators/${symbol}`);
+    const json = await res.json();
+    if (!json.success) { el.innerHTML = `<span style="color:var(--red)">❌ ${json.error}</span>`; return; }
+    const d = json.data;
+
+    const signal = (condition, trueText, falseText) =>
+      `<span style="color:${condition?'var(--green)':'var(--red)'}">${condition?trueText:falseText}</span>`;
+
+    el.innerHTML = `
+      <div class="learn-stat"><span class="learn-stat-label">RSI (14)</span><span class="learn-stat-value" style="color:${d.rsi<30?'var(--green)':d.rsi>70?'var(--red)':'var(--bright)'}">${(d.rsi||0).toFixed(1)}</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">MACD 히스토그램</span><span class="learn-stat-value" style="color:${d.macd_hist>0?'var(--green)':'var(--red)'}">${(d.macd_hist||0).toFixed(0)}</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">볼린저 %B</span><span class="learn-stat-value">${(d.bb_pct||0).toFixed(2)}</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">스토캐스틱 K</span><span class="learn-stat-value">${(d.stoch_k||0).toFixed(1)}</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">골든크로스</span><span class="learn-stat-value">${signal(d.golden_cross,'✅ 발생','❌ 없음')}</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">RSI 과매도</span><span class="learn-stat-value">${signal(d.rsi_oversold,'✅ 과매도','정상')}</span></div>
+      <div class="learn-stat"><span class="learn-stat-label">MACD 상승</span><span class="learn-stat-value">${signal(d.macd_bullish,'✅ 상승','하락')}</span></div>`;
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+  }
 }
 
 // 초기 로드

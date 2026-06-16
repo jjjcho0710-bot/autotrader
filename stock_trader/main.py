@@ -101,9 +101,13 @@ class StockTrader:
         await self.load_strategies()
 
         # 보유 포지션 로드
-        positions = await self.trader.get_positions()
-        self.positions = {p["symbol"]: p for p in positions}
-        logger.info(f"📊 보유 종목: {list(self.positions.keys())}")
+        try:
+            positions = await self.trader.get_positions()
+            self.positions = {p["symbol"]: p for p in positions if isinstance(p, dict) and p.get("symbol")}
+            logger.info(f"📊 보유 종목: {list(self.positions.keys())}")
+        except Exception as e:
+            logger.warning(f"보유 포지션 로드 실패 (무시): {e}")
+            self.positions = {}
 
         await cache.set_bot_status("stock_trader", {
             "status": "running",
@@ -155,8 +159,12 @@ class StockTrader:
         max_positions = int(params.get("max_positions", 5))
 
         # ① 보유 포지션 손절/익절 체크
-        positions = await self.trader.get_positions()
-        self.positions = {p["symbol"]: p for p in positions}
+        try:
+            positions = await self.trader.get_positions()
+            self.positions = {p["symbol"]: p for p in positions if isinstance(p, dict) and p.get("symbol")}
+        except Exception as e:
+            logger.warning(f"포지션 조회 실패: {e}")
+            self.positions = {}
 
         for symbol, pos in self.positions.items():
             cur_price = pos["cur_price"]

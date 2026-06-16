@@ -167,7 +167,33 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .pos-pct{font-size:12px;font-weight:700;font-family:var(--mono);}
 .pos-pct.pos{color:var(--green);}.pos-pct.neg{color:var(--red);}
 .pos-meta{font-size:10px;color:var(--muted);font-family:var(--mono);}
+
+/* ── 모바일 Jarvis ── */
+@media (max-width: 768px) {
+  .right-panel { display: none !important; }
+  .jarvis-center { 
+    max-width: 100% !important; 
+    padding: 0 !important;
+  }
+  .chat-messages { 
+    padding: 12px !important;
+  }
+  .input-area {
+    padding: 10px 12px !important;
+  }
+  .quick-cmds {
+    padding: 8px 12px !important;
+    gap: 6px !important;
+  }
+  .qcmd {
+    font-size: 11px !important;
+    padding: 5px 10px !important;
+  }
+  .jarvis-avatar { width: 60px !important; height: 60px !important; }
+  .jarvis-name { font-size: 20px !important; }
+}
 </style>
+  <link rel="stylesheet" href="/static/mobile.css">
 </head>
 <body>
 

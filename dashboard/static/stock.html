@@ -109,6 +109,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .wi-chg.pos{color:var(--green);}.wi-chg.neg{color:var(--red);}
 .empty-msg{color:var(--muted);font-size:11px;padding:10px 0;}
 </style>
+  <link rel="stylesheet" href="/static/mobile.css">
 </head>
 <body>
 <div class="sidebar">
@@ -179,8 +180,22 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div class="hist-list" id="hist-list"><div class="empty-msg">로딩 중...</div></div>
       </div>
       <div class="pbox nr nb">
-        <div class="ptitle">관심 종목 <span style="color:var(--muted);font-weight:400;">(실시간 시세)</span></div>
+        <div class="ptitle" style="display:flex;align-items:center;justify-content:space-between;">
+          관심 종목 <span style="color:var(--muted);font-weight:400;">(실시간 시세)</span>
+          <button onclick="toggleSymbolManager()" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">⚙️ 종목 관리</button>
+        </div>
         <div class="watch-list" id="watch-list"><div class="empty-msg">로딩 중...</div></div>
+        
+        <!-- 종목 관리 패널 -->
+        <div id="symbol-manager" style="display:none;margin-top:12px;border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--panel2);">
+          <div style="font-size:12px;font-weight:600;color:var(--bright);margin-bottom:10px;">📋 감시 종목 관리</div>
+          <div style="display:flex;gap:8px;margin-bottom:10px;">
+            <input id="new-symbol" placeholder="종목코드 (예: 005930)" style="flex:1;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
+            <input id="new-symbol-name" placeholder="종목명 (예: 삼성전자)" style="flex:1;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
+            <button onclick="addSymbol()" style="background:var(--stock);color:white;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">추가</button>
+          </div>
+          <div id="symbol-list" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -373,6 +388,59 @@ async function fetchHistory() {
       </div>`;
     });
   } catch(e){}
+}
+
+// 종목 관리
+const DEFAULT_SYMBOLS = {
+  '005930': '삼성전자', '000660': 'SK하이닉스', '035420': 'NAVER',
+  '035720': '카카오', '005380': '현대차', '068270': '셀트리온',
+  '373220': 'LG에너지솔루션', '323410': '카카오뱅크'
+};
+
+function getSymbols() {
+  const saved = localStorage.getItem('watchSymbols');
+  return saved ? JSON.parse(saved) : DEFAULT_SYMBOLS;
+}
+
+function saveSymbols(symbols) {
+  localStorage.setItem('watchSymbols', JSON.stringify(symbols));
+  renderSymbolList();
+  fetchWatchlist();
+}
+
+function toggleSymbolManager() {
+  const el = document.getElementById('symbol-manager');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  renderSymbolList();
+}
+
+function renderSymbolList() {
+  const symbols = getSymbols();
+  const el = document.getElementById('symbol-list');
+  el.innerHTML = Object.entries(symbols).map(([code, name]) => `
+    <div style="display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:4px 8px;">
+      <span style="font-size:11px;color:var(--bright);font-family:var(--mono);">${code}</span>
+      <span style="font-size:11px;color:var(--muted);">${name}</span>
+      <button onclick="removeSymbol('${code}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:12px;padding:0 2px;">✕</button>
+    </div>
+  `).join('');
+}
+
+function addSymbol() {
+  const code = document.getElementById('new-symbol').value.trim();
+  const name = document.getElementById('new-symbol-name').value.trim() || code;
+  if (!code) return;
+  const symbols = getSymbols();
+  symbols[code] = name;
+  saveSymbols(symbols);
+  document.getElementById('new-symbol').value = '';
+  document.getElementById('new-symbol-name').value = '';
+}
+
+function removeSymbol(code) {
+  const symbols = getSymbols();
+  delete symbols[code];
+  saveSymbols(symbols);
 }
 
 // 관심 종목 실시간 시세

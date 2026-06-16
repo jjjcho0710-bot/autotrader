@@ -339,25 +339,18 @@ from datetime import datetime
 # 대화 히스토리 (메모리)
 _jarvis_history: list = []
 
-JARVIS_SYSTEM_PROMPT = """
-당신은 AutoTrader의 AI 트레이딩 어시스턴트 **Jarvis**입니다.
+JARVIS_SYSTEM_PROMPT = """너는 트레이딩 AI TradeJarvis야. 주인님을 집사처럼 모셔.
 
-## 역할
-- 실시간 포트폴리오 데이터를 분석하고 인사이트를 제공합니다
-- 주식/코인 매매 전략에 대해 조언합니다
-- 리스크를 감지하고 경고합니다
-- 사용자의 명령을 이해하고 봇 제어를 도웁니다
+규칙:
+- 질문에 핵심만 2줄 이내로 답해
+- 인사말/면책문구 절대 금지
+- 이모지 1개만
+- 한국어로
 
-## 성격
-- 전문적이지만 친근하게 대화합니다
-- 데이터 기반으로 명확하게 분석합니다
-- 중요한 리스크는 반드시 짚어줍니다
-- 답변은 간결하게, 핵심만 먼저 말합니다
-
-## 답변 형식
-- 한국어로 답변합니다
-- 숫자는 한국 원화 형식(,구분자)으로 표시합니다
-- 텔레그램 메시지에 적합하게 이모지를 적절히 사용합니다
+매매 권한:
+- execute_trade 도구로 실제 주식/코인 매수/매도 가능
+- "삼성전자 매수해" → 확인 후 실행
+- 매매 전 반드시 확인 요청
 - 중요 수치는 **볼드** 처리합니다
 - 답변은 3-5문장 이내로 간결하게 (길면 핵심만)
 
@@ -653,7 +646,7 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
         }
         payload = {
             "model": jarvis_model,
-            "messages": messages,
+            "messages": [{"role": "system", "content": JARVIS_SYSTEM_PROMPT}] + messages,
             "stream": False,
         }
         async with http.ClientSession() as session:
@@ -1182,6 +1175,43 @@ def _jitter(base: float, pct: float = 0.015) -> float:
 
 def _change_rate(base: float, cur: float) -> float:
     return round((cur - base) / base * 100, 2)
+
+
+@app.post("/api/trade/execute")
+async def execute_trade(request: Request):
+    """Jarvis가 직접 매수/매도 명령"""
+    try:
+        body = await request.json()
+        bot    = body.get("bot", "stock")
+        action = body.get("action", "buy")
+        symbol = body.get("symbol", "")
+        amount = int(body.get("amount", 500000))
+
+        if not symbol:
+            return {"success": False, "error": "종목코드 없음"}
+
+        if bot == "stock":
+            from stock_trader.kis_trader import KISTrader
+            trader = KISTrader()
+            trader.session = __import__('aiohttp').ClientSession()
+            await trader._get_token()
+            price = await trader.get_current_price(symbol)
+            if price <= 0:
+                return {"success": False, "error": "시세 조회 실패 (장외 시간일 수 있음)"}
+            qty = max(1, amount // price)
+            if action == "buy":
+                result = await trader.buy(symbol, price, qty)
+            else:
+                result = await trader.sell(symbol, price, qty)
+            await trader.session.close()
+            return {"success": result["success"], "data": result, "price": price, "qty": qty}
+
+        elif bot == "crypto":
+            return {"success": False, "error": "코인 거래는 Static IP 설정 후 가능합니다"}
+
+        return {"success": False, "error": "알 수 없는 봇"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/mock/prices/stock")

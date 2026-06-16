@@ -200,54 +200,51 @@ class Cache:
         return {k: json.loads(v) for k, v in raw.items()}
 
 
-    async def get_watchlist(self, active_only: bool = True) -> list:
-        """감시 종목 전체 조회"""
-        async with self.pool.acquire() as conn:
-            if active_only:
-                rows = await conn.fetch(
-                    "SELECT * FROM watchlist WHERE is_active=TRUE ORDER BY created_at"
-                )
-            else:
-                rows = await conn.fetch("SELECT * FROM watchlist ORDER BY created_at")
-        return [dict(r) for r in rows]
-
-    async def get_watchlist_symbols(self) -> list:
-        """감시 종목 심볼 리스트만 반환"""
-        rows = await self.get_watchlist(active_only=True)
-        return [r["symbol"] for r in rows]
-
-    async def add_watchlist(self, symbol: str, name: str = None, added_by: str = "jarvis", reason: str = None) -> bool:
-        """감시 종목 추가"""
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
-                    VALUES ($1, $2, $3, $4, TRUE)
-                    ON CONFLICT (symbol) DO UPDATE
-                    SET is_active=TRUE, name=COALESCE($2, watchlist.name),
-                        added_by=$3, reason=$4, updated_at=NOW()
-                """, symbol, name, added_by, reason)
-            logger.info(f"✅ 감시 종목 추가: {symbol} ({name})")
-            return True
-        except Exception as e:
-            logger.error(f"감시 종목 추가 실패: {e}")
-            return False
-
-    async def remove_watchlist(self, symbol: str) -> bool:
-        """감시 종목 비활성화"""
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1",
-                    symbol
-                )
-            logger.info(f"✅ 감시 종목 제거: {symbol}")
-            return True
-        except Exception as e:
-            logger.error(f"감시 종목 제거 실패: {e}")
-            return False
-
-
 # 싱글톤
 db = Database()
 cache = Cache()
+
+
+# ── Database watchlist 메서드 동적 추가 ──────────────────
+import types
+
+async def _get_watchlist(self, active_only: bool = True) -> list:
+    async with self.pool.acquire() as conn:
+        if active_only:
+            rows = await conn.fetch("SELECT * FROM watchlist WHERE is_active=TRUE ORDER BY created_at")
+        else:
+            rows = await conn.fetch("SELECT * FROM watchlist ORDER BY created_at")
+    return [dict(r) for r in rows]
+
+async def _get_watchlist_symbols(self) -> list:
+    rows = await self.get_watchlist(active_only=True)
+    return [r["symbol"] for r in rows]
+
+async def _add_watchlist(self, symbol: str, name: str = None, added_by: str = "jarvis", reason: str = None) -> bool:
+    try:
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                VALUES ($1, $2, $3, $4, TRUE)
+                ON CONFLICT (symbol) DO UPDATE
+                SET is_active=TRUE, name=COALESCE($2, watchlist.name),
+                    added_by=$3, reason=$4, updated_at=NOW()
+            """, symbol, name, added_by, reason)
+        return True
+    except Exception as e:
+        return False
+
+async def _remove_watchlist(self, symbol: str) -> bool:
+    try:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", symbol
+            )
+        return True
+    except Exception as e:
+        return False
+
+Database.get_watchlist         = _get_watchlist
+Database.get_watchlist_symbols = _get_watchlist_symbols
+Database.add_watchlist         = _add_watchlist
+Database.remove_watchlist      = _remove_watchlist

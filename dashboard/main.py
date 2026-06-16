@@ -33,6 +33,35 @@ db_pool: Optional[asyncpg.Pool] = None
 redis_client: Optional[aioredis.Redis] = None
 
 
+
+# ── KIS 토큰 캐시 ──────────────────────────────────────
+import aiohttp as _aiohttp
+_kis_token_cache: dict = {"token": "", "expires": 0}
+
+async def get_kis_token() -> str:
+    """KIS 액세스 토큰 발급 (1시간 캐싱)"""
+    import time
+    now = time.time()
+    if _kis_token_cache["token"] and now < _kis_token_cache["expires"]:
+        return _kis_token_cache["token"]
+    try:
+        base = config.kis_base_url
+        async with _aiohttp.ClientSession() as session:
+            res = await session.post(f"{base}/oauth2/tokenP", json={
+                "grant_type": "client_credentials",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+            }, timeout=_aiohttp.ClientTimeout(total=10))
+            data = await res.json()
+            token = data.get("access_token", "")
+            if token:
+                _kis_token_cache["token"] = token
+                _kis_token_cache["expires"] = now + 3600
+            return token
+    except Exception as e:
+        logger.error(f"KIS 토큰 발급 실패: {e}")
+        return _kis_token_cache.get("token", "")
+
 @app.on_event("startup")
 async def startup():
     global db_pool, redis_client
@@ -282,14 +311,10 @@ async def debug_stock_account():
     try:
         import aiohttp as http
         base = config.kis_base_url
+        token = await get_kis_token()
+        if not token:
+            return {"success": False, "error": "KIS 토큰 발급 실패"}
         async with http.ClientSession() as session:
-            token_res = await session.post(f"{base}/oauth2/tokenP", json={
-                "grant_type": "client_credentials",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
-            })
-            token_data = await token_res.json()
-            token = token_data.get("access_token", "")
             headers = {
                 "authorization": f"Bearer {token}",
                 "appkey": config.KIS_APP_KEY,
@@ -308,7 +333,8 @@ async def debug_stock_account():
             }
             res = await session.get(
                 f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
-                headers=headers, params=params
+                headers=headers, params=params,
+                timeout=http.ClientTimeout(total=10),
             )
             raw = await res.json()
             out2 = raw.get("output2", [{}])
@@ -326,17 +352,11 @@ async def get_stock_positions():
     try:
         import aiohttp as http
         base = config.kis_base_url
+        token = await get_kis_token()
+        if not token:
+            return {"success": False, "error": "KIS 토큰 발급 실패", "data": [], "account": {}}
 
-        # 토큰 발급
         async with http.ClientSession() as session:
-            token_res = await session.post(f"{base}/oauth2/tokenP", json={
-                "grant_type": "client_credentials",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
-            })
-            token_data = await token_res.json()
-            token = token_data.get("access_token", "")
-
             headers = {
                 "authorization": f"Bearer {token}",
                 "appkey": config.KIS_APP_KEY,
@@ -355,7 +375,8 @@ async def get_stock_positions():
             }
             res = await session.get(
                 f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
-                headers=headers, params=params
+                headers=headers, params=params,
+                timeout=http.ClientTimeout(total=10),
             )
             data = await res.json()
             positions = []

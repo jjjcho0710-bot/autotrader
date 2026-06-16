@@ -90,17 +90,26 @@ class UpbitTrader:
         balances = await self.get_all_balances()
         positions = []
         for b in balances:
-            if b["currency"] == "KRW":
+            # 딕셔너리가 아니면 스킵
+            if not isinstance(b, dict):
+                continue
+            if b.get("currency") == "KRW":
                 continue
             qty = float(b.get("balance", 0))
             if qty < 0.00001:
                 continue
             avg = float(b.get("avg_buy_price", 0))
-            pair = f"KRW-{b['currency']}"
-            cur = await self.get_current_price(pair)
+            currency = b.get("currency", "")
+            if not currency:
+                continue
+            pair = f"KRW-{currency}"
+            try:
+                cur = await self.get_current_price(pair)
+            except:
+                cur = avg
             positions.append({
                 "pair":      pair,
-                "currency":  b["currency"],
+                "currency":  currency,
                 "qty":       qty,
                 "avg_price": avg,
                 "cur_price": cur,

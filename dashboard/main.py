@@ -1177,6 +1177,107 @@ def _change_rate(base: float, cur: float) -> float:
     return round((cur - base) / base * 100, 2)
 
 
+@app.post("/api/jarvis/signal")
+async def jarvis_signal(request: Request):
+    """
+    stock-trader/crypto-trader가 매매 신호 발생시 Jarvis에게 전달
+    Jarvis가 분석 후 자동 실행 + 텔레그램 보고
+    """
+    try:
+        body = await request.json()
+        bot       = body.get("bot", "stock_trader")
+        action    = body.get("action", "buy")   # buy / sell
+        symbol    = body.get("symbol", "")
+        name      = body.get("name", symbol)
+        price     = body.get("price", 0)
+        qty       = body.get("qty", 0)
+        strategy  = body.get("strategy", "")
+        reason    = body.get("reason", "")
+
+        if not symbol:
+            return {"success": False, "error": "종목코드 없음"}
+
+        action_kr = "매수" if action == "buy" else "매도"
+        token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+        chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
+
+        # 1. Jarvis에게 분석 요청
+        analysis_prompt = f"""
+{name}({symbol}) {action_kr} 신호 발생!
+전략: {strategy}
+현재가: {price:,}원
+수량: {qty}주
+금액: {price*qty:,}원
+이유: {reason}
+
+시장 상황을 분석하고 이 매매를 실행해야 할지 판단해줘.
+실행 여부를 결정하고 EXECUTE 또는 SKIP으로 시작해서 이유를 한 줄로 설명해줘.
+"""
+        jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
+
+        # 2. Jarvis 판단 결과 확인
+        should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
+
+        if should_execute:
+            # 3. 실제 매매 실행
+            import importlib.util, sys, aiohttp as http
+            from stock_trader.kis_trader import KISTrader
+            trader = KISTrader()
+            trader.session = http.ClientSession()
+            await trader._get_token()
+
+            if action == "buy":
+                result = await trader.buy(symbol, price, qty)
+            else:
+                result = await trader.sell(symbol, price, qty)
+
+            await trader.session.close()
+
+            if result.get("success"):
+                # DB에 매매 기록
+                if db_pool:
+                    async with db_pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
+                            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                        """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price*qty), strategy)
+
+                # 텔레그램 보고
+                emoji = "📈" if action == "buy" else "📉"
+                msg = (
+                    f"{emoji} <b>{name} {action_kr} 완료</b>
+"
+                    f"가격: {price:,}원 × {qty}주
+"
+                    f"금액: {price*qty:,}원
+"
+                    f"전략: {strategy}
+"
+                    f"Jarvis 판단: {jarvis_reply[:80]}"
+                )
+                await _send_telegram(msg, chat_id, token)
+                logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")
+                return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
+            else:
+                await _send_telegram(
+                    f"❌ {name} {action_kr} 실패
+{result.get('error')}",
+                    chat_id, token
+                )
+                return {"success": False, "executed": False, "error": result.get("error")}
+        else:
+            # 4. 건너뜀 보고
+            msg = f"⏭️ <b>{name} {action_kr} 신호 건너뜀</b>
+Jarvis 판단: {jarvis_reply[:100]}"
+            await _send_telegram(msg, chat_id, token)
+            logger.info(f"⏭️ Jarvis가 {action_kr} 신호 건너뜀: {symbol}")
+            return {"success": True, "executed": False, "jarvis_reply": jarvis_reply}
+
+    except Exception as e:
+        logger.error(f"Jarvis 신호 처리 오류: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/trade/execute")
 async def execute_trade(request: Request):
     """Jarvis가 직접 매수/매도 명령"""

@@ -219,16 +219,12 @@ class StockTrader:
                 if cur_price <= 0:
                     continue
                 qty = strategy.calc_buy_qty(cur_price)
-                result = await self.trader.buy(symbol, cur_price, qty)
-                if result["success"]:
-                    await db.insert_trade(
-                        bot="stock_trader", asset_type="stock",
-                        symbol=symbol, side="BUY",
-                        price=cur_price, quantity=qty,
-                        amount=cur_price * qty,
-                        strategy=strat_name,
-                    )
-                    await self._notify(f"📈 매수 [{symbol}] {cur_price:,}원 × {qty}주 ({strat_name})")
+                await self._signal_jarvis(
+                    action="buy", symbol=symbol, name=symbol,
+                    price=cur_price, qty=qty,
+                    strategy=strat_name,
+                    reason=f"MA크로스 골든크로스 신호 발생"
+                )
 
         # 상태 업데이트
         await cache.set_bot_status("stock_trader", {
@@ -239,6 +235,31 @@ class StockTrader:
         })
 
     # ── 알림 ──────────────────────────────────────────────
+    async def _signal_jarvis(self, action: str, symbol: str, name: str, price: int, qty: int, strategy: str, reason: str = ""):
+        """매매 신호를 Jarvis에게 전달 → Jarvis가 판단 후 자동 실행"""
+        import aiohttp as http
+        import os
+        dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+        try:
+            async with http.ClientSession() as session:
+                await session.post(
+                    f"{dashboard_url}/api/jarvis/signal",
+                    json={
+                        "bot": "stock_trader",
+                        "action": action,
+                        "symbol": symbol,
+                        "name": name,
+                        "price": price,
+                        "qty": qty,
+                        "strategy": strategy,
+                        "reason": reason,
+                    },
+                    timeout=http.ClientTimeout(total=60),
+                )
+            logger.info(f"📡 Jarvis에게 신호 전달: {action} {symbol}")
+        except Exception as e:
+            logger.error(f"Jarvis 신호 전달 실패: {e}")
+
     async def _notify(self, msg: str):
         logger.info(f"📣 {msg}")
         try:

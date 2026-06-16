@@ -379,7 +379,15 @@ async def train_all_models():
     """전체 감시 종목 ML 모델 일괄 학습"""
     try:
         from ml.model import MLModelManager
-        symbols = await db.get_watchlist_symbols()
+
+        # watchlist에서 종목 조회
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT symbol FROM watchlist WHERE is_active=TRUE ORDER BY created_at")
+            symbols = [r["symbol"] for r in rows]
+        except Exception:
+            symbols = []
+
         if not symbols:
             symbols = config.STOCK_SYMBOLS
 
@@ -403,7 +411,7 @@ async def train_all_models():
 
                 result = await manager.train(symbol, ohlcv)
                 results.append({"symbol": symbol, **result})
-                logger.info(f"✅ [{symbol}] 학습 완료: {result}")
+                logger.info(f"✅ [{symbol}] 학습 완료")
 
             except Exception as e:
                 results.append({"symbol": symbol, "success": False, "error": str(e)})

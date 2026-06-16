@@ -1,6 +1,8 @@
 """
 텔레그램 알림 모듈
-매수/매도/에러/일별 리포트 알림
+- TradeJarvis: AI 분석/명령
+- 주식봇: stock-trader 매매 알림
+- 코인봇: crypto-trader 매매 알림
 """
 import logging
 import aiohttp
@@ -8,62 +10,97 @@ from common.config import config
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_API = f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}"
+TG_API = "https://api.telegram.org/bot"
 
 
-async def send_message(text: str):
-    """텔레그램 메시지 전송"""
-    if not config.TELEGRAM_TOKEN or not config.TELEGRAM_CHAT_ID:
-        logger.warning("텔레그램 설정 없음 — 알림 스킵")
+async def _send(token: str, chat_id: str, text: str):
+    """기본 전송 함수"""
+    if not token or not chat_id:
+        logger.warning("텔레그램 토큰/채팅ID 없음 — 스킵")
         return
-
+    if len(text) > 4096:
+        text = text[:4000] + "\n...(생략)"
     try:
         async with aiohttp.ClientSession() as session:
             await session.post(
-                f"{TELEGRAM_API}/sendMessage",
-                json={
-                    "chat_id": config.TELEGRAM_CHAT_ID,
-                    "text": text,
-                    "parse_mode": "HTML",
-                }
+                f"{TG_API}{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=aiohttp.ClientTimeout(total=10),
             )
     except Exception as e:
         logger.error(f"텔레그램 전송 실패: {e}")
 
 
+# ── 기본 (기존 TELEGRAM_TOKEN 사용) ──────────────────
+async def send_message(text: str):
+    await _send(config.TELEGRAM_TOKEN, config.TELEGRAM_CHAT_ID, text)
+
+
+# ── 주식봇 전송 ───────────────────────────────────────
+async def send_stock(text: str):
+    """주식봇으로 전송"""
+    token   = config.STOCK_BOT_TOKEN
+    chat_id = config.STOCK_CHAT_ID or config.TELEGRAM_CHAT_ID
+    await _send(token, chat_id, text)
+
+
+# ── 코인봇 전송 ───────────────────────────────────────
+async def send_crypto(text: str):
+    """코인봇으로 전송"""
+    token   = config.CRYPTO_BOT_TOKEN
+    chat_id = config.CRYPTO_CHAT_ID or config.TELEGRAM_CHAT_ID
+    await _send(token, chat_id, text)
+
+
+# ── Jarvis 전송 ───────────────────────────────────────
+async def send_jarvis(text: str):
+    """TradeJarvis 봇으로 전송"""
+    token   = config.JARVIS_ANALYST_TOKEN
+    chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
+    await _send(token, chat_id, text)
+
+
+# ── 편의 함수들 ───────────────────────────────────────
 async def notify_buy(bot: str, symbol: str, price: float, qty: float, strategy: str):
+    emoji = "📈"
     msg = (
-        f"📈 <b>매수 체결</b>\n"
+        f"{emoji} <b>매수 체결</b>\n"
         f"봇: {bot}\n"
         f"종목: {symbol}\n"
         f"가격: {price:,.0f}원\n"
         f"수량: {qty}\n"
         f"전략: {strategy}"
     )
-    await send_message(msg)
+    if bot == "stock_trader":
+        await send_stock(msg)
+    elif bot == "crypto_trader":
+        await send_crypto(msg)
+    else:
+        await send_message(msg)
 
 
 async def notify_sell(bot: str, symbol: str, price: float, qty: float, pnl: float, strategy: str):
     emoji = "🎯" if pnl >= 0 else "🛑"
-    pnl_str = f"{pnl:+,.0f}원"
     msg = (
         f"{emoji} <b>매도 체결</b>\n"
         f"봇: {bot}\n"
         f"종목: {symbol}\n"
         f"가격: {price:,.0f}원\n"
         f"수량: {qty}\n"
-        f"손익: {pnl_str}\n"
+        f"손익: {pnl:+,.0f}원\n"
         f"전략: {strategy}"
     )
-    await send_message(msg)
+    if bot == "stock_trader":
+        await send_stock(msg)
+    elif bot == "crypto_trader":
+        await send_crypto(msg)
+    else:
+        await send_message(msg)
 
 
 async def notify_error(bot: str, error: str):
-    msg = (
-        f"⚠️ <b>에러 발생</b>\n"
-        f"봇: {bot}\n"
-        f"내용: {error}"
-    )
+    msg = f"⚠️ <b>에러 발생</b>\n봇: {bot}\n내용: {error}"
+    await send_jarvis(msg)
     await send_message(msg)
 
 
@@ -75,4 +112,4 @@ async def notify_daily_report(today_pnl: float, total_pnl: float, trade_count: i
         f"오늘 체결: {trade_count}건\n"
         f"누적 수익: {total_pnl:+,.0f}원"
     )
-    await send_message(msg)
+    await send_jarvis(msg)

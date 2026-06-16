@@ -208,8 +208,8 @@ class CryptoTrader:
     async def _notify(self, msg: str):
         logger.info(f"📣 {msg}")
         try:
-            from common.telegram import send_message
-            await send_message(f"[crypto-trader]\n{msg}")
+            from common.telegram import send_crypto
+            await send_crypto(f"[crypto-trader]\n{msg}")
         except Exception as e:
             logger.warning(f"텔레그램 전송 실패: {e}")
 

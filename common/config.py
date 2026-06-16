@@ -29,6 +29,15 @@ class Config:
     # ── 텔레그램 ──
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+
+    # ── 텔레그램 봇별 토큰 ──
+    JARVIS_ANALYST_TOKEN:   str = os.getenv("JARVIS_ANALYST_TOKEN", "")
+    JARVIS_ANALYST_CHAT_ID: str = os.getenv("JARVIS_ANALYST_CHAT_ID", "")
+    STOCK_BOT_TOKEN:        str = os.getenv("STOCK_BOT_TOKEN", "")
+    STOCK_CHAT_ID:          str = os.getenv("STOCK_CHAT_ID", "")
+    CRYPTO_BOT_TOKEN:       str = os.getenv("CRYPTO_BOT_TOKEN", "")
+    CRYPTO_CHAT_ID:         str = os.getenv("CRYPTO_CHAT_ID", "")
 
     # ── 수집 설정 ──
     COLLECT_INTERVAL_SEC: int = int(os.getenv("COLLECT_INTERVAL_SEC", "60"))  # 1분봉

@@ -268,12 +268,20 @@ class StockTrader:
                 cur_price = await self.trader.get_current_price(symbol)
                 if cur_price <= 0:
                     continue
+
+                # ── ML 예측 필터 ──────────────────────────────
+                ml_ok, ml_reason = await self._check_ml_signal(symbol, rows)
+                if not ml_ok:
+                    logger.info(f"⛔ [{symbol}] ML 필터 차단: {ml_reason}")
+                    continue
+                # ─────────────────────────────────────────────
+
                 qty = strategy.calc_buy_qty(cur_price)
                 await self._signal_jarvis(
                     action="buy", symbol=symbol, name=symbol,
                     price=cur_price, qty=qty,
                     strategy=strat_name,
-                    reason=f"MA크로스 골든크로스 신호 발생"
+                    reason=f"MA크로스 골든크로스 + {ml_reason}"
                 )
 
         # 상태 업데이트
@@ -283,6 +291,50 @@ class StockTrader:
             "positions":  len(self.positions),
             "strategy":   strat_name,
         })
+
+    # ── ML 예측 필터 ──────────────────────────────────────
+    async def _check_ml_signal(self, symbol: str, ohlcv_rows: list) -> tuple[bool, str]:
+        """
+        ML 예측으로 매수 신호 검증
+        Returns: (통과여부, 이유)
+        """
+        try:
+            from ml.model import MLModelManager
+            ml = MLModelManager(db_pool=db.pool)
+
+            # ohlcv_rows → ML 입력 포맷 변환
+            ohlcv = []
+            for r in reversed(ohlcv_rows):   # 오래된 것부터
+                ohlcv.append({
+                    "date":   str(r.get("ts", ""))[:10].replace("-", ""),
+                    "open":   float(r.get("open", 0)),
+                    "high":   float(r.get("high", 0)),
+                    "low":    float(r.get("low", 0)),
+                    "close":  float(r.get("close", 0)),
+                    "volume": float(r.get("volume", 0)),
+                })
+
+            result = await ml.predict(symbol, ohlcv)
+
+            if not result.get("success"):
+                # 모델 없으면 → 학습 데이터 부족, MA크로스만으로 진행
+                logger.info(f"[{symbol}] ML 모델 없음 → MA크로스 단독 신호 허용")
+                return True, "ML 모델 미학습 (MA크로스 단독)"
+
+            signal    = result.get("signal", "HOLD")
+            buy_prob  = result.get("buy_prob", 0.5)
+            confidence = result.get("confidence", 0)
+
+            if signal == "BUY" and buy_prob >= 0.60:
+                return True, f"ML 매수확률 {buy_prob:.0%} (신뢰도 {confidence:.0f}%)"
+            elif signal == "HOLD":
+                return False, f"ML 관망 신호 (매수확률 {buy_prob:.0%})"
+            else:
+                return False, f"ML 매도 신호 (매수확률 {buy_prob:.0%})"
+
+        except Exception as e:
+            logger.warning(f"[{symbol}] ML 필터 오류 → 허용: {e}")
+            return True, "ML 오류 → MA크로스 단독"
 
     # ── 알림 ──────────────────────────────────────────────
     async def _signal_jarvis(self, action: str, symbol: str, name: str, price: int, qty: int, strategy: str, reason: str = ""):

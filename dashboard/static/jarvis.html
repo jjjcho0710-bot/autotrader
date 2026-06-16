@@ -589,9 +589,43 @@ function toggleMic() {
   }
 }
 
+// 대화 히스토리 로드 (새로고침 후 복원)
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/jarvis/history');
+    const data = await res.json();
+    if (data.success && data.data && data.data.length > 0) {
+      // 환영 메시지 제거
+      const messages = document.getElementById('messages');
+      messages.innerHTML = '';
+      data.data.forEach(h => {
+        addMessage(h.role === 'user' ? 'user' : 'jarvis', h.text);
+      });
+    }
+  } catch(e) {
+    // 히스토리 없으면 그냥 환영 메시지 유지
+  }
+}
+
+// Jarvis 연결 상태 확인
+async function checkConnection() {
+  try {
+    const res = await fetch('/api/health');
+    const ok = res.ok;
+    const statusEl = document.getElementById('ai-status');
+    if (statusEl) statusEl.textContent = ok ? 'AI 대기중' : '연결 오류';
+  } catch(e) {
+    const statusEl = document.getElementById('ai-status');
+    if (statusEl) statusEl.textContent = '연결 오류';
+  }
+}
+
 // 초기 로드
 refreshPanel();
+loadHistory();
+checkConnection();
 setInterval(refreshPanel, 30000);
+setInterval(checkConnection, 60000);
 </script>
 </body>
 </html>

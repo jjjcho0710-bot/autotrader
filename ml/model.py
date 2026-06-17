@@ -149,7 +149,7 @@ class MLModelManager:
         accuracy = correct / len(test_X) if test_X else 0
 
         # 모델 저장
-        await self._save_model(symbol, model)
+        await self._save_model(symbol, model, accuracy=round(accuracy * 100, 1), samples=len(features))
 
         return {
             "success": True,
@@ -221,7 +221,7 @@ class MLModelManager:
         ]
         return important
 
-    async def _save_model(self, symbol: str, model: SimpleNaiveBayes):
+    async def _save_model(self, symbol: str, model: SimpleNaiveBayes, accuracy: float = 0, samples: int = 0):
         """모델을 DB에 저장"""
         if not self.db_pool:
             return
@@ -229,11 +229,11 @@ class MLModelManager:
             model_json = json.dumps(model.to_dict())
             async with self.db_pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO ml_models (symbol, model_name, model_data, updated_at)
-                    VALUES ($1, $2, $3, NOW())
+                    INSERT INTO ml_models (symbol, model_name, model_data, accuracy, samples, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, NOW())
                     ON CONFLICT (symbol, model_name) DO UPDATE
-                    SET model_data=$3, updated_at=NOW()
-                """, symbol, "naive_bayes", model_json)
+                    SET model_data=$3, accuracy=$4, samples=$5, updated_at=NOW()
+                """, symbol, "naive_bayes", model_json, accuracy, samples)
             logger.info(f"✅ 모델 저장: {symbol}")
         except Exception as e:
             logger.error(f"모델 저장 실패: {e}")
@@ -276,18 +276,26 @@ class MLModelManager:
             logger.error(f"예측 저장 실패: {e}")
 
     async def get_all_predictions(self) -> List[Dict]:
-        """모든 종목 최신 예측 조회"""
+        """모든 종목 최신 예측 조회 (accuracy 포함)"""
         if not self.db_pool:
             return []
         try:
             async with self.db_pool.acquire() as conn:
                 rows = await conn.fetch("""
-                    SELECT DISTINCT ON (symbol)
-                        symbol, ts, buy_prob, sell_prob, signal
-                    FROM ml_predictions
-                    ORDER BY symbol, ts DESC
+                    SELECT DISTINCT ON (p.symbol)
+                        p.symbol, p.ts, p.buy_prob, p.sell_prob, p.signal,
+                        m.accuracy, m.samples
+                    FROM ml_predictions p
+                    LEFT JOIN ml_models m ON p.symbol = m.symbol AND m.model_name='naive_bayes'
+                    ORDER BY p.symbol, p.ts DESC
                 """)
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                d = dict(r)
+                if d.get("ts"):
+                    d["ts"] = d["ts"].isoformat()
+                result.append(d)
+            return result
         except Exception as e:
             logger.error(f"예측 조회 실패: {e}")
             return []

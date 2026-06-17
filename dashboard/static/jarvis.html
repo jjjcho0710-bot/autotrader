@@ -456,16 +456,37 @@ function addMessage(role, text) {
   const isJarvis = role === 'jarvis';
   const div = document.createElement('div');
   div.className = `msg ${isJarvis ? 'jarvis' : 'user'}`;
+
+  // TTS 버튼 (Jarvis 답변에만, 모바일 호환 - 사용자 탭 이벤트)
+  const ttsBtnHtml = isJarvis
+    ? `<button onclick="speakText(this, \`${text.replace(/`/g,"'").replace(/\n/g,' ')}\`)" style="background:none;border:none;cursor:pointer;font-size:12px;opacity:0.5;margin-left:4px;padding:0;vertical-align:middle;" title="음성으로 듣기">🔊</button>`
+    : '';
+
   div.innerHTML = `
     ${isJarvis ? '<div class="msg-avatar">🤖</div>' : ''}
     <div class="msg-wrap">
       <div class="msg-bubble">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}</div>
-      <div class="msg-time">${isJarvis ? 'Jarvis' : '나'} · ${now}</div>
+      <div class="msg-time">${isJarvis ? 'Jarvis' : '나'} · ${now}${ttsBtnHtml}</div>
     </div>
     ${!isJarvis ? '<div class="msg-avatar">👤</div>' : ''}`;
   messages.appendChild(div);
   messages.scrollTop = messages.scrollHeight;
   return div;
+}
+
+function speakText(btn, text) {
+  if (!window.speechSynthesis) return;
+  const clean = text.replace(/\*\*/g,'').replace(/\*/g,'').replace(/#{1,6}\s/g,'').replace(/`/g,'').trim();
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(clean);
+  utt.lang = 'ko-KR';
+  utt.rate = 1.1;
+  const voices = window.speechSynthesis.getVoices();
+  const koVoice = voices.find(v => v.lang.startsWith('ko'));
+  if (koVoice) utt.voice = koVoice;
+  utt.onstart = () => { btn.textContent = '⏹'; btn.style.opacity = '1'; };
+  utt.onend = () => { btn.textContent = '🔊'; btn.style.opacity = '0.5'; };
+  window.speechSynthesis.speak(utt);
 }
 
 // 타이핑 인디케이터

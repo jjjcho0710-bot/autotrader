@@ -824,35 +824,54 @@ async def _handle_watchlist_command(msg: str) -> str | None:
 
     # ── 조회 ──────────────────────────────────────────
     if any(k in msg_lower for k in ["감시 종목 보여", "감시종목 보여", "감시 종목 목록", "watchlist"]):
-        rows = await db.get_watchlist()
-        if not rows:
-            return "📋 현재 감시 종목이 없어요."
-        lines = [f"  {r['symbol']} {r['name'] or ''}" for r in rows]
-        return "📋 **현재 감시 종목**\n" + "\n".join(lines)
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT symbol, name FROM watchlist WHERE is_active=TRUE ORDER BY created_at")
+            if not rows:
+                return "📋 현재 감시 종목이 없어요."
+            lines = [f"  {r['symbol']} {r['name'] or ''}" for r in rows]
+            return "📋 **현재 감시 종목**\n" + "\n".join(lines)
+        except Exception as e:
+            return f"❌ 조회 실패: {e}"
 
     # ── 추가 ──────────────────────────────────────────
     is_add = any(k in msg_lower for k in ["감시 종목 추가", "감시종목 추가", "추가해줘", "추가해", "등록해"])
     if is_add:
-        # 종목명 매칭
         for name_key, (symbol, name) in STOCK_NAME_MAP.items():
             if name_key in msg_lower:
-                # 이미 있는지 확인
-                existing = await db.get_watchlist_symbols()
-                if symbol in existing:
-                    return f"📋 **{name}**({symbol})은 이미 감시 종목이에요."
-                ok = await db.add_watchlist(symbol, name, added_by="jarvis", reason=msg)
-                if ok:
+                try:
+                    async with db_pool.acquire() as conn:
+                        existing = [r["symbol"] for r in await conn.fetch(
+                            "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+                        )]
+                        if symbol in existing:
+                            return f"📋 **{name}**({symbol})은 이미 감시 종목이에요."
+                        await conn.execute("""
+                            INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                            VALUES ($1, $2, 'jarvis', $3, TRUE)
+                            ON CONFLICT (symbol) DO UPDATE
+                            SET is_active=TRUE, name=$2, added_by='jarvis', reason=$3, updated_at=NOW()
+                        """, symbol, name, msg)
                     return f"✅ **{name}**({symbol})을 감시 종목에 추가했어요!"
-                return f"❌ {name} 추가 실패"
+                except Exception as e:
+                    return f"❌ {name} 추가 실패: {e}"
 
-        # 6자리 숫자 코드로 직접 입력한 경우
         import re
         codes = re.findall(r'\b\d{6}\b', msg)
         if codes:
             results = []
             for code in codes:
-                ok = await db.add_watchlist(code, added_by="jarvis", reason=msg)
-                results.append(f"✅ {code} 추가" if ok else f"❌ {code} 실패")
+                try:
+                    async with db_pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO watchlist (symbol, added_by, reason, is_active)
+                            VALUES ($1, 'jarvis', $2, TRUE)
+                            ON CONFLICT (symbol) DO UPDATE
+                            SET is_active=TRUE, added_by='jarvis', updated_at=NOW()
+                        """, code, msg)
+                    results.append(f"✅ {code} 추가")
+                except Exception as e:
+                    results.append(f"❌ {code} 실패: {e}")
             return "\n".join(results)
 
         return "❓ 종목명을 찾지 못했어요. 예: '삼성전자 감시 종목 추가해줘'"
@@ -862,23 +881,33 @@ async def _handle_watchlist_command(msg: str) -> str | None:
     if is_remove:
         for name_key, (symbol, name) in STOCK_NAME_MAP.items():
             if name_key in msg_lower:
-                ok = await db.remove_watchlist(symbol)
-                if ok:
+                try:
+                    async with db_pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", symbol
+                        )
                     return f"🗑️ **{name}**({symbol})을 감시 종목에서 제거했어요."
-                return f"❌ {name} 제거 실패"
+                except Exception as e:
+                    return f"❌ {name} 제거 실패: {e}"
 
         import re
         codes = re.findall(r'\b\d{6}\b', msg)
         if codes:
             results = []
             for code in codes:
-                ok = await db.remove_watchlist(code)
-                results.append(f"🗑️ {code} 제거" if ok else f"❌ {code} 실패")
+                try:
+                    async with db_pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", code
+                        )
+                    results.append(f"🗑️ {code} 제거")
+                except Exception as e:
+                    results.append(f"❌ {code} 실패: {e}")
             return "\n".join(results)
 
         return "❓ 종목명을 찾지 못했어요. 예: '삼성전자 감시 종목 제거해줘'"
 
-    return None  # 일반 채팅으로 처리
+    return None    return None  # 일반 채팅으로 처리
 
 
 @app.post("/api/jarvis/chat")

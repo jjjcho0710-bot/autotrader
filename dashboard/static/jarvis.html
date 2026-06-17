@@ -325,6 +325,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div class="input-row">
           <textarea class="msg-input" id="msg-input" placeholder="Jarvis에게 질문하기... (Enter로 전송, Shift+Enter 줄바꿈)" rows="1"></textarea>
           <button class="analyze-btn" onclick="analyzeNow()">리포트</button>
+          <button class="mic-btn" id="tts-btn" onclick="toggleTTS()" title="음성 답변 ON/OFF" style="font-size:16px;">🔇</button>
           <button class="mic-btn" id="mic-btn" onclick="toggleMic()" title="음성 입력 (자비스! 라고 부르세요)">🎤</button>
           <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
         </div>
@@ -489,11 +490,43 @@ function hideTyping() {
 }
 
 // 메시지 전송
-async function sendMessage() {
+// ── TTS (음성 출력) ───────────────────────────────────
+let ttsEnabled = false;  // 음성 입력 시 자동 ON
+
+function speak(text) {
+  if (!ttsEnabled) return;
+  if (!window.speechSynthesis) return;
+  // 마크다운 제거
+  const clean = text
+    .replace(/\*\*/g, '').replace(/\*/g, '')
+    .replace(/#{1,6}\s/g, '').replace(/`/g, '')
+    .replace(/\[.*?\]\(.*?\)/g, '').trim();
+  if (!clean) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(clean);
+  utt.lang = 'ko-KR';
+  utt.rate = 1.1;
+  utt.pitch = 1.0;
+  // 한국어 음성 우선 선택
+  const voices = window.speechSynthesis.getVoices();
+  const koVoice = voices.find(v => v.lang.startsWith('ko'));
+  if (koVoice) utt.voice = koVoice;
+  window.speechSynthesis.speak(utt);
+}
+
+// 음성 목록 로드
+window.speechSynthesis?.addEventListener('voiceschanged', () => {
+  window.speechSynthesis.getVoices();
+});
+
+async function sendMessage(fromVoice = false) {
   if (isLoading) return;
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
   if (!text) return;
+
+  // 음성 입력이면 TTS 활성화
+  if (fromVoice) ttsEnabled = true;
 
   input.value = '';
   input.style.height = 'auto';
@@ -514,6 +547,7 @@ async function sendMessage() {
     hideTyping();
     if (data.success) {
       addMessage('jarvis', data.reply);
+      speak(data.reply);  // TTS 활성화 시 음성 출력
     } else {
       addMessage('jarvis', `❌ 오류: ${data.error}`);
     }
@@ -616,7 +650,7 @@ function initSpeech() {
         hideWake();
         wakeDetected = false;
         document.getElementById('msg-input').value = cmd;
-        sendMessage();
+        sendMessage(true);  // 음성 입력 → TTS 활성화
       }
     }
   };
@@ -630,6 +664,14 @@ function initSpeech() {
   };
 
   return rec;
+}
+
+function toggleTTS() {
+  ttsEnabled = !ttsEnabled;
+  const btn = document.getElementById('tts-btn');
+  btn.textContent = ttsEnabled ? '🔊' : '🔇';
+  btn.title = ttsEnabled ? '음성 답변 ON (클릭하면 OFF)' : '음성 답변 OFF (클릭하면 ON)';
+  if (!ttsEnabled) window.speechSynthesis?.cancel();
 }
 
 function hideWake() {

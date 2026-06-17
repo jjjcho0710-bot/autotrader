@@ -376,7 +376,7 @@ async def train_model(symbol: str):
 
 @app.post("/api/ml/train-all")
 async def train_all_models():
-    """전체 감시 종목 ML 모델 일괄 학습"""
+    """전체 감시 종목 ML 모델 일괄 학습 + 예측"""
     try:
         from ml.model import MLModelManager
 
@@ -409,13 +409,30 @@ async def train_all_models():
                           "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
                          for r in rows]
 
-                result = await manager.train(symbol, ohlcv)
-                results.append({"symbol": symbol, **result})
-                logger.info(f"✅ [{symbol}] 학습 완료")
+                # 학습
+                train_result = await manager.train(symbol, ohlcv)
+                if not train_result.get("success"):
+                    results.append({"symbol": symbol, **train_result})
+                    continue
+
+                # 예측 (학습 직후 바로 실행 → DB 저장)
+                pred_result = await manager.predict(symbol, ohlcv)
+                signal = pred_result.get("signal", "-") if pred_result.get("success") else "-"
+                buy_prob = pred_result.get("buy_prob", 0) if pred_result.get("success") else 0
+
+                results.append({
+                    "symbol": symbol,
+                    "success": True,
+                    "accuracy": train_result.get("accuracy", 0),
+                    "samples": train_result.get("samples", 0),
+                    "signal": signal,
+                    "buy_prob": buy_prob,
+                })
+                logger.info(f"✅ [{symbol}] 학습+예측 완료: {train_result.get('accuracy')}% / {signal}")
 
             except Exception as e:
                 results.append({"symbol": symbol, "success": False, "error": str(e)})
-                logger.error(f"❌ [{symbol}] 학습 실패: {e}")
+                logger.error(f"❌ [{symbol}] 실패: {e}")
 
         success_count = sum(1 for r in results if r.get("success"))
         return {

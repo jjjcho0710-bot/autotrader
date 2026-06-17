@@ -835,27 +835,55 @@ async def _handle_watchlist_command(msg: str) -> str | None:
             return f"❌ 조회 실패: {e}"
 
     # ── 추가 ──────────────────────────────────────────
-    is_add = any(k in msg_lower for k in ["감시 종목 추가", "감시종목 추가", "추가해줘", "추가해", "등록해"])
+    is_add = any(k in msg_lower for k in ["감시 종목 추가", "감시종목 추가", "추가해줘", "추가해", "등록해", "감시해줘"])
     if is_add:
+        # STOCK_NAME_MAP에서 종목명 매칭
+        matched_symbol, matched_name = None, None
         for name_key, (symbol, name) in STOCK_NAME_MAP.items():
             if name_key in msg_lower:
-                try:
-                    async with db_pool.acquire() as conn:
-                        existing = [r["symbol"] for r in await conn.fetch(
-                            "SELECT symbol FROM watchlist WHERE is_active=TRUE"
-                        )]
-                        if symbol in existing:
-                            return f"📋 **{name}**({symbol})은 이미 감시 종목이에요."
-                        await conn.execute("""
-                            INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
-                            VALUES ($1, $2, 'jarvis', $3, TRUE)
-                            ON CONFLICT (symbol) DO UPDATE
-                            SET is_active=TRUE, name=$2, added_by='jarvis', reason=$3, updated_at=NOW()
-                        """, symbol, name, msg)
-                    return f"✅ **{name}**({symbol})을 감시 종목에 추가했어요!"
-                except Exception as e:
-                    return f"❌ {name} 추가 실패: {e}"
+                matched_symbol, matched_name = symbol, name
+                break
 
+        # MAP에 없으면 Gemini로 종목코드 조회
+        if not matched_symbol:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=config.GEMINI_API_KEY)
+                m = genai.GenerativeModel("gemini-2.5-flash")
+                resp = m.generate_content(
+                    f"한국 주식 종목명에서 6자리 종목코드만 답해줘. 숫자 6자리만. 종목: '{msg}'"
+                )
+                import re
+                codes = re.findall(r'\b\d{6}\b', resp.text)
+                if codes:
+                    matched_symbol = codes[0]
+                    # 종목명 추출
+                    name_resp = m.generate_content(
+                        f"한국 주식 종목코드 {matched_symbol}의 공식 종목명만 답해줘. 이름만."
+                    )
+                    matched_name = name_resp.text.strip().split('\n')[0]
+            except Exception:
+                pass
+
+        if matched_symbol:
+            try:
+                async with db_pool.acquire() as conn:
+                    existing = [r["symbol"] for r in await conn.fetch(
+                        "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+                    )]
+                    if matched_symbol in existing:
+                        return f"📋 **{matched_name}**({matched_symbol})은 이미 감시 종목이에요."
+                    await conn.execute("""
+                        INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                        VALUES ($1, $2, 'jarvis', $3, TRUE)
+                        ON CONFLICT (symbol) DO UPDATE
+                        SET is_active=TRUE, name=$2, added_by='jarvis', reason=$3, updated_at=NOW()
+                    """, matched_symbol, matched_name, msg)
+                return f"✅ **{matched_name}**({matched_symbol})을 감시 종목에 추가했어요!"
+            except Exception as e:
+                return f"❌ 추가 실패: {e}"
+
+        # 6자리 코드 직접 입력
         import re
         codes = re.findall(r'\b\d{6}\b', msg)
         if codes:
@@ -874,7 +902,7 @@ async def _handle_watchlist_command(msg: str) -> str | None:
                     results.append(f"❌ {code} 실패: {e}")
             return "\n".join(results)
 
-        return "❓ 종목명을 찾지 못했어요. 예: '삼성전자 감시 종목 추가해줘'"
+        return None  # Gemini로 넘김
 
     # ── 삭제/제거 ──────────────────────────────────────
     is_remove = any(k in msg_lower for k in ["감시 종목 제거", "감시종목 제거", "제거해줘", "삭제해줘", "빼줘"])

@@ -802,30 +802,35 @@ from datetime import datetime
 # 대화 히스토리 (메모리)
 _jarvis_history: list = []
 
-JARVIS_SYSTEM_PROMPT = """너는 트레이딩 AI TradeJarvis야. 주인님을 집사처럼 모셔.
+JARVIS_SYSTEM_PROMPT = """너는 AutoTrader의 AI 집사 Jarvis야. 주인님(민기)을 섬기는 똑똑하고 친근한 AI야.
 
-규칙:
-- 질문에 핵심만 2줄 이내로 답해
-- 인사말/면책문구 절대 금지
-- 이모지 1개만
-- 한국어로
+## 성격
+- 집사처럼 격식 있지만 친근하게
+- 트레이딩 전문가이면서 일상 대화도 자연스럽게
+- 유머 감각 있고 때로는 위트 있게
+- 주인님 기분에 맞춰 대화 톤 조절
 
-매매 권한:
-- execute_trade 도구로 실제 주식/코인 매수/매도 가능
-- "삼성전자 매수해" → 확인 후 실행
+## 대화 규칙
+- 한국어로 답변
+- 트레이딩 질문 → 핵심 위주 간결하게 (3-5문장)
+- 일상/잡담 → 자연스럽고 친근하게 (길이 자유)
+- 이모지 적절히 사용 (과하지 않게)
+- 인사말/면책문구 금지
+- 중요 수치는 **볼드** 처리
+
+## 트레이딩 권한
+- 주식/코인 매수/매도 실행 가능
 - 매매 전 반드시 확인 요청
-- 중요 수치는 **볼드** 처리합니다
-- 답변은 3-5문장 이내로 간결하게 (길면 핵심만)
+- 감시 종목 추가/제거 가능
+- ML 예측, 시세, 포트폴리오 분석 가능
+- 확실하지 않은 정보는 추측이라고 명시
 
-감시 종목 관리 권한:
-- "OO 감시 종목 추가해" → /api/watchlist POST 호출
-- "OO 감시 종목 제거해" → /api/watchlist/{symbol} DELETE 호출
-- 종목명으로 말하면 종목코드로 변환해서 처리
-- 추가/제거 후 결과 보고
-
-## 제한사항
-- 투자는 항상 본인 책임임을 인지시킵니다
-- 확실하지 않은 정보는 추측이라고 명시합니다
+## 알고 있는 것
+- 현재 포트폴리오 및 보유 종목
+- 감시 종목 목록 및 ML 예측 결과
+- 최근 매매 이력
+- 실시간 코인 시세
+- 활성 전략 상태
 """
 
 async def get_portfolio_context() -> str:
@@ -1123,47 +1128,26 @@ async def _handle_watchlist_command(msg: str) -> str | None:
 
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
-    """Jarvis AI 채팅 — Gemini 2.5 Flash"""
-    global _jarvis_history
+    """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
     user_msg = body.get("message", "").strip()
+    session_id = body.get("session_id", "web")  # 웹 채팅은 'web' 세션
     if not user_msg:
         return {"success": False, "error": "메시지가 없어요"}
 
     try:
-        api_key = config.GEMINI_API_KEY
-        if not api_key:
-            return {"success": False, "error": "GEMINI_API_KEY 환경변수가 없어요"}
-
-        # ── 감시 종목 추가/삭제 명령 감지 ──────────────────
+        # 감시 종목 추가/삭제 명령 감지 (Open-WebUI 거치지 않고 직접 처리)
         action_result = await _handle_watchlist_command(user_msg)
         if action_result:
             return {"success": True, "reply": action_result, "context_used": False}
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=JARVIS_SYSTEM_PROMPT,
-        )
-
-        # 포트폴리오 컨텍스트 수집
+        # 포트폴리오 컨텍스트 추가
         portfolio_ctx = await get_portfolio_context()
+        full_msg = f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}"
 
-        # 사용자 메시지에 컨텍스트 첨부
-        full_user_msg = f"{user_msg}\n\n---\n현재 포트폴리오 데이터:\n{portfolio_ctx}"
+        # Open-WebUI 통해서 호출 (텔레그램과 같은 경로)
+        reply = await _ask_openwebui(full_msg, session_id=session_id)
 
-        # 대화 히스토리 유지 (최근 10턴)
-        if len(_jarvis_history) > 20:
-            _jarvis_history = _jarvis_history[-20:]
-
-        # Gemini 채팅
-        chat = model.start_chat(history=_jarvis_history)
-        response = chat.send_message(full_user_msg)
-        reply = response.text
-
-        # 히스토리 업데이트
-        _jarvis_history = list(chat.history)
-
-        logger.info(f"Jarvis 응답: {reply[:100]}...")
+        logger.info(f"Jarvis 웹 응답: {reply[:100]}...")
         return {"success": True, "reply": reply, "context_used": True}
 
     except Exception as e:

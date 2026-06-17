@@ -4,6 +4,7 @@ AutoTrader Dashboard — FastAPI 서버
 """
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from typing import Optional

@@ -655,11 +655,29 @@ function initSpeech() {
     rec.interimResults = false;
 
     rec.onresult = (e) => {
-      const transcript = e.results[0][0].transcript.trim();
-      if (transcript.length > 1) {
-        document.getElementById('msg-input').value = transcript;
-        sendMessage(true);
+      try {
+        let transcript = '';
+        // 다양한 결과 형식 대응
+        if (e.results && e.results.length > 0) {
+          transcript = e.results[e.results.length - 1][0].transcript.trim();
+        } else if (e.result) {
+          transcript = e.result[0].transcript.trim();
+        }
+        if (transcript.length > 0) {
+          document.getElementById('msg-input').value = transcript;
+          isListening = false;
+          const btn = document.getElementById('mic-btn');
+          btn.classList.remove('listening');
+          btn.textContent = '🎤';
+          sendMessage(true);
+        }
+      } catch(err) {
+        console.warn('STT 결과 처리 오류:', err);
       }
+    };
+
+    rec.onspeechend = () => {
+      rec.stop();
     };
 
     rec.onend = () => {

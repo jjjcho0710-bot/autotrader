@@ -64,6 +64,35 @@ async def get_kis_token() -> str:
         logger.error(f"KIS 토큰 발급 실패: {e}")
         return _kis_token_cache.get("token", "")
 
+# 전체 종목 코드+이름 캐시 (서버 시작 시 로드)
+_stock_name_cache: dict = {}  # {종목명: 종목코드}
+_stock_code_cache: dict = {}  # {종목코드: 종목명}
+
+async def _load_stock_cache():
+    """pykrx로 전체 종목 목록 메모리 로드"""
+    global _stock_name_cache, _stock_code_cache
+    try:
+        import asyncio
+        from pykrx import stock as pykrx_stock
+        loop = asyncio.get_event_loop()
+
+        def _fetch():
+            result = {}
+            for market in ["KOSPI", "KOSDAQ"]:
+                tickers = pykrx_stock.get_market_ticker_list(market=market)
+                for ticker in tickers:
+                    name = pykrx_stock.get_market_ticker_name(ticker)
+                    if name:
+                        result[name] = ticker
+            return result
+
+        name_map = await loop.run_in_executor(None, _fetch)
+        _stock_name_cache = name_map
+        _stock_code_cache = {v: k for k, v in name_map.items()}
+        logger.info(f"✅ 전체 종목 캐시 로드 완료: {len(name_map)}개")
+    except Exception as e:
+        logger.warning(f"종목 캐시 로드 실패 (무시): {e}")
+
 @app.on_event("startup")
 async def startup():
     global db_pool, redis_client
@@ -130,6 +159,10 @@ async def startup():
 
     # 텔레그램 webhook 자동 등록
     await _auto_register_webhook()
+
+    # 전체 종목 캐시 백그라운드 로드 (시작 지연 없이)
+    import asyncio
+    asyncio.create_task(_load_stock_cache())
 
 
 async def _auto_register_webhook():
@@ -844,26 +877,23 @@ async def _handle_watchlist_command(msg: str) -> str | None:
                 matched_symbol, matched_name = symbol, name
                 break
 
-        # MAP에 없으면 Gemini로 종목코드 조회
+        # MAP에 없으면 메모리 캐시에서 빠른 검색
         if not matched_symbol:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=config.GEMINI_API_KEY)
-                m = genai.GenerativeModel("gemini-2.5-flash")
-                resp = m.generate_content(
-                    f"한국 주식 종목명에서 6자리 종목코드만 답해줘. 숫자 6자리만. 종목: '{msg}'"
-                )
-                import re
-                codes = re.findall(r'\b\d{6}\b', resp.text)
-                if codes:
-                    matched_symbol = codes[0]
-                    # 종목명 추출
-                    name_resp = m.generate_content(
-                        f"한국 주식 종목코드 {matched_symbol}의 공식 종목명만 답해줘. 이름만."
-                    )
-                    matched_name = name_resp.text.strip().split('\n')[0]
-            except Exception:
-                pass
+            # 정확한 종목명 매칭
+            for stock_name, ticker in _stock_name_cache.items():
+                if stock_name in msg:
+                    matched_symbol = ticker
+                    matched_name = stock_name
+                    break
+            # 부분 매칭 (앞 2글자 이상)
+            if not matched_symbol:
+                for stock_name, ticker in _stock_name_cache.items():
+                    if len(stock_name) >= 2 and stock_name[:2] in msg and len(stock_name) >= 2:
+                        words = [w for w in msg_lower.split() if len(w) >= 2]
+                        if any(stock_name.startswith(w) or w in stock_name for w in words):
+                            matched_symbol = ticker
+                            matched_name = stock_name
+                            break
 
         if matched_symbol:
             try:

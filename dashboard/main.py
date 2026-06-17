@@ -163,6 +163,7 @@ async def startup():
     # 전체 종목 캐시 백그라운드 로드 (시작 지연 없이)
     import asyncio
     asyncio.create_task(_load_stock_cache())
+    asyncio.create_task(_jarvis_scheduler())
 
 
 async def _auto_register_webhook():
@@ -185,6 +186,94 @@ async def _auto_register_webhook():
             logger.info(f"텔레그램 webhook 자동 등록: {webhook_url} → {data}")
     except Exception as e:
         logger.warning(f"텔레그램 webhook 자동 등록 실패: {e}")
+
+
+async def _jarvis_auto_analysis():
+    """Jarvis 자동 분석 — 감시 종목 전체 ML 예측 후 텔레그램 리포트"""
+    try:
+        from ml.model import MLModelManager
+        manager = MLModelManager(db_pool)
+
+        async with db_pool.acquire() as conn:
+            watchlist = await conn.fetch("SELECT symbol, name FROM watchlist WHERE is_active=TRUE")
+            symbols = [r["symbol"] for r in watchlist]
+            name_map = {r["symbol"]: r["name"] for r in watchlist}
+
+        if not symbols:
+            return
+
+        buy_list, sell_list, hold_list = [], [], []
+
+        for symbol in symbols:
+            try:
+                async with db_pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT * FROM stock_daily_ohlcv WHERE symbol=$1 AND close>0 ORDER BY ts ASC",
+                        symbol
+                    )
+                if len(rows) < 70:
+                    continue
+                ohlcv = [{"ts": str(r["ts"]), "open": float(r["open"]), "high": float(r["high"]),
+                          "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
+                         for r in rows]
+                result = await manager.predict(symbol, ohlcv)
+                if not result.get("success"):
+                    continue
+                name = name_map.get(symbol, symbol)
+                signal = result.get("signal", "HOLD")
+                prob = result.get("buy_prob", 0.5)
+                if signal == "BUY":
+                    buy_list.append(f"  🟢 {name}({symbol}) {prob:.0%}")
+                elif signal == "SELL":
+                    sell_list.append(f"  🔴 {name}({symbol})")
+                else:
+                    hold_list.append(name)
+            except:
+                continue
+
+        # 텔레그램 리포트
+        now = datetime.now().strftime("%m/%d %H:%M")
+        msg = f"🤖 Jarvis 자동 분석 [{now}]\n"
+        msg += f"총 {len(symbols)}종목 분석\n\n"
+        if buy_list:
+            msg += "📈 매수 신호:\n" + "\n".join(buy_list) + "\n\n"
+        if sell_list:
+            msg += "📉 매도 신호:\n" + "\n".join(sell_list) + "\n\n"
+        msg += f"🟡 관망: {len(hold_list)}종목"
+
+        await _send_telegram(msg)
+        logger.info(f"✅ Jarvis 자동 분석 완료: BUY {len(buy_list)}, SELL {len(sell_list)}, HOLD {len(hold_list)}")
+
+    except Exception as e:
+        logger.error(f"Jarvis 자동 분석 실패: {e}")
+
+
+async def _jarvis_scheduler():
+    """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
+    import asyncio
+    from datetime import time as dtime
+    logger.info("🕐 Jarvis 스케줄러 시작")
+    last_morning = None
+    last_closing = None
+
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+        today = now.date()
+        cur_time = now.time()
+
+        if now.weekday() >= 5:
+            continue
+
+        if dtime(8, 30) <= cur_time <= dtime(8, 35) and last_morning != today:
+            last_morning = today
+            logger.info("🌅 Jarvis 장 시작 전 자동 분석")
+            await _jarvis_auto_analysis()
+
+        if dtime(15, 40) <= cur_time <= dtime(15, 45) and last_closing != today:
+            last_closing = today
+            logger.info("🌆 Jarvis 장 마감 후 자동 분석")
+            await _jarvis_auto_analysis()
 
 
 @app.on_event("shutdown")
@@ -820,6 +909,70 @@ async def get_portfolio_context() -> str:
                 ctx_parts.append(
                     f"  {ts} [{t['bot']}] {t['side']} {t['symbol']} "
                     f"{t['price']:,}×{t['quantity']}{pnl_str}"
+                )
+    except:
+        pass
+
+    try:
+        # 감시 종목 목록
+        async with db_pool.acquire() as conn:
+            watchlist = await conn.fetch(
+                "SELECT symbol, name FROM watchlist WHERE is_active=TRUE ORDER BY created_at"
+            )
+        if watchlist:
+            ctx_parts.append(f"\n[감시 종목 {len(watchlist)}개]")
+            ctx_parts.append("  " + ", ".join([f"{r['name'] or r['symbol']}({r['symbol']})" for r in watchlist]))
+    except:
+        pass
+
+    try:
+        # ML 예측 결과 (최신)
+        async with db_pool.acquire() as conn:
+            preds = await conn.fetch("""
+                SELECT DISTINCT ON (p.symbol)
+                    p.symbol, p.signal, p.buy_prob, p.ts,
+                    m.accuracy, w.name
+                FROM ml_predictions p
+                LEFT JOIN ml_models m ON p.symbol=m.symbol AND m.model_name='naive_bayes'
+                LEFT JOIN watchlist w ON p.symbol=w.symbol
+                ORDER BY p.symbol, p.ts DESC
+            """)
+        if preds:
+            buy_list = [r for r in preds if r['signal'] == 'BUY']
+            sell_list = [r for r in preds if r['signal'] == 'SELL']
+            ctx_parts.append(f"\n[ML 예측 결과 ({len(preds)}종목 분석)]")
+            if buy_list:
+                ctx_parts.append(f"  🟢 매수 신호: " + ", ".join(
+                    [f"{r['name'] or r['symbol']}({r['buy_prob']:.0%})" for r in buy_list]
+                ))
+            if sell_list:
+                ctx_parts.append(f"  🔴 매도 신호: " + ", ".join(
+                    [f"{r['name'] or r['symbol']}" for r in sell_list]
+                ))
+            hold_list = [r for r in preds if r['signal'] == 'HOLD']
+            if hold_list:
+                ctx_parts.append(f"  🟡 관망: {len(hold_list)}종목")
+    except:
+        pass
+
+    try:
+        # 주식 최신 시세 (stock_daily_ohlcv 최근일)
+        async with db_pool.acquire() as conn:
+            latest_prices = await conn.fetch("""
+                SELECT DISTINCT ON (o.symbol)
+                    o.symbol, o.close, o.change_rate, o.ts, w.name
+                FROM stock_daily_ohlcv o
+                LEFT JOIN watchlist w ON o.symbol=w.symbol
+                WHERE w.is_active=TRUE
+                ORDER BY o.symbol, o.ts DESC
+            """)
+        if latest_prices:
+            ctx_parts.append(f"\n[감시 종목 최근 시세]")
+            for r in latest_prices[:10]:
+                rate = float(r['change_rate'] or 0)
+                emoji = "📈" if rate > 0 else "📉" if rate < 0 else "➡️"
+                ctx_parts.append(
+                    f"  {emoji} {r['name'] or r['symbol']}: {r['close']:,}원 ({rate:+.2f}%) [{str(r['ts'])[:10]}]"
                 )
     except:
         pass

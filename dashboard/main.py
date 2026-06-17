@@ -907,7 +907,7 @@ async def _handle_watchlist_command(msg: str) -> str | None:
 
         return "❓ 종목명을 찾지 못했어요. 예: '삼성전자 감시 종목 제거해줘'"
 
-    return None    return None  # 일반 채팅으로 처리
+    return None  # 일반 채팅으로 처리
 
 
 @app.post("/api/jarvis/chat")

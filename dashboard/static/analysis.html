@@ -724,7 +724,51 @@ async function loadIndicators() {
 // 초기 로드
 loadPerformance();
 loadLearnStats();
+loadSavedPredictions();
 setInterval(loadPerformance, 30000);
+
+// 저장된 ML 예측 결과 자동 로드
+async function loadSavedPredictions() {
+  try {
+    const res = await fetch('/api/ml/predictions');
+    const data = await res.json();
+    if (!data.success || !data.data || data.data.length === 0) return;
+
+    const NAME_MAP = {
+      '005930':'삼성전자','000660':'SK하이닉스','035420':'NAVER','035720':'카카오',
+      '005380':'현대차','068270':'셀트리온','373220':'LG에너지솔루션','323410':'카카오뱅크',
+      '207940':'삼성바이오로직스','051910':'LG화학','006400':'삼성SDI','005490':'POSCO홀딩스',
+      '000270':'기아','096770':'SK이노베이션','015760':'한국전력','017670':'SK텔레콤',
+      '030200':'KT','105560':'KB금융','055550':'신한지주','086790':'하나금융지주'
+    };
+
+    // 전역 저장 후 카드 렌더링
+    window._mlResults = data.data.map(p => ({
+      symbol: p.symbol,
+      success: true,
+      accuracy: p.accuracy || 0,
+      signal: p.signal || 'HOLD',
+      buy_prob: p.buy_prob || 0,
+    }));
+    window._mlNameMap = NAME_MAP;
+
+    const el = document.getElementById('ml-result');
+    el.innerHTML = `
+      <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:12px;color:var(--muted)">📂 저장된 분석 <b style="color:var(--text)">${data.data.length}</b>종목 · <span style="color:var(--muted)">${data.data[0]?.ts?.slice(0,16) || ''}</span></span>
+        <div style="margin-left:auto;display:flex;gap:4px;">
+          <button onclick="renderMlCards('ALL')" id="f-all" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">전체</button>
+          <button onclick="renderMlCards('BUY')" id="f-buy" style="background:var(--panel);border:1px solid var(--border);color:var(--green);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟢 BUY</button>
+          <button onclick="renderMlCards('HOLD')" id="f-hold" style="background:var(--panel);border:1px solid var(--border);color:#f0b429;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟡 HOLD</button>
+          <button onclick="renderMlCards('SELL')" id="f-sell" style="background:var(--panel);border:1px solid var(--border);color:var(--red);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔴 SELL</button>
+        </div>
+      </div>
+      <div id="ml-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;"></div>`;
+    renderMlCards('ALL');
+  } catch(e) {
+    // 조용히 실패 (초기 상태면 데이터 없음)
+  }
+}
 </script>
 </body>
 </html>

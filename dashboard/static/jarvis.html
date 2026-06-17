@@ -367,7 +367,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 
 <script>
 const API = '';          // AutoTrader dashboard
-const RAILCLAW = '';    // railclaw 서비스 (같은 도메인이면 빈값, 별도 배포시 URL 입력)
+const RAILCLAW = '';    // dashboard가 Open-WebUI로 프록시
 let isLoading = false;
 
 // 시계
@@ -636,6 +636,10 @@ let isListening = false;
 let wakeDetected = false;
 let wakeTimer = null;
 
+function isMobile() {
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+}
+
 function initSpeech() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
@@ -644,40 +648,78 @@ function initSpeech() {
   }
   const rec = new SpeechRecognition();
   rec.lang = 'ko-KR';
-  rec.continuous = true;
-  rec.interimResults = true;
 
-  rec.onresult = (e) => {
-    const transcript = Array.from(e.results)
-      .map(r => r[0].transcript).join('').trim().toLowerCase();
+  if (isMobile()) {
+    // 모바일: 1회 인식 후 자동 전송
+    rec.continuous = false;
+    rec.interimResults = false;
 
-    // 웨이크워드 감지
-    const hasWake = WAKE_WORDS.some(w => transcript.includes(w));
-    if (hasWake && !wakeDetected) {
-      wakeDetected = true;
-      document.getElementById('wake-indicator').textContent = '🤖 말씀하세요...';
-      document.getElementById('wake-indicator').classList.add('show');
-      clearTimeout(wakeTimer);
-      wakeTimer = setTimeout(() => { wakeDetected = false; hideWake(); }, 8000);
-      return;
-    }
-
-    // 웨이크워드 감지 후 명령 처리
-    if (wakeDetected && e.results[e.results.length-1].isFinal) {
-      let cmd = transcript;
-      WAKE_WORDS.forEach(w => { cmd = cmd.replace(w, '').trim(); });
-      cmd = cmd.replace(/^[,\s]+/, '').trim();
-      if (cmd.length > 2) {
-        hideWake();
-        wakeDetected = false;
-        document.getElementById('msg-input').value = cmd;
-        sendMessage(true);  // 음성 입력 → TTS 활성화
+    rec.onresult = (e) => {
+      const transcript = e.results[0][0].transcript.trim();
+      if (transcript.length > 1) {
+        document.getElementById('msg-input').value = transcript;
+        sendMessage(true);
       }
-    }
-  };
+    };
+
+    rec.onend = () => {
+      if (isListening) {
+        isListening = false;
+        const btn = document.getElementById('mic-btn');
+        btn.classList.remove('listening');
+        btn.textContent = '🎤';
+      }
+    };
+
+  } else {
+    // PC: 웨이크워드 방식
+    rec.continuous = true;
+    rec.interimResults = true;
+
+    rec.onresult = (e) => {
+      const transcript = Array.from(e.results)
+        .map(r => r[0].transcript).join('').trim().toLowerCase();
+
+      const hasWake = WAKE_WORDS.some(w => transcript.includes(w));
+      if (hasWake && !wakeDetected) {
+        wakeDetected = true;
+        document.getElementById('wake-indicator').textContent = '🤖 말씀하세요...';
+        document.getElementById('wake-indicator').classList.add('show');
+        clearTimeout(wakeTimer);
+        wakeTimer = setTimeout(() => { wakeDetected = false; hideWake(); }, 8000);
+        return;
+      }
+
+      if (wakeDetected && e.results[e.results.length-1].isFinal) {
+        let cmd = transcript;
+        WAKE_WORDS.forEach(w => { cmd = cmd.replace(w, '').trim(); });
+        cmd = cmd.replace(/^[,\s]+/, '').trim();
+        if (cmd.length > 2) {
+          hideWake();
+          wakeDetected = false;
+          document.getElementById('msg-input').value = cmd;
+          sendMessage(true);
+        }
+      }
+    };
+
+    rec.onend = () => {
+      if (isListening) rec.start();
+    };
+  }
 
   rec.onerror = (e) => {
     if (e.error !== 'no-speech') console.warn('음성 인식 오류:', e.error);
+    if (isMobile() && isListening) {
+      isListening = false;
+      const btn = document.getElementById('mic-btn');
+      btn.classList.remove('listening');
+      btn.textContent = '🎤';
+    }
+  };
+
+  return rec;
+}
   };
 
   rec.onend = () => {
@@ -716,8 +758,13 @@ function toggleMic() {
     recognition.start();
     btn.classList.add('listening');
     btn.textContent = '⏹';
-    btn.title = '"자비스!" 라고 부른 후 명령하세요';
-    addMessage('jarvis', '🎤 음성 인식 시작됐어요! "자비스!" 라고 부른 후 명령하세요.');
+    if (isMobile()) {
+      btn.title = '말씀하세요 → 자동 전송';
+      addMessage('jarvis', '🎤 듣고 있어요! 말씀하세요.');
+    } else {
+      btn.title = '"자비스!" 라고 부른 후 명령하세요';
+      addMessage('jarvis', '🎤 음성 인식 시작됐어요! "자비스!" 라고 부른 후 명령하세요.');
+    }
   }
 }
 

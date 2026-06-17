@@ -188,6 +188,85 @@ async def _auto_register_webhook():
         logger.warning(f"텔레그램 webhook 자동 등록 실패: {e}")
 
 
+async def _jarvis_stock_scanner():
+    """08:30 — 코스피/코스닥 전종목 스캔 → 유망 종목 watchlist 자동 추가"""
+    try:
+        from pykrx import stock as pykrx_stock
+        import asyncio
+        from datetime import datetime, timedelta
+
+        logger.info("🔍 Jarvis 전종목 스캔 시작...")
+        today = datetime.now().strftime("%Y%m%d")
+        yesterday = (datetime.now() - timedelta(days=3)).strftime("%Y%m%d")
+
+        loop = asyncio.get_event_loop()
+
+        def _scan():
+            results = []
+            for market in ["KOSPI", "KOSDAQ"]:
+                try:
+                    tickers = pykrx_stock.get_market_ticker_list(market=market)
+                    for ticker in tickers[:300]:  # 상위 300개만 (속도)
+                        try:
+                            df = pykrx_stock.get_market_ohlcv(yesterday, today, ticker)
+                            if df is None or len(df) < 2:
+                                continue
+                            close = df["종가"].iloc[-1]
+                            vol = df["거래량"].iloc[-1]
+                            vol_prev = df["거래량"].iloc[-2]
+                            change = df["등락률"].iloc[-1]
+
+                            # 조건: 거래량 급증 + 상승
+                            if vol > vol_prev * 2 and change > 2:
+                                name = pykrx_stock.get_market_ticker_name(ticker)
+                                results.append({
+                                    "symbol": ticker,
+                                    "name": name,
+                                    "change": change,
+                                    "vol_ratio": vol / vol_prev,
+                                })
+                        except:
+                            continue
+                except:
+                    continue
+            return sorted(results, key=lambda x: x["vol_ratio"], reverse=True)[:10]
+
+        candidates = await loop.run_in_executor(None, _scan)
+
+        if not candidates:
+            logger.info("🔍 스캔 완료: 유망 종목 없음")
+            return
+
+        # watchlist에 자동 추가
+        added = []
+        async with db_pool.acquire() as conn:
+            existing = [r["symbol"] for r in await conn.fetch(
+                "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+            )]
+            for c in candidates:
+                if c["symbol"] not in existing:
+                    await conn.execute("""
+                        INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                        VALUES ($1, $2, 'jarvis_scanner', $3, TRUE)
+                        ON CONFLICT (symbol) DO UPDATE
+                        SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
+                    """, c["symbol"], c["name"],
+                        f"거래량 {c['vol_ratio']:.1f}배 증가, 등락률 {c['change']:+.1f}%")
+                    added.append(f"  📈 {c['name']}({c['symbol']}) +{c['change']:.1f}% 거래량{c['vol_ratio']:.1f}배")
+
+        if added:
+            msg = f"🔍 Jarvis 스캔 결과 [{datetime.now().strftime('%m/%d %H:%M')}]\n"
+            msg += f"유망 종목 {len(added)}개 watchlist 추가:\n"
+            msg += "\n".join(added)
+            await _send_telegram(msg)
+            logger.info(f"✅ 스캐너: {len(added)}종목 추가")
+        else:
+            logger.info("🔍 스캔 완료: 새 종목 없음 (이미 watchlist에 있음)")
+
+    except Exception as e:
+        logger.error(f"Jarvis 스캐너 실패: {e}")
+
+
 async def _jarvis_auto_analysis():
     """Jarvis 자동 분석 — 감시 종목 전체 ML 예측 후 텔레그램 리포트"""
     try:
@@ -267,8 +346,9 @@ async def _jarvis_scheduler():
 
         if dtime(8, 30) <= cur_time <= dtime(8, 35) and last_morning != today:
             last_morning = today
-            logger.info("🌅 Jarvis 장 시작 전 자동 분석")
-            await _jarvis_auto_analysis()
+            logger.info("🌅 Jarvis 장 시작 전 루틴")
+            await _jarvis_stock_scanner()  # 전종목 스캔 → watchlist 자동 추가
+            await _jarvis_auto_analysis()  # ML 예측 분석 → 텔레그램
 
         if dtime(15, 40) <= cur_time <= dtime(15, 45) and last_closing != today:
             last_closing = today
@@ -794,6 +874,73 @@ async def get_summary():
 async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
 
+
+@app.get("/api/market/checklist")
+async def market_checklist():
+    """장중 테스트 체크리스트"""
+    from datetime import time as dtime
+    now = datetime.now()
+    cur_time = now.time()
+    is_market = dtime(9, 0) <= cur_time <= dtime(15, 30) and now.weekday() < 5
+
+    checks = {}
+
+    # 1. KIS 시세 확인
+    try:
+        async with db_pool.acquire() as conn:
+            latest = await conn.fetchrow(
+                "SELECT ts, close FROM stock_ohlcv ORDER BY ts DESC LIMIT 1"
+            )
+        if latest:
+            ts_diff = (now - latest["ts"].replace(tzinfo=None)).total_seconds()
+            checks["kis_realtime"] = {
+                "ok": ts_diff < 300,
+                "msg": f"최근 시세: {latest['ts'].strftime('%H:%M:%S')} ({int(ts_diff)}초 전)"
+            }
+        else:
+            checks["kis_realtime"] = {"ok": False, "msg": "시세 데이터 없음"}
+    except Exception as e:
+        checks["kis_realtime"] = {"ok": False, "msg": str(e)}
+
+    # 2. ML 모델 확인
+    try:
+        async with db_pool.acquire() as conn:
+            ml_count = await conn.fetchval("SELECT COUNT(*) FROM ml_models")
+        checks["ml_models"] = {
+            "ok": ml_count > 0,
+            "msg": f"학습된 모델 {ml_count}개"
+        }
+    except Exception as e:
+        checks["ml_models"] = {"ok": False, "msg": str(e)}
+
+    # 3. watchlist 확인
+    try:
+        async with db_pool.acquire() as conn:
+            wl_count = await conn.fetchval("SELECT COUNT(*) FROM watchlist WHERE is_active=TRUE")
+        checks["watchlist"] = {
+            "ok": wl_count > 0,
+            "msg": f"감시 종목 {wl_count}개"
+        }
+    except Exception as e:
+        checks["watchlist"] = {"ok": False, "msg": str(e)}
+
+    # 4. 봇 상태
+    try:
+        bot_status = await cache.get_all_bot_status()
+        checks["bots"] = {
+            "ok": len(bot_status) > 0,
+            "msg": ", ".join([f"{k}:{v.get('status','?')}" for k, v in bot_status.items()])
+        }
+    except Exception as e:
+        checks["bots"] = {"ok": False, "msg": str(e)}
+
+    return {
+        "success": True,
+        "is_market_hours": is_market,
+        "market_status": "장중" if is_market else "장외",
+        "checks": checks
+    }
+
 # ── Jarvis AI (Gemini 2.5 Flash) ────────────────────────────────
 
 import google.generativeai as genai
@@ -1130,7 +1277,10 @@ async def _handle_watchlist_command(msg: str) -> str | None:
 async def jarvis_chat(body: dict):
     """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
     user_msg = body.get("message", "").strip()
-    session_id = body.get("session_id", "web")  # 웹 채팅은 'web' 세션
+    session_id = body.get("session_id", None)
+    # 웹/텔레그램 같은 세션 공유 (JARVIS_ANALYST_CHAT_ID 기준)
+    if not session_id:
+        session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
     if not user_msg:
         return {"success": False, "error": "메시지가 없어요"}
 
@@ -1414,9 +1564,11 @@ async def telegram_webhook(body: dict):
 
         else:
             # 자유 대화 → Open-WebUI Jarvis (Tools + 메모리 포함)
+            # 웹과 같은 세션 공유
+            shared_session = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
             token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
             await _typing_action(chat_id, token)
-            reply = await _ask_openwebui(text, session_id=chat_id)
+            reply = await _ask_openwebui(text, session_id=shared_session)
             if len(reply) > 3800:
                 reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"
             await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)

@@ -720,14 +720,6 @@ function initSpeech() {
 
   return rec;
 }
-  };
-
-  rec.onend = () => {
-    if (isListening) rec.start(); // 연속 감지 유지
-  };
-
-  return rec;
-}
 
 function toggleTTS() {
   ttsEnabled = !ttsEnabled;

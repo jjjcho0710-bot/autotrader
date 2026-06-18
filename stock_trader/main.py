@@ -14,11 +14,18 @@ from common.database import db, cache
 from kis_trader import KISTrader
 from strategy.ma_cross import MACrossStrategy, MACrossConfig
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+import time as _time
+
+class KSTFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        return _time.gmtime(timestamp + 9 * 3600)
+
+_fmt = KSTFormatter(
+    fmt="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
+logging.basicConfig(level=logging.INFO)
+logging.root.handlers[0].setFormatter(_fmt)
 logger = logging.getLogger("stock-trader")
 
 MARKET_OPEN   = time(9, 0)

@@ -338,9 +338,11 @@ async def _jarvis_scheduler():
 
     while True:
         await asyncio.sleep(60)
-        now = datetime.now()
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        now = datetime.now(KST)
         today = now.date()
-        cur_time = now.time()
+        cur_time = now.time().replace(tzinfo=None)
 
         if now.weekday() >= 5:
             continue

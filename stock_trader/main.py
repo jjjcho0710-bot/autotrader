@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import signal
-from datetime import datetime, time
+from datetime import datetime, time, timezone, timedelta
 
 from common.config import config
 from common.database import db, cache
@@ -23,7 +23,9 @@ logger = logging.getLogger("stock-trader")
 
 MARKET_OPEN   = time(9, 0)
 MARKET_CLOSE  = time(15, 30)
-ML_TRAIN_TIME = time(15, 40)   # 장 마감 10분 후 자동 학습
+ML_TRAIN_TIME = time(15, 40)
+
+KST = timezone(timedelta(hours=9))
 
 
 class StockTrader:
@@ -127,8 +129,8 @@ class StockTrader:
     # ── 메인 루프 ─────────────────────────────────────────
     async def _loop(self):
         while self.running:
-            now = datetime.now()
-            cur_time = now.time()
+            now = datetime.now(KST)
+            cur_time = now.time().replace(tzinfo=None)
             today = now.date()
 
             # ── 장 마감 후 ML 자동 학습 (15:40, 하루 1회) ──

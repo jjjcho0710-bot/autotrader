@@ -244,11 +244,19 @@ async function fetchWithFallback(realPath, mockPath) {
   try {
     const res = await fetch(`${API}${realPath}`);
     const json = await res.json();
+    // positions는 빈 배열도 정상 → mock 사용 안함
+    if (realPath.includes('positions')) {
+      return json.success ? { ...json, source: 'live' } : { success: true, data: [], source: 'live' };
+    }
     if (json.success && json.data && (Array.isArray(json.data) ? json.data.length > 0 : Object.keys(json.data).length > 0)) {
       return { ...json, source: 'live' };
     }
     throw new Error('empty');
   } catch {
+    // positions mock fallback 제거
+    if (realPath.includes('positions')) {
+      return { success: true, data: [], source: 'live' };
+    }
     const res = await fetch(`${API}${mockPath}`);
     return res.json();
   }

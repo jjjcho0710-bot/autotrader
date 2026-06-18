@@ -292,8 +292,8 @@ async function fetchPositions() {
       res = await r.json();
       if (!res.success) throw new Error('api fail');
     } catch {
-      res = await (await fetch('/api/mock/positions/stock')).json();
-      res.account = null;
+      // mock fallback 제거 → 빈 포지션으로 표시
+      res = { success: true, data: [], account: null };
     }
     const data = res.data;
     const account = res.account; // KIS output2 계좌 요약

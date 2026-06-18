@@ -16,11 +16,18 @@ from collectors.upbit_collector import UpbitCollector
 from collectors.daily_collector import DailyCollector
 
 # ── 로깅 설정 ──────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+import time as _time
+
+class KSTFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        return _time.gmtime(timestamp + 9 * 3600)
+
+_fmt = KSTFormatter(
+    fmt="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
+logging.basicConfig(level=logging.INFO)
+logging.root.handlers[0].setFormatter(_fmt)
 logger = logging.getLogger("data-collector")
 
 

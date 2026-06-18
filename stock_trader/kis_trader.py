@@ -3,11 +3,12 @@ KIS API — 주문 실행 모듈
 매수 / 매도 / 잔고조회 / 보유종목 조회
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiohttp
 
 from common.config import config
+from common.database import cache
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,17 @@ class KISTrader:
             await self.session.close()
 
     async def _get_token(self):
+        # Redis에서 토큰 재사용
+        try:
+            cached = await cache.client.get("kis:access_token")
+            if cached:
+                self.access_token = cached if isinstance(cached, str) else cached.decode('utf-8')
+                logger.info("✅ KIS 토큰 Redis에서 복원")
+                return
+        except Exception:
+            pass
+
+        # 새 토큰 발급
         url = f"{self.BASE_URL}/oauth2/tokenP"
         payload = {
             "grant_type": "client_credentials",
@@ -39,8 +51,14 @@ class KISTrader:
         }
         async with self.session.post(url, json=payload) as resp:
             data = await resp.json()
-            self.access_token = data.get("access_token", "")
-            logger.info("✅ KIS 토큰 발급")
+            token = data.get("access_token", "")
+            if token:
+                self.access_token = token
+                try:
+                    await cache.client.setex("kis:access_token", 82800, token)
+                except Exception:
+                    pass
+                logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
 
     @property
     def _cano(self) -> str:

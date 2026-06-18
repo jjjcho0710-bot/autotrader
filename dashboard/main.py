@@ -53,11 +53,27 @@ import aiohttp as _aiohttp
 _kis_token_cache: dict = {"token": "", "expires": 0}
 
 async def get_kis_token() -> str:
-    """KIS 액세스 토큰 발급 (1시간 캐싱)"""
+    """KIS 액세스 토큰 — Redis 캐시 우선 (재시작해도 재사용)"""
     import time
     now = time.time()
+
+    # 1. 메모리 캐시 확인
     if _kis_token_cache["token"] and now < _kis_token_cache["expires"]:
         return _kis_token_cache["token"]
+
+    # 2. Redis 캐시 확인
+    try:
+        if redis_client:
+            cached = await redis_client.get("kis:access_token")
+            if cached:
+                token = cached if isinstance(cached, str) else cached.decode('utf-8')
+                _kis_token_cache["token"] = token
+                _kis_token_cache["expires"] = now + 82800  # 23시간
+                return token
+    except Exception:
+        pass
+
+    # 3. 새 토큰 발급
     try:
         base = config.kis_base_url
         async with _aiohttp.ClientSession() as session:
@@ -70,7 +86,13 @@ async def get_kis_token() -> str:
             token = data.get("access_token", "")
             if token:
                 _kis_token_cache["token"] = token
-                _kis_token_cache["expires"] = now + 3600
+                _kis_token_cache["expires"] = now + 82800  # 23시간
+                # Redis에 저장
+                try:
+                    if redis_client:
+                        await redis_client.setex("kis:access_token", 82800, token)
+                except Exception:
+                    pass
             return token
     except Exception as e:
         logger.error(f"KIS 토큰 발급 실패: {e}")

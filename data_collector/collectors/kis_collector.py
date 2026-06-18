@@ -169,7 +169,7 @@ class KISCollector:
                 success += 1
             except Exception as e:
                 logger.error(f"수집 실패 [{symbol}]: {e}")
-            await asyncio.sleep(0.3)  # 레이트 리밋 방지
+            await asyncio.sleep(0.5)  # 레이트 리밋 방지 (실전 API: 초당 20건)
 
         logger.info(f"✅ 주식 수집 완료 — {success}/{len(symbols)}종목")
 
@@ -180,13 +180,16 @@ class KISCollector:
         if not price_data:
             return
 
+        # price가 0이면 1번 재시도
+        if price_data.get("price", 0) <= 0:
+            await asyncio.sleep(0.5)
+            price_data = await self.get_price(symbol)
+            if not price_data or price_data.get("price", 0) <= 0:
+                logger.warning(f"⚠️ [{symbol}] 시세 0 — DB 저장 스킵")
+                return
+
         # Redis 캐시 저장 (실시간)
         await cache.set_price(f"stock:price:{symbol}", price_data, ttl=120)
-
-        # price가 0이면 저장 안함
-        if price_data["price"] <= 0:
-            logger.warning(f"⚠️ [{symbol}] 시세 0 — DB 저장 스킵")
-            return
 
         # DB 저장 (1분봉)
         from datetime import timezone, timedelta
@@ -202,5 +205,5 @@ class KISCollector:
             v=price_data["volume"],
         )
 
-        # API 레이트 리밋 방지 (실전 API: 초당 20건 제한)
-        await asyncio.sleep(0.2)
+        # API 레이트 리밋 방지
+        await asyncio.sleep(0.3)

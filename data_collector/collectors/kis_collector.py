@@ -126,10 +126,15 @@ class KISCollector:
             symbols = config.STOCK_SYMBOLS
         logger.info(f"📊 주식 수집 시작 — {len(symbols)}종목")
 
-        tasks = [self._collect_one(symbol) for symbol in symbols]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        success = 0
+        for symbol in symbols:
+            try:
+                await self._collect_one(symbol)
+                success += 1
+            except Exception as e:
+                logger.error(f"수집 실패 [{symbol}]: {e}")
+            await asyncio.sleep(0.3)  # 레이트 리밋 방지
 
-        success = sum(1 for r in results if not isinstance(r, Exception))
         logger.info(f"✅ 주식 수집 완료 — {success}/{len(symbols)}종목")
 
     async def _collect_one(self, symbol: str):
@@ -142,8 +147,15 @@ class KISCollector:
         # Redis 캐시 저장 (실시간)
         await cache.set_price(f"stock:price:{symbol}", price_data, ttl=120)
 
+        # price가 0이면 저장 안함
+        if price_data["price"] <= 0:
+            logger.warning(f"⚠️ [{symbol}] 시세 0 — DB 저장 스킵")
+            return
+
         # DB 저장 (1분봉)
-        now = datetime.now().replace(second=0, microsecond=0)
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        now = datetime.now(KST).replace(second=0, microsecond=0, tzinfo=None)
         await db.insert_stock_ohlcv(
             symbol=symbol,
             ts=now,
@@ -154,5 +166,5 @@ class KISCollector:
             v=price_data["volume"],
         )
 
-        # API 레이트 리밋 방지
-        await asyncio.sleep(0.1)
+        # API 레이트 리밋 방지 (실전 API: 초당 20건 제한)
+        await asyncio.sleep(0.2)

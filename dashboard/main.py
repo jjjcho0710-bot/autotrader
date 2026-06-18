@@ -745,13 +745,50 @@ async def get_status():
 
 @app.get("/api/prices/stock")
 async def get_stock_prices():
-    """주식 실시간 시세 (Redis)"""
+    """주식 실시간 시세 (Redis) — watchlist 기준"""
     try:
+        # watchlist에서 종목 조회
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT symbol, name FROM watchlist WHERE is_active=TRUE ORDER BY created_at"
+                )
+            symbols = [(r["symbol"], r["name"]) for r in rows]
+        except Exception:
+            symbols = [(s, s) for s in config.STOCK_SYMBOLS]
+
+        if not symbols:
+            symbols = [(s, s) for s in config.STOCK_SYMBOLS]
+
         prices = {}
-        for symbol in config.STOCK_SYMBOLS:
+        for symbol, name in symbols:
             val = await redis_client.get(f"stock:price:{symbol}")
             if val:
-                prices[symbol] = json.loads(val)
+                data = json.loads(val)
+                data["name"] = name or symbol
+                prices[symbol] = data
+            else:
+                # Redis에 없으면 DB에서 최신 시세 조회
+                try:
+                    async with db_pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            "SELECT close, open, high, low, volume FROM stock_ohlcv WHERE symbol=$1 AND close>0 ORDER BY ts DESC LIMIT 1",
+                            symbol
+                        )
+                    if row:
+                        prices[symbol] = {
+                            "symbol": symbol,
+                            "name": name or symbol,
+                            "price": row["close"],
+                            "open": row["open"],
+                            "high": row["high"],
+                            "low": row["low"],
+                            "volume": row["volume"],
+                            "change_rate": 0,
+                        }
+                except Exception:
+                    pass
+
         return {"success": True, "data": prices}
     except Exception as e:
         return {"success": False, "error": str(e)}

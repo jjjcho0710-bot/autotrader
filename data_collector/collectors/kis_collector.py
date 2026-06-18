@@ -39,6 +39,9 @@ class KISCollector:
         try:
             cached = await cache.client.get("kis:access_token")
             if cached:
+                # bytes → str 변환
+                if isinstance(cached, bytes):
+                    cached = cached.decode('utf-8')
                 KISCollector._shared_token = cached
                 logger.info("✅ KIS 토큰 Redis에서 복원")
                 return

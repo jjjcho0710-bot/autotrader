@@ -38,6 +38,8 @@ class DailyCollector:
         try:
             cached = await cache.client.get("kis:access_token")
             if cached:
+                if isinstance(cached, bytes):
+                    cached = cached.decode('utf-8')
                 self.access_token = cached
                 logger.info("✅ KIS 일봉 토큰 Redis에서 복원")
                 return

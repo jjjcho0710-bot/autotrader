@@ -35,14 +35,23 @@ class KISCollector:
 
     # ── 인증 ───────────────────────────────────────────
     async def _get_token(self):
+        # Redis에서 토큰 확인 (재시작해도 재사용)
+        try:
+            cached = await cache.client.get("kis:access_token")
+            if cached:
+                KISCollector._shared_token = cached
+                logger.info("✅ KIS 토큰 Redis에서 복원")
+                return
+        except Exception:
+            pass
+
+        # 클래스 변수 확인
         now = datetime.now()
-        # 토큰이 있고 만료 안됐으면 재사용
         if KISCollector._shared_token and KISCollector._token_expires > now:
-            logger.info("✅ KIS 토큰 재사용 (만료까지 {}분)".format(
-                int((KISCollector._token_expires - now).total_seconds() / 60)
-            ))
+            logger.info(f"✅ KIS 토큰 재사용 (만료까지 {int((KISCollector._token_expires - now).total_seconds() / 60)}분)")
             return
 
+        # 새 토큰 발급
         url = f"{self.BASE_URL}/oauth2/tokenP"
         payload = {
             "grant_type": "client_credentials",
@@ -54,8 +63,12 @@ class KISCollector:
             token = data.get("access_token", "")
             if token:
                 KISCollector._shared_token = token
-                # 23시간 후 만료 (24시간 유효기간보다 1시간 여유)
                 KISCollector._token_expires = now + timedelta(hours=23)
+                # Redis에 저장 (23시간)
+                try:
+                    await cache.client.setex("kis:access_token", 23 * 3600, token)
+                except Exception:
+                    pass
                 logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
 
     def _headers(self, tr_id: str) -> dict:

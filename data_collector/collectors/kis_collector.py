@@ -42,8 +42,8 @@ class KISCollector:
                 KISCollector._shared_token = cached
                 logger.info("✅ KIS 토큰 Redis에서 복원")
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Redis 토큰 조회 실패: {e}")
 
         # 클래스 변수 확인
         now = datetime.now()
@@ -52,24 +52,28 @@ class KISCollector:
             return
 
         # 새 토큰 발급
-        url = f"{self.BASE_URL}/oauth2/tokenP"
-        payload = {
-            "grant_type": "client_credentials",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
-        }
-        async with self.session.post(url, json=payload) as resp:
-            data = await resp.json()
-            token = data.get("access_token", "")
-            if token:
-                KISCollector._shared_token = token
-                KISCollector._token_expires = now + timedelta(hours=23)
-                # Redis에 저장 (23시간)
-                try:
-                    await cache.client.setex("kis:access_token", 23 * 3600, token)
-                except Exception:
-                    pass
-                logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
+        try:
+            url = f"{self.BASE_URL}/oauth2/tokenP"
+            payload = {
+                "grant_type": "client_credentials",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+            }
+            async with self.session.post(url, json=payload) as resp:
+                data = await resp.json()
+                token = data.get("access_token", "")
+                if token:
+                    KISCollector._shared_token = token
+                    KISCollector._token_expires = now + timedelta(hours=23)
+                    try:
+                        await cache.client.setex("kis:access_token", 23 * 3600, token)
+                    except Exception as e:
+                        logger.warning(f"Redis 토큰 저장 실패: {e}")
+                    logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
+                else:
+                    logger.error(f"❌ KIS 토큰 발급 실패: {data}")
+        except Exception as e:
+            logger.error(f"❌ KIS 토큰 발급 오류: {e}")
 
     def _headers(self, tr_id: str) -> dict:
         return {

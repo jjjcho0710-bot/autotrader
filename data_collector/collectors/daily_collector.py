@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import aiohttp
 
 from common.config import config
-from common.database import db
+from common.database import db, cache
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,17 @@ class DailyCollector:
             await self.session.close()
 
     async def _get_token(self):
+        # Redis에서 토큰 재사용 (kis_collector와 공유)
+        try:
+            cached = await cache.client.get("kis:access_token")
+            if cached:
+                self.access_token = cached
+                logger.info("✅ KIS 일봉 토큰 Redis에서 복원")
+                return
+        except Exception:
+            pass
+
+        # 새 토큰 발급
         url = f"{self.BASE_URL}/oauth2/tokenP"
         payload = {
             "grant_type": "client_credentials",
@@ -43,8 +54,15 @@ class DailyCollector:
         try:
             async with self.session.post(url, json=payload) as resp:
                 data = await resp.json()
-                self.access_token = data.get("access_token", "")
-                logger.info("✅ KIS 일봉 토큰 발급")
+                token = data.get("access_token", "")
+                if token:
+                    self.access_token = token
+                    # Redis에 저장 (23시간)
+                    try:
+                        await cache.client.setex("kis:access_token", 23 * 3600, token)
+                    except Exception:
+                        pass
+                    logger.info("✅ KIS 일봉 토큰 발급 완료")
         except Exception as e:
             logger.error(f"토큰 발급 실패: {e}")
 

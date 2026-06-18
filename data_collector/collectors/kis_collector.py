@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiohttp
 
@@ -14,10 +14,10 @@ class KISCollector:
     """한국투자증권 KIS API — 주식 시세 수집"""
 
     BASE_URL = config.kis_base_url
+    _shared_token: str = ""
+    _token_expires: datetime = datetime.min
 
     def __init__(self):
-        self.access_token: str = ""
-        self.token_expires: datetime = datetime.min
         self.session: aiohttp.ClientSession = None
 
     async def start(self):
@@ -29,8 +29,20 @@ class KISCollector:
         if self.session:
             await self.session.close()
 
+    @property
+    def access_token(self):
+        return KISCollector._shared_token
+
     # ── 인증 ───────────────────────────────────────────
     async def _get_token(self):
+        now = datetime.now()
+        # 토큰이 있고 만료 안됐으면 재사용
+        if KISCollector._shared_token and KISCollector._token_expires > now:
+            logger.info("✅ KIS 토큰 재사용 (만료까지 {}분)".format(
+                int((KISCollector._token_expires - now).total_seconds() / 60)
+            ))
+            return
+
         url = f"{self.BASE_URL}/oauth2/tokenP"
         payload = {
             "grant_type": "client_credentials",
@@ -39,13 +51,17 @@ class KISCollector:
         }
         async with self.session.post(url, json=payload) as resp:
             data = await resp.json()
-            self.access_token = data.get("access_token", "")
-            logger.info("✅ KIS 토큰 발급 완료")
+            token = data.get("access_token", "")
+            if token:
+                KISCollector._shared_token = token
+                # 23시간 후 만료 (24시간 유효기간보다 1시간 여유)
+                KISCollector._token_expires = now + timedelta(hours=23)
+                logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
 
     def _headers(self, tr_id: str) -> dict:
         return {
             "Content-Type": "application/json",
-            "authorization": f"Bearer {self.access_token}",
+            "authorization": f"Bearer {KISCollector._shared_token}",
             "appkey": config.KIS_APP_KEY,
             "appsecret": config.KIS_APP_SECRET,
             "tr_id": tr_id,

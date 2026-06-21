@@ -231,7 +231,8 @@ async def _jarvis_stock_scanner():
 
         logger.info("🔍 Jarvis 전종목 스캔 시작...")
         today = datetime.now().strftime("%Y%m%d")
-        yesterday = (datetime.now() - timedelta(days=3)).strftime("%Y%m%d")
+        d5 = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
+        d30 = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
 
         loop = asyncio.get_event_loop()
 
@@ -240,35 +241,66 @@ async def _jarvis_stock_scanner():
             for market in ["KOSPI", "KOSDAQ"]:
                 try:
                     tickers = pykrx_stock.get_market_ticker_list(market=market)
-                    for ticker in tickers[:300]:  # 상위 300개만 (속도)
+                    for ticker in tickers:  # 전체 종목
                         try:
-                            df = pykrx_stock.get_market_ohlcv(yesterday, today, ticker)
-                            if df is None or len(df) < 2:
+                            # 30일 데이터로 MA크로스 체크
+                            df = pykrx_stock.get_market_ohlcv(d30, today, ticker)
+                            if df is None or len(df) < 22:
                                 continue
+
                             close = df["종가"].iloc[-1]
+                            if close < 1000:  # 동전주 제외
+                                continue
+
                             vol = df["거래량"].iloc[-1]
-                            vol_prev = df["거래량"].iloc[-2]
+                            vol_avg = df["거래량"].iloc[-6:-1].mean()  # 5일 평균 거래량
                             change = df["등락률"].iloc[-1]
 
-                            # 조건: 거래량 급증 + 상승
-                            if vol > vol_prev * 2 and change > 2:
+                            # MA 크로스 계산
+                            closes = df["종가"].tolist()
+                            ma5 = sum(closes[-5:]) / 5
+                            ma20 = sum(closes[-20:]) / 20
+                            ma5_prev = sum(closes[-6:-1]) / 5
+                            ma20_prev = sum(closes[-21:-1]) / 20
+
+                            # 골든크로스: 5일선이 20일선 상향 돌파
+                            golden_cross = ma5_prev < ma20_prev and ma5 > ma20
+
+                            # 거래량 조건: 평균 대비 1.5배 이상
+                            vol_ok = vol > vol_avg * 1.5 if vol_avg > 0 else False
+
+                            score = 0
+                            if golden_cross:
+                                score += 3
+                            if vol_ok:
+                                score += 2
+                            if change > 1:
+                                score += 1
+                            if change > 3:
+                                score += 1
+
+                            if score >= 3:  # 조건 충족
                                 name = pykrx_stock.get_market_ticker_name(ticker)
                                 results.append({
                                     "symbol": ticker,
                                     "name": name,
                                     "change": change,
-                                    "vol_ratio": vol / vol_prev,
+                                    "vol_ratio": vol / vol_avg if vol_avg > 0 else 1,
+                                    "golden_cross": golden_cross,
+                                    "score": score,
+                                    "close": close,
                                 })
                         except:
                             continue
                 except:
                     continue
-            return sorted(results, key=lambda x: x["vol_ratio"], reverse=True)[:10]
+            return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
 
         candidates = await loop.run_in_executor(None, _scan)
 
         if not candidates:
             logger.info("🔍 스캔 완료: 유망 종목 없음")
+            await _send_telegram(f"🔍 Jarvis 스캔 [{datetime.now().strftime('%m/%d %H:%M')}]\n유망 종목 없음")
             return
 
         # watchlist에 자동 추가
@@ -279,20 +311,24 @@ async def _jarvis_stock_scanner():
             )]
             for c in candidates:
                 if c["symbol"] not in existing:
+                    reason = f"{'골든크로스+' if c['golden_cross'] else ''}거래량{c['vol_ratio']:.1f}배 등락률{c['change']:+.1f}%"
                     await conn.execute("""
                         INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
                         VALUES ($1, $2, 'jarvis_scanner', $3, TRUE)
                         ON CONFLICT (symbol) DO UPDATE
                         SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
-                    """, c["symbol"], c["name"],
-                        f"거래량 {c['vol_ratio']:.1f}배 증가, 등락률 {c['change']:+.1f}%")
-                    added.append(f"  📈 {c['name']}({c['symbol']}) +{c['change']:.1f}% 거래량{c['vol_ratio']:.1f}배")
+                    """, c["symbol"], c["name"], reason)
+                    gc = "🌟골든크로스 " if c["golden_cross"] else ""
+                    added.append(f"  {gc}{c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%")
 
+        msg = f"🔍 Jarvis 스캔 [{datetime.now().strftime('%m/%d %H:%M')}]\n"
+        msg += f"총 {len(candidates)}종목 발굴"
         if added:
-            msg = f"🔍 Jarvis 스캔 결과 [{datetime.now().strftime('%m/%d %H:%M')}]\n"
-            msg += f"유망 종목 {len(added)}개 watchlist 추가:\n"
-            msg += "\n".join(added)
-            await _send_telegram(msg)
+            msg += f", {len(added)}종목 신규 추가:\n" + "\n".join(added[:10])
+        else:
+            msg += " (모두 기존 watchlist에 있음)"
+        await _send_telegram(msg)
+        logger.info(f"✅ 스캐너 완료: {len(candidates)}종목 발굴, {len(added)}종목 추가")
             logger.info(f"✅ 스캐너: {len(added)}종목 추가")
         else:
             logger.info("🔍 스캔 완료: 새 종목 없음 (이미 watchlist에 있음)")

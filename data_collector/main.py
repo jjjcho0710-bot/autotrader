@@ -96,6 +96,17 @@ class DataCollector:
                     self.last_daily_collect = now
                     logger.info("✅ 일봉 + 지표 수집 완료")
 
+                    # 수급 데이터 수집 (일봉 수집 후)
+                    try:
+                        from collectors.supply_collector import SupplyCollector
+                        supply = SupplyCollector()
+                        symbols = await db.get_watchlist_symbols()
+                        if not symbols:
+                            symbols = config.STOCK_SYMBOLS
+                        await supply.collect(symbols)
+                    except Exception as e:
+                        logger.error(f"수급 수집 오류: {e}")
+
                 # 상태 업데이트
                 await cache.set_bot_status("data_collector", {
                     "status": "running",

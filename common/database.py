@@ -120,6 +120,17 @@ class Database:
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
+                CREATE TABLE IF NOT EXISTS stock_supply (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    date DATE NOT NULL,
+                    foreign_net BIGINT DEFAULT 0,
+                    institution_net BIGINT DEFAULT 0,
+                    individual_net BIGINT DEFAULT 0,
+                    foreign_hold_ratio NUMERIC(6,2) DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(symbol, date)
+                );
 
                 INSERT INTO strategy_config (bot, name, is_active, params) VALUES
                 ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),

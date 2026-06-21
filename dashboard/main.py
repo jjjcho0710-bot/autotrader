@@ -1235,6 +1235,32 @@ async def get_portfolio_context() -> str:
     except:
         pass
 
+    try:
+        # 수급 데이터 (외국인/기관 순매수)
+        async with db_pool.acquire() as conn:
+            supply_rows = await conn.fetch("""
+                SELECT DISTINCT ON (s.symbol)
+                    s.symbol, s.foreign_net, s.institution_net, s.date, w.name
+                FROM stock_supply s
+                LEFT JOIN watchlist w ON s.symbol=w.symbol
+                WHERE w.is_active=TRUE
+                ORDER BY s.symbol, s.date DESC
+            """)
+        if supply_rows:
+            buy_supply = [r for r in supply_rows if r['foreign_net'] > 0 or r['institution_net'] > 0]
+            sell_supply = [r for r in supply_rows if r['foreign_net'] < 0 and r['institution_net'] < 0]
+            ctx_parts.append(f"\n[수급 동향]")
+            if buy_supply:
+                ctx_parts.append("  🟢 외국인/기관 순매수: " + ", ".join(
+                    [f"{r['name'] or r['symbol']}(외:{r['foreign_net']:+,})" for r in buy_supply[:5]]
+                ))
+            if sell_supply:
+                ctx_parts.append("  🔴 외국인/기관 순매도: " + ", ".join(
+                    [f"{r['name'] or r['symbol']}" for r in sell_supply[:5]]
+                ))
+    except:
+        pass
+
     return "\n".join(ctx_parts)
 
 

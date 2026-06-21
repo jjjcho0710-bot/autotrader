@@ -292,6 +292,19 @@ class StockTrader:
                 if not ml_ok:
                     logger.info(f"⛔ [{symbol}] ML 필터 차단: {ml_reason}")
                     continue
+
+                # ── 수급 필터 ─────────────────────────────────
+                try:
+                    from data_collector.collectors.supply_collector import SupplyCollector
+                    supply = SupplyCollector()
+                    supply_data = await supply.get_supply_score(symbol)
+                    supply_score = supply_data.get("score", 0)
+                    supply_reason = supply_data.get("reason", "")
+                    if supply_score <= -2:
+                        logger.info(f"⛔ [{symbol}] 수급 필터 차단: {supply_reason}")
+                        continue
+                except Exception:
+                    supply_reason = "수급 데이터 없음"
                 # ─────────────────────────────────────────────
 
                 qty = strategy.calc_buy_qty(cur_price)

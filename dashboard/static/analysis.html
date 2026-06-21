@@ -109,10 +109,18 @@ canvas{width:100%!important;max-height:200px;}
     </div>
   </div>
 
+  <!-- 탭 메뉴 -->
+  <div style="display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--border);background:var(--bg);">
+    <button id="tab-perf" onclick="switchTab('perf')" style="padding:6px 14px;border:none;border-radius:6px 6px 0 0;font-size:12px;font-weight:600;cursor:pointer;background:var(--purple);color:white;">📊 성과</button>
+    <button id="tab-ml" onclick="switchTab('ml')" style="padding:6px 14px;border:none;border-radius:6px 6px 0 0;font-size:12px;font-weight:600;cursor:pointer;background:var(--panel);color:var(--muted);">🤖 ML 예측</button>
+    <button id="tab-learn" onclick="switchTab('learn')" style="padding:6px 14px;border:none;border-radius:6px 6px 0 0;font-size:12px;font-weight:600;cursor:pointer;background:var(--panel);color:var(--muted);">🧠 학습 데이터</button>
+    <button id="tab-backtest" onclick="switchTab('backtest')" style="padding:6px 14px;border:none;border-radius:6px 6px 0 0;font-size:12px;font-weight:600;cursor:pointer;background:var(--panel);color:var(--muted);">🔬 백테스트</button>
+  </div>
+
   <div class="content">
 
-    <!-- KPI 카드 -->
-    <div>
+    <!-- 성과 탭 -->
+    <div id="section-perf">
       <div class="section-title">📊 전체 성과</div>
       <div class="kpi-row" style="margin-top:8px;">
         <div class="kpi-card">
@@ -179,6 +187,10 @@ canvas{width:100%!important;max-height:200px;}
       </div>
     </div>
 
+    </div><!-- /section-perf -->
+
+    <!-- 학습 데이터 탭 -->
+    <div id="section-learn" style="display:none;">
     <!-- 학습 데이터 현황 -->
     <div>
       <div class="section-title">🧠 학습 데이터 현황</div>
@@ -207,6 +219,10 @@ canvas{width:100%!important;max-height:200px;}
       </div>
     </div>
 
+    </div><!-- /section-learn -->
+
+    <!-- ML 예측 탭 -->
+    <div id="section-ml" style="display:none;">
   <!-- ML 예측 -->
     <div>
       <div class="section-title">🤖 ML 모델 예측</div>
@@ -236,7 +252,11 @@ canvas{width:100%!important;max-height:200px;}
 
   <!-- 백테스트 -->
     <div>
-      <div class="section-title">🔬 백테스트</div>
+    </div><!-- /section-ml -->
+
+    <!-- 백테스트 탭 -->
+    <div id="section-backtest" style="display:none;">
+    <!-- 백테스트 -->
       <div class="learn-row" style="margin-top:8px;">
         <div class="learn-card" style="grid-column:span 2;">
           <div class="card-title"><div class="dot" style="background:var(--purple)"></div>전략 백테스트</div>
@@ -270,6 +290,7 @@ canvas{width:100%!important;max-height:200px;}
         </div>
       </div>
     </div>
+    </div><!-- /section-backtest -->
 
   </div>
 </div>
@@ -606,24 +627,33 @@ async function trainAllModels() { await analyzeAll(); }
 async function trainModel() { await analyzeSymbol(); }
 async function predictSignal() { await analyzeSymbol(); }
 
-async function runBacktest() {
+async function loadAllPredictions() {
   const el = document.getElementById('ml-all-result');
+  el.innerHTML = '<span style="color:var(--muted)">⏳ 조회 중...</span>';
   try {
     const res = await fetch('/api/ml/predictions');
     const json = await res.json();
-    if (!json.success || !json.data.length) {
-      el.innerHTML = '<span style="color:var(--muted)">예측 데이터 없음 (학습 후 예측 실행하세요)</span>';
+    if (!json.success || !json.data || !json.data.length) {
+      el.innerHTML = '<span style="color:var(--muted)">예측 데이터 없음 (전체 분석 후 다시 조회하세요)</span>';
       return;
     }
+    const NAME_MAP = {
+      '005930':'삼성전자','000660':'SK하이닉스','035420':'NAVER','035720':'카카오',
+      '005380':'현대차','068270':'셀트리온','373220':'LG에너지솔루션','323410':'카카오뱅크',
+      '207940':'삼성바이오로직스','051910':'LG화학','006400':'삼성SDI','005490':'POSCO홀딩스',
+      '000270':'기아','096770':'SK이노베이션','015760':'한국전력','017670':'SK텔레콤',
+      '030200':'KT','105560':'KB금융','055550':'신한지주','086790':'하나금융지주'
+    };
     el.innerHTML = json.data.map(p => {
       const color = p.signal === 'BUY' ? 'var(--green)' : p.signal === 'SELL' ? 'var(--red)' : 'var(--muted)';
+      const name = NAME_MAP[p.symbol] || p.symbol;
       return `<div class="learn-stat">
-        <span class="learn-stat-label">${p.symbol}</span>
-        <span class="learn-stat-value" style="color:${color}">${p.signal} (${(p.buy_prob*100).toFixed(0)}%)</span>
+        <span class="learn-stat-label">${name}</span>
+        <span class="learn-stat-value" style="color:${color}">${p.signal} ${(p.buy_prob*100).toFixed(0)}%</span>
       </div>`;
     }).join('');
   } catch(e) {
-    el.innerHTML = '<span style="color:var(--muted)">데이터 없음</span>';
+    el.innerHTML = '<span style="color:var(--muted)">조회 실패</span>';
   }
 }
 
@@ -768,6 +798,20 @@ async function loadSavedPredictions() {
   } catch(e) {
     // 조용히 실패 (초기 상태면 데이터 없음)
   }
+}
+
+// ── 탭 전환 ──────────────────────────────────────────
+function switchTab(tab) {
+  const tabs = ['perf', 'ml', 'learn', 'backtest'];
+  tabs.forEach(t => {
+    const sec = document.getElementById(`section-${t}`);
+    const btn = document.getElementById(`tab-${t}`);
+    if (sec) sec.style.display = t === tab ? '' : 'none';
+    if (btn) {
+      btn.style.background = t === tab ? 'var(--purple)' : 'var(--panel)';
+      btn.style.color = t === tab ? 'white' : 'var(--muted)';
+    }
+  });
 }
 </script>
 </body>

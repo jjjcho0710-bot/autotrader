@@ -329,9 +329,6 @@ async def _jarvis_stock_scanner():
             msg += " (모두 기존 watchlist에 있음)"
         await _send_telegram(msg)
         logger.info(f"✅ 스캐너 완료: {len(candidates)}종목 발굴, {len(added)}종목 추가")
-            logger.info(f"✅ 스캐너: {len(added)}종목 추가")
-        else:
-            logger.info("🔍 스캔 완료: 새 종목 없음 (이미 watchlist에 있음)")
 
     except Exception as e:
         logger.error(f"Jarvis 스캐너 실패: {e}")

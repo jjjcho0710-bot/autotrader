@@ -229,10 +229,12 @@ async def _jarvis_stock_scanner():
         import asyncio
         from datetime import datetime, timedelta
 
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        now_kst = datetime.now(KST)
         logger.info("🔍 Jarvis 전종목 스캔 시작...")
-        today = datetime.now().strftime("%Y%m%d")
-        d5 = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-        d30 = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+        today = now_kst.strftime("%Y%m%d")
+        d30 = (now_kst - timedelta(days=45)).strftime("%Y%m%d")
 
         loop = asyncio.get_event_loop()
 
@@ -279,7 +281,7 @@ async def _jarvis_stock_scanner():
                             if change > 3:
                                 score += 1
 
-                            if score >= 3:  # 조건 충족
+                            if score >= 2:  # 조건 완화 (3→2)
                                 name = pykrx_stock.get_market_ticker_name(ticker)
                                 results.append({
                                     "symbol": ticker,
@@ -300,7 +302,7 @@ async def _jarvis_stock_scanner():
 
         if not candidates:
             logger.info("🔍 스캔 완료: 유망 종목 없음")
-            await _send_telegram(f"🔍 Jarvis 스캔 [{datetime.now().strftime('%m/%d %H:%M')}]\n유망 종목 없음")
+            await _send_telegram(f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음")
             return
 
         # watchlist에 자동 추가
@@ -321,7 +323,7 @@ async def _jarvis_stock_scanner():
                     gc = "🌟골든크로스 " if c["golden_cross"] else ""
                     added.append(f"  {gc}{c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%")
 
-        msg = f"🔍 Jarvis 스캔 [{datetime.now().strftime('%m/%d %H:%M')}]\n"
+        msg = f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n"
         msg += f"총 {len(candidates)}종목 발굴"
         if added:
             msg += f", {len(added)}종목 신규 추가:\n" + "\n".join(added[:10])
@@ -378,7 +380,7 @@ async def _jarvis_auto_analysis():
                 continue
 
         # 텔레그램 리포트
-        now = datetime.now().strftime("%m/%d %H:%M")
+        now = datetime.now(timezone(timedelta(hours=9))).strftime("%m/%d %H:%M")
         msg = f"🤖 Jarvis 자동 분석 [{now}]\n"
         msg += f"총 {len(symbols)}종목 분석\n\n"
         if buy_list:

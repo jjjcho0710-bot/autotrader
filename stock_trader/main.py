@@ -275,11 +275,11 @@ class StockTrader:
             if symbol in self.positions:
                 continue
 
-            rows = await db.get_recent_ohlcv(symbol, limit=25, asset="stock")
+            rows = await db.get_recent_ohlcv(symbol, limit=60, asset="stock", daily=True)
             if len(rows) < 21:
                 continue
 
-            prices = [r["close"] for r in reversed(rows)]
+            prices = [r["close"] for r in rows]  # 이미 ASC 정렬
             signal_type = strategy.generate_signal(symbol, prices)
 
             if signal_type == "BUY":

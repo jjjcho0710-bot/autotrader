@@ -128,37 +128,53 @@ class NewsCollector:
         return []
 
     async def analyze_sentiment(self, news_list: list, symbol: str) -> dict:
-        """Gemini로 뉴스 감성 분석"""
+        """Open-WebUI로 뉴스 감성 분석"""
         if not news_list:
             return {"score": 0, "signal": "NEUTRAL", "reason": "뉴스 없음"}
 
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=config.GEMINI_API_KEY)
-            model = genai.GenerativeModel("gemini-2.5-flash")
+            import os
+            openwebui_url = os.getenv("OPENWEBUI_URL", "")
+            openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
+            jarvis_model = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
 
             name = STOCK_NAME_MAP.get(symbol, symbol)
             titles = "\n".join([f"- {n['title']}" for n in news_list[:5]])
 
-            prompt = f"""다음 {name}({symbol}) 관련 뉴스 제목들을 분석해서 주식 투자 관점에서 감성을 평가해줘.
+            prompt = f"""{name}({symbol}) 뉴스 감성 분석해줘.
 
 뉴스:
 {titles}
 
-응답 형식 (JSON만):
-{{"score": -2~2 정수, "signal": "BUY/SELL/NEUTRAL", "summary": "한줄요약"}}
+JSON만 답해줘:
+{{"score": -2~2정수, "signal": "BUY또는SELL또는NEUTRAL", "summary": "한줄요약"}}"""
 
-score: 2(매우긍정) 1(긍정) 0(중립) -1(부정) -2(매우부정)"""
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{openwebui_url}/api/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openwebui_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": jarvis_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    data = await resp.json()
 
-            resp = model.generate_content(prompt)
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not content:
+                return {"score": 0, "signal": "NEUTRAL", "reason": "응답 없음"}
+
             import json, re
-            text = resp.text.strip()
-            # JSON 추출
-            match = re.search(r'\{.*?\}', text, re.DOTALL)
+            match = re.search(r'\{.*?\}', content, re.DOTALL)
             if match:
                 result = json.loads(match.group())
                 return {
-                    "score": result.get("score", 0),
+                    "score": int(result.get("score", 0)),
                     "signal": result.get("signal", "NEUTRAL"),
                     "reason": result.get("summary", ""),
                 }

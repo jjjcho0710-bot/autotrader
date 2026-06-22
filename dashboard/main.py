@@ -418,8 +418,20 @@ async def _jarvis_scheduler():
         if dtime(8, 30) <= cur_time <= dtime(8, 35) and last_morning != today:
             last_morning = today
             logger.info("🌅 Jarvis 장 시작 전 루틴")
-            await _jarvis_stock_scanner()  # 전종목 스캔 → watchlist 자동 추가
-            await _jarvis_auto_analysis()  # ML 예측 분석 → 텔레그램
+            await _jarvis_stock_scanner()   # 전종목 스캔 → watchlist 자동 추가
+            await _jarvis_auto_analysis()   # ML 예측 분석 → 텔레그램
+
+            # 오늘 공시 확인
+            try:
+                from data_collector.collectors.dart_collector import DARTCollector
+                dart = DARTCollector()
+                async with db_pool.acquire() as conn:
+                    symbols = [r["symbol"] for r in await conn.fetch(
+                        "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+                    )]
+                await dart.collect_and_alert(symbols, telegram_func=_send_telegram)
+            except Exception as e:
+                logger.warning(f"공시 확인 실패: {e}")
 
         if dtime(15, 40) <= cur_time <= dtime(15, 45) and last_closing != today:
             last_closing = today
@@ -1260,6 +1272,23 @@ async def get_portfolio_context() -> str:
                 ctx_parts.append("  🔴 외국인/기관 순매도: " + ", ".join(
                     [f"{r['name'] or r['symbol']}" for r in sell_supply[:5]]
                 ))
+    except:
+        pass
+
+    try:
+        # 최근 중요 공시
+        async with db_pool.acquire() as conn:
+            disclosures = await conn.fetch("""
+                SELECT d.symbol, d.corp_name, d.report_name, d.rcept_dt
+                FROM stock_disclosure d
+                JOIN watchlist w ON d.symbol=w.symbol
+                WHERE w.is_active=TRUE AND d.is_important=TRUE
+                ORDER BY d.rcept_dt DESC LIMIT 5
+            """)
+        if disclosures:
+            ctx_parts.append(f"\n[최근 중요 공시]")
+            for d in disclosures:
+                ctx_parts.append(f"  📋 {d['corp_name']}({d['symbol']}): {d['report_name']} [{d['rcept_dt']}]")
     except:
         pass
 

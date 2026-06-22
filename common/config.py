@@ -30,6 +30,7 @@ class Config:
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    DART_API_KEY: str = os.getenv("DART_API_KEY", "")
 
     # ── 텔레그램 봇별 토큰 ──
     JARVIS_ANALYST_TOKEN:   str = os.getenv("JARVIS_ANALYST_TOKEN", "")

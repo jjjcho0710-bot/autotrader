@@ -131,6 +131,16 @@ class Database:
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE(symbol, date)
                 );
+                CREATE TABLE IF NOT EXISTS stock_disclosure (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(10),
+                    corp_name VARCHAR(100),
+                    report_name VARCHAR(200),
+                    rcept_dt VARCHAR(20),
+                    rcept_no VARCHAR(20) UNIQUE,
+                    is_important BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
 
                 INSERT INTO strategy_config (bot, name, is_active, params) VALUES
                 ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),

@@ -107,6 +107,18 @@ class DataCollector:
                     except Exception as e:
                         logger.error(f"수급 수집 오류: {e}")
 
+                    # DART 공시 수집 (일봉 수집 후)
+                    try:
+                        from collectors.dart_collector import DARTCollector
+                        dart = DARTCollector()
+                        symbols = await db.get_watchlist_symbols()
+                        if not symbols:
+                            symbols = config.STOCK_SYMBOLS
+                        from common.telegram import send_stock
+                        await dart.collect_and_alert(symbols, telegram_func=send_stock)
+                    except Exception as e:
+                        logger.error(f"DART 공시 수집 오류: {e}")
+
                 # 상태 업데이트
                 await cache.set_bot_status("data_collector", {
                     "status": "running",

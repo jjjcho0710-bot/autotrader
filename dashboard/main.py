@@ -1046,6 +1046,79 @@ async def get_sentiment_data():
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/data/collect")
+async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
+    """수동 데이터 수집 트리거 (수급/공시/뉴스)"""
+    async def _collect():
+        try:
+            async with db_pool.acquire() as conn:
+                symbols = [r["symbol"] for r in await conn.fetch(
+                    "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+                )]
+            if not symbols:
+                return
+
+            import aiohttp, os
+            openwebui_url = os.getenv("OPENWEBUI_URL", "")
+            openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
+            jarvis_model = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
+
+            # 뉴스 감성 분석
+            for symbol in symbols[:10]:  # 10종목만
+                try:
+                    async with db_pool.acquire() as conn:
+                        name_row = await conn.fetchrow(
+                            "SELECT name FROM watchlist WHERE symbol=$1", symbol
+                        )
+                    name = name_row["name"] if name_row else symbol
+
+                    prompt = f"""다음 주식 뉴스를 분석해서 JSON만 출력해줘. 다른 말은 하지 마.
+종목: {name}({symbol})
+요청: {name} 주식 최신 뉴스 감성 분석
+출력형식: {{"score": 1, "signal": "BUY", "summary": "긍정적"}}"""
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            f"{openwebui_url}/api/chat/completions",
+                            headers={"Authorization": f"Bearer {openwebui_token}", "Content-Type": "application/json"},
+                            json={"model": jarvis_model, "messages": [{"role": "user", "content": prompt}], "stream": False},
+                            timeout=aiohttp.ClientTimeout(total=30)
+                        ) as resp:
+                            data = await resp.json()
+
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    import json, re
+                    content = re.sub(r'```json|```', '', content).strip()
+                    match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+                    if match:
+                        result = json.loads(match.group())
+                        score = max(-2, min(2, int(result.get("score", 0))))
+                        signal = result.get("signal", "NEUTRAL").upper()
+                        if signal not in ["BUY", "SELL", "NEUTRAL"]:
+                            signal = "NEUTRAL"
+                        summary = result.get("summary", "")
+
+                        async with db_pool.acquire() as conn:
+                            await conn.execute("""
+                                INSERT INTO stock_news_sentiment
+                                (symbol, date, sentiment_score, signal, summary, news_count)
+                                VALUES ($1, $2, $3, $4, $5, 1)
+                                ON CONFLICT (symbol, date) DO UPDATE
+                                SET sentiment_score=$3, signal=$4, summary=$5
+                            """, symbol, datetime.now().date(), score, signal, summary)
+                        logger.info(f"📰 {name}: {signal} ({score:+d}) - {summary}")
+
+                except Exception as e:
+                    logger.error(f"뉴스 수집 실패 [{symbol}]: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"수동 수집 오류: {e}")
+
+    background_tasks.add_task(_collect)
+    return {"success": True, "message": "수집 시작! /api/data/sentiment 에서 결과 확인하세요"}
+
+
 @app.get("/api/market/checklist")
 async def market_checklist():
     """장중 테스트 체크리스트"""

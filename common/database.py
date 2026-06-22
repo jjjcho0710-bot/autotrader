@@ -141,6 +141,17 @@ class Database:
                     is_important BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
+                CREATE TABLE IF NOT EXISTS stock_news_sentiment (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(10) NOT NULL,
+                    date DATE NOT NULL,
+                    sentiment_score INTEGER DEFAULT 0,
+                    signal VARCHAR(10) DEFAULT 'NEUTRAL',
+                    summary TEXT,
+                    news_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(symbol, date)
+                );
 
                 INSERT INTO strategy_config (bot, name, is_active, params) VALUES
                 ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),

@@ -305,6 +305,19 @@ class StockTrader:
                         continue
                 except Exception:
                     supply_reason = "수급 데이터 없음"
+
+                # ── 뉴스 감성 필터 ───────────────────────────
+                try:
+                    from data_collector.collectors.news_collector import NewsCollector
+                    news = NewsCollector()
+                    news_data = await news.get_sentiment_score(symbol)
+                    news_score = news_data.get("score", 0)
+                    news_reason = news_data.get("reason", "")
+                    if news_score <= -2:
+                        logger.info(f"⛔ [{symbol}] 뉴스 감성 차단: {news_reason}")
+                        continue
+                except Exception:
+                    news_reason = "뉴스 데이터 없음"
                 # ─────────────────────────────────────────────
 
                 qty = strategy.calc_buy_qty(cur_price)

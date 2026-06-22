@@ -119,6 +119,17 @@ class DataCollector:
                     except Exception as e:
                         logger.error(f"DART 공시 수집 오류: {e}")
 
+                    # 뉴스 감성 분석 (일봉 수집 후)
+                    try:
+                        from collectors.news_collector import NewsCollector
+                        news = NewsCollector()
+                        symbols = await db.get_watchlist_symbols()
+                        if not symbols:
+                            symbols = config.STOCK_SYMBOLS
+                        await news.collect_and_save(symbols)
+                    except Exception as e:
+                        logger.error(f"뉴스 감성 분석 오류: {e}")
+
                 # 상태 업데이트
                 await cache.set_bot_status("data_collector", {
                     "status": "running",

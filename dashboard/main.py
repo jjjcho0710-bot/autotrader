@@ -1292,6 +1292,32 @@ async def get_portfolio_context() -> str:
     except:
         pass
 
+    try:
+        # 뉴스 감성 분석
+        async with db_pool.acquire() as conn:
+            sentiments = await conn.fetch("""
+                SELECT DISTINCT ON (s.symbol)
+                    s.symbol, s.sentiment_score, s.signal, s.summary, s.date, w.name
+                FROM stock_news_sentiment s
+                JOIN watchlist w ON s.symbol=w.symbol
+                WHERE w.is_active=TRUE
+                ORDER BY s.symbol, s.date DESC
+            """)
+        if sentiments:
+            positive = [r for r in sentiments if r['sentiment_score'] > 0]
+            negative = [r for r in sentiments if r['sentiment_score'] < 0]
+            ctx_parts.append(f"\n[뉴스 감성 분석]")
+            if positive:
+                ctx_parts.append("  📰 긍정: " + ", ".join(
+                    [f"{r['name'] or r['symbol']}({r['sentiment_score']:+d})" for r in positive[:5]]
+                ))
+            if negative:
+                ctx_parts.append("  📰 부정: " + ", ".join(
+                    [f"{r['name'] or r['symbol']}({r['sentiment_score']:+d})" for r in negative[:5]]
+                ))
+    except:
+        pass
+
     return "\n".join(ctx_parts)
 
 

@@ -995,6 +995,57 @@ async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
 
 
+@app.get("/api/data/supply")
+async def get_supply_data():
+    """외국인/기관 수급 최신 데이터"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT ON (s.symbol)
+                    s.symbol, s.date, s.foreign_net, s.institution_net,
+                    s.individual_net, s.foreign_hold_ratio, w.name
+                FROM stock_supply s
+                LEFT JOIN watchlist w ON s.symbol=w.symbol
+                ORDER BY s.symbol, s.date DESC
+            """)
+        return {"success": True, "data": [dict(r) for r in rows], "count": len(rows)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/data/disclosure")
+async def get_disclosure_data():
+    """최근 공시 목록"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT symbol, corp_name, report_name, rcept_dt, is_important
+                FROM stock_disclosure
+                ORDER BY rcept_dt DESC LIMIT 20
+            """)
+        return {"success": True, "data": [dict(r) for r in rows], "count": len(rows)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/data/sentiment")
+async def get_sentiment_data():
+    """뉴스 감성 분석 최신 결과"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT ON (s.symbol)
+                    s.symbol, s.date, s.sentiment_score, s.signal,
+                    s.summary, s.news_count, w.name
+                FROM stock_news_sentiment s
+                LEFT JOIN watchlist w ON s.symbol=w.symbol
+                ORDER BY s.symbol, s.date DESC
+            """)
+        return {"success": True, "data": [dict(r) for r in rows], "count": len(rows)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/market/checklist")
 async def market_checklist():
     """장중 테스트 체크리스트"""

@@ -1937,6 +1937,13 @@ async def telegram_webhook(body: dict):
             return {"ok": True}
 
         else:
+            # 수동 수집 명령 감지
+            if any(k in text for k in ["뉴스 수집", "수동 수집", "감성 수집", "데이터 수집"]):
+                token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+                await _send_telegram("📰 데이터 수집 시작했어요! 잠시 기다려주세요...", chat_id, token)
+                asyncio.create_task(_manual_collect())
+                return {"ok": True}
+
             # 자유 대화 → Open-WebUI Jarvis (Tools + 메모리 포함)
             # 웹과 같은 세션 공유
             shared_session = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")

@@ -73,57 +73,59 @@ class NewsCollector:
             return []
 
     async def get_news_rss(self, query: str, limit: int = 5) -> list:
-        """DuckDuckGo 뉴스 검색"""
+        """Open-WebUI 웹 검색으로 뉴스 수집"""
         try:
-            import urllib.parse
-            encoded = urllib.parse.quote(query)
-            url = f"https://duckduckgo.com/news.js?q={encoded}&o=json&l=kr-kr&s=0&vqd=1"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://duckduckgo.com/",
-            }
+            import os
+            openwebui_url = os.getenv("OPENWEBUI_URL", "")
+            openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
+            jarvis_model = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
+
+            if not openwebui_url or not openwebui_token:
+                return []
+
+            prompt = f"{query} 관련 최신 뉴스 5개 제목만 간단히 알려줘. 번호 매겨서."
+
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    data = await resp.json(content_type=None)
+                async with session.post(
+                    f"{openwebui_url}/api/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openwebui_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": jarvis_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    data = await resp.json()
 
-            results = []
-            for item in data.get("results", [])[:limit]:
-                results.append({
-                    "title": item.get("title", ""),
-                    "description": item.get("excerpt", ""),
-                    "pubDate": item.get("date", ""),
-                })
-            if results:
-                return results
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not content:
+                return []
+
+            # 뉴스 제목 파싱
+            import re
+            lines = [l.strip() for l in content.split('\n') if l.strip()]
+            news_list = []
+            for line in lines[:limit]:
+                # 번호 제거
+                title = re.sub(r'^[\d\.\)]+\s*', '', line).strip()
+                if title and len(title) > 5:
+                    news_list.append({
+                        "title": title,
+                        "description": "",
+                        "pubDate": "",
+                    })
+            return news_list
+
         except Exception as e:
-            logger.debug(f"DuckDuckGo 뉴스 실패: {e}")
-
-        # fallback: 네이버 금융 HTML 파싱
-        return await self._get_naver_news(query, limit)
+            logger.debug(f"뉴스 수집 실패: {e}")
+            return []
 
     async def _get_naver_news(self, query: str, limit: int = 5) -> list:
-        """네이버 뉴스 검색 HTML 파싱"""
-        try:
-            import urllib.parse, re
-            encoded = urllib.parse.quote(query)
-            url = f"https://search.naver.com/search.naver?where=news&query={encoded}&sort=1&ds=&de=&nso=so%3Add%2Cp%3A1d"
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    html = await resp.text()
-
-            titles = re.findall(r'class="news_tit"[^>]+title="([^"]+)"', html)
-            descs = re.findall(r'class="dsc_txt_wrap"[^>]*>(.*?)</a>', html, re.DOTALL)
-
-            results = []
-            for i, title in enumerate(titles[:limit]):
-                desc = re.sub(r'<[^>]+>', '', descs[i]).strip() if i < len(descs) else ""
-                results.append({"title": title, "description": desc, "pubDate": ""})
-            return results
-        except Exception as e:
-            logger.debug(f"네이버 뉴스 파싱 실패: {e}")
-            return []
+        return []
 
     async def analyze_sentiment(self, news_list: list, symbol: str) -> dict:
         """Gemini로 뉴스 감성 분석"""

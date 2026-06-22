@@ -73,55 +73,56 @@ class NewsCollector:
             return []
 
     async def get_news_rss(self, query: str, limit: int = 5) -> list:
-        """네이버 뉴스 검색 RSS"""
+        """DuckDuckGo 뉴스 검색"""
         try:
-            url = "https://openapi.naver.com/v1/search/news.json"
+            import urllib.parse
+            encoded = urllib.parse.quote(query)
+            url = f"https://duckduckgo.com/news.js?q={encoded}&o=json&l=kr-kr&s=0&vqd=1"
             headers = {
-                "X-Naver-Client-Id": config.NAVER_CLIENT_ID if hasattr(config, 'NAVER_CLIENT_ID') else "",
-                "X-Naver-Client-Secret": config.NAVER_CLIENT_SECRET if hasattr(config, 'NAVER_CLIENT_SECRET') else "",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://duckduckgo.com/",
             }
-            import os
-            headers["X-Naver-Client-Id"] = os.getenv("NAVER_CLIENT_ID", "")
-            headers["X-Naver-Client-Secret"] = os.getenv("NAVER_CLIENT_SECRET", "")
-
-            if not headers["X-Naver-Client-Id"]:
-                # API 키 없으면 RSS로 대체
-                return await self._get_news_simple(query, limit)
-
             async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    headers=headers,
-                    params={"query": query, "display": limit, "sort": "date"},
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    data = await resp.json()
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json(content_type=None)
 
-            return [
-                {"title": item.get("title", "").replace("<b>", "").replace("</b>", ""),
-                 "description": item.get("description", ""),
-                 "pubDate": item.get("pubDate", "")}
-                for item in data.get("items", [])
-            ]
-
+            results = []
+            for item in data.get("results", [])[:limit]:
+                results.append({
+                    "title": item.get("title", ""),
+                    "description": item.get("excerpt", ""),
+                    "pubDate": item.get("date", ""),
+                })
+            if results:
+                return results
         except Exception as e:
-            logger.debug(f"네이버 뉴스 검색 실패: {e}")
-            return await self._get_news_simple(query, limit)
+            logger.debug(f"DuckDuckGo 뉴스 실패: {e}")
 
-    async def _get_news_simple(self, query: str, limit: int = 5) -> list:
-        """Jarvis 웹 검색으로 뉴스 수집 (fallback)"""
+        # fallback: 네이버 금융 HTML 파싱
+        return await self._get_naver_news(query, limit)
+
+    async def _get_naver_news(self, query: str, limit: int = 5) -> list:
+        """네이버 뉴스 검색 HTML 파싱"""
         try:
-            import aiohttp
-            url = f"https://search.naver.com/search.naver?where=news&query={query}+주식&sort=1"
-            headers = {"User-Agent": "Mozilla/5.0"}
+            import urllib.parse, re
+            encoded = urllib.parse.quote(query)
+            url = f"https://search.naver.com/search.naver?where=news&query={encoded}&sort=1&ds=&de=&nso=so%3Add%2Cp%3A1d"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     html = await resp.text()
 
-            import re
-            titles = re.findall(r'class="news_tit"[^>]*title="([^"]+)"', html)
-            return [{"title": t, "description": "", "pubDate": ""} for t in titles[:limit]]
-        except:
+            titles = re.findall(r'class="news_tit"[^>]+title="([^"]+)"', html)
+            descs = re.findall(r'class="dsc_txt_wrap"[^>]*>(.*?)</a>', html, re.DOTALL)
+
+            results = []
+            for i, title in enumerate(titles[:limit]):
+                desc = re.sub(r'<[^>]+>', '', descs[i]).strip() if i < len(descs) else ""
+                results.append({"title": title, "description": desc, "pubDate": ""})
+            return results
+        except Exception as e:
+            logger.debug(f"네이버 뉴스 파싱 실패: {e}")
             return []
 
     async def analyze_sentiment(self, news_list: list, symbol: str) -> dict:

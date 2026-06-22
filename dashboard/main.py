@@ -1469,6 +1469,62 @@ STOCK_NAME_MAP = {
     "한국전력": ("015760", "한국전력"),
 }
 
+async def _manual_collect():
+    """수동 데이터 수집 (뉴스 감성)"""
+    try:
+        import aiohttp, os, json, re
+        openwebui_url = os.getenv("OPENWEBUI_URL", "")
+        openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
+        jarvis_model = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
+
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT symbol, name FROM watchlist WHERE is_active=TRUE LIMIT 10")
+
+        for r in rows:
+            symbol, name = r["symbol"], r["name"] or r["symbol"]
+            try:
+                prompt = f"""다음 주식 뉴스를 분석해서 JSON만 출력해줘. 다른 말은 하지 마.
+종목: {name}({symbol})
+요청: {name} 주식 최신 뉴스 감성 분석
+출력형식: {{"score": 1, "signal": "BUY", "summary": "긍정적"}}"""
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{openwebui_url}/api/chat/completions",
+                        headers={"Authorization": f"Bearer {openwebui_token}", "Content-Type": "application/json"},
+                        json={"model": jarvis_model, "messages": [{"role": "user", "content": prompt}], "stream": False},
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    ) as resp:
+                        data = await resp.json()
+
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = re.sub(r'```json|```', '', content).strip()
+                match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+                if match:
+                    result = json.loads(match.group())
+                    score = max(-2, min(2, int(result.get("score", 0))))
+                    signal = result.get("signal", "NEUTRAL").upper()
+                    if signal not in ["BUY", "SELL", "NEUTRAL"]:
+                        signal = "NEUTRAL"
+                    summary = result.get("summary", "")
+
+                    async with db_pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO stock_news_sentiment
+                            (symbol, date, sentiment_score, signal, summary, news_count)
+                            VALUES ($1, $2, $3, $4, $5, 1)
+                            ON CONFLICT (symbol, date) DO UPDATE
+                            SET sentiment_score=$3, signal=$4, summary=$5
+                        """, symbol, datetime.now().date(), score, signal, summary)
+                    logger.info(f"📰 {name}: {signal} ({score:+d}) - {summary}")
+            except Exception as e:
+                logger.error(f"수집 실패 [{symbol}]: {e}")
+
+        logger.info("✅ 수동 수집 완료")
+    except Exception as e:
+        logger.error(f"수동 수집 오류: {e}")
+
+
 async def _handle_watchlist_command(msg: str) -> str | None:
     """감시 종목 추가/삭제/조회 명령 감지 후 실행"""
     msg_lower = msg.lower().strip()
@@ -1602,6 +1658,11 @@ async def jarvis_chat(body: dict):
         action_result = await _handle_watchlist_command(user_msg)
         if action_result:
             return {"success": True, "reply": action_result, "context_used": False}
+
+        # 수동 수집 명령
+        if any(k in user_msg for k in ["수동 수집", "뉴스 수집", "감성 수집", "데이터 수집"]):
+            asyncio.create_task(_manual_collect())
+            return {"success": True, "reply": "📰 데이터 수집 시작했어요! 1~2분 후 `/api/data/sentiment` 에서 결과 확인하세요.", "context_used": False}
 
         # 포트폴리오 컨텍스트 추가
         portfolio_ctx = await get_portfolio_context()

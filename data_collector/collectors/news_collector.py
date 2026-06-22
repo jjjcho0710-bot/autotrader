@@ -141,13 +141,14 @@ class NewsCollector:
             name = STOCK_NAME_MAP.get(symbol, symbol)
             titles = "\n".join([f"- {n['title']}" for n in news_list[:5]])
 
-            prompt = f"""{name}({symbol}) 뉴스 감성 분석해줘.
+            prompt = f"""다음 주식 뉴스를 분석해서 JSON만 출력해줘. 다른 말은 하지 마.
 
+종목: {name}({symbol})
 뉴스:
 {titles}
 
-JSON만 답해줘:
-{{"score": -2~2정수, "signal": "BUY또는SELL또는NEUTRAL", "summary": "한줄요약"}}"""
+출력형식 (JSON만, 다른 텍스트 없이):
+{{"score": 1, "signal": "BUY", "summary": "긍정적"}}"""
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -170,18 +171,31 @@ JSON만 답해줘:
                 return {"score": 0, "signal": "NEUTRAL", "reason": "응답 없음"}
 
             import json, re
-            match = re.search(r'\{.*?\}', content, re.DOTALL)
+            # JSON 블록 추출 (```json ... ``` 포함)
+            content = re.sub(r'```json|```', '', content).strip()
+            match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
             if match:
-                result = json.loads(match.group())
-                return {
-                    "score": int(result.get("score", 0)),
-                    "signal": result.get("signal", "NEUTRAL"),
-                    "reason": result.get("summary", ""),
-                }
-        except Exception as e:
-            logger.debug(f"감성 분석 실패 [{symbol}]: {e}")
+                try:
+                    result = json.loads(match.group())
+                    score = int(result.get("score", 0))
+                    score = max(-2, min(2, score))  # -2~2 범위 제한
+                    signal = result.get("signal", "NEUTRAL").upper()
+                    if signal not in ["BUY", "SELL", "NEUTRAL"]:
+                        signal = "NEUTRAL"
+                    return {
+                        "score": score,
+                        "signal": signal,
+                        "reason": result.get("summary", ""),
+                    }
+                except:
+                    pass
 
-        return {"score": 0, "signal": "NEUTRAL", "reason": "분석 실패"}
+            # JSON 파싱 실패시 텍스트에서 감성 추출
+            if any(w in content for w in ["긍정", "상승", "매수", "호재"]):
+                return {"score": 1, "signal": "BUY", "reason": "긍정적 뉴스"}
+            elif any(w in content for w in ["부정", "하락", "매도", "악재"]):
+                return {"score": -1, "signal": "SELL", "reason": "부정적 뉴스"}
+            return {"score": 0, "signal": "NEUTRAL", "reason": "중립적 뉴스"}
 
     async def collect_and_save(self, symbols: list[str]) -> dict:
         """전체 종목 뉴스 수집 + 감성 분석 + DB 저장"""

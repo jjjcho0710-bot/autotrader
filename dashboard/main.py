@@ -418,8 +418,9 @@ async def _jarvis_scheduler():
         if dtime(8, 30) <= cur_time <= dtime(8, 35) and last_morning != today:
             last_morning = today
             logger.info("🌅 Jarvis 장 시작 전 루틴")
-            await _jarvis_stock_scanner()   # 전종목 스캔 → watchlist 자동 추가
-            await _jarvis_auto_analysis()   # ML 예측 분석 → 텔레그램
+            await _jarvis_stock_scanner()
+            await _jarvis_auto_analysis()
+            asyncio.create_task(_manual_collect())  # 뉴스 감성 수집
 
             # 오늘 공시 확인
             try:
@@ -437,6 +438,7 @@ async def _jarvis_scheduler():
             last_closing = today
             logger.info("🌆 Jarvis 장 마감 후 자동 분석")
             await _jarvis_auto_analysis()
+            asyncio.create_task(_manual_collect())  # 장 마감 후 뉴스 수집
 
 
 @app.on_event("shutdown")

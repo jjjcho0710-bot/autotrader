@@ -28,7 +28,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid #e5e7eb;width:100%;}
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
 .sdot{width:6px;height:6px;border-radius:50%;}
-.sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
+.sdot.on{background:var(--green);}
 .sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
 .topbar{height:52px;background:var(--panel);border-bottom:1px solid #e5e7eb;display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
@@ -41,7 +41,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .page{flex:1;display:flex;flex-direction:column;overflow:hidden;}
 .page-header{padding:14px 20px;border-bottom:1px solid #e5e7eb;background:var(--panel);display:flex;align-items:center;justify-content:space-between;}
 .ph-left{display:flex;align-items:center;gap:12px;}
-.ph-dot{width:10px;height:10px;border-radius:50%;background:var(--purple);box-shadow:0 0 10px var(--purple);}
+.ph-dot{width:10px;height:10px;border-radius:50%;background:var(--purple);}
 .ph-title{font-size:15px;font-weight:700;color:var(--bright);}
 .ph-sub{font-size:11px;color:var(--muted);margin-top:2px;}
 .add-btn{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:7px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);color:var(--purple);font-size:12px;font-weight:600;cursor:pointer;}
@@ -153,11 +153,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     </div>
     <div class="content-area">
       <div class="section" id="section-stock">
-        <div class="sec-title"><div class="sec-dot" style="background:var(--stock);box-shadow:0 0 6px var(--stock)"></div><span style="color:var(--stock)">stock-trader</span>&nbsp;한국주식 전략</div>
+        <div class="sec-title"><div class="sec-dot" style="background:var(--stock)"></div><span style="color:var(--stock)">stock-trader</span>&nbsp;한국주식 전략</div>
         <div id="stock-cards"><div style="color:#6b7280;font-size:12px;padding:10px;">로딩 중...</div></div>
       </div>
       <div class="section" id="section-crypto">
-        <div class="sec-title"><div class="sec-dot" style="background:var(--crypto);box-shadow:0 0 6px var(--crypto)"></div><span style="color:var(--crypto)">crypto-trader</span>&nbsp;코인 전략</div>
+        <div class="sec-title"><div class="sec-dot" style="background:var(--crypto)"></div><span style="color:var(--crypto)">crypto-trader</span>&nbsp;코인 전략</div>
         <div id="crypto-cards"><div style="color:#6b7280;font-size:12px;padding:10px;">로딩 중...</div></div>
       </div>
     </div>

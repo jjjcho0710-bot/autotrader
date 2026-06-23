@@ -161,6 +161,9 @@ class CryptoTrader:
 
         # ② 손절/익절 체크
         for pair, pos in self.positions.items():
+            # USDT 등 스테이블코인 제외
+            if any(s in pair for s in ['USDT', 'BUSD', 'USDC']):
+                continue
             avg = pos["avg_price"]
             cur = pos["cur_price"]
             qty = pos["qty"]

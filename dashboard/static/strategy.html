@@ -4,329 +4,272 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AutoTrader — 전략</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
-:root{--bg:#f5f6fa;--panel:#ffffff;--panel2:#f9fafb;--border:#d1d5db;--stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;--purple:#6d28d9;--muted:#6b7280;--text:#374151;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+:root{
+  --bg:#f5f6fa;--panel:#ffffff;--panel2:#f9fafb;--border:#d1d5db;
+  --stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;
+  --purple:#6d28d9;--muted:#6b7280;--text:#374151;--bright:#111827;
+  --sidebar:200px;--font:'Inter',sans-serif;--mono:'JetBrains Mono',monospace;
+}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
-.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid #e5e7eb;display:flex;flex-direction:column;align-items:center;height:100vh;}
-.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid #e5e7eb;flex-shrink:0;}
-.logo-mark{width:28px;height:28px;background:var(--stock);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
-.sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
-.nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
-.nav-divider{width:24px;height:1px;background:var(--border);margin:4px 0;}
-.nav-item:hover{background:var(--panel2);color:var(--text);}
-.nav-item.active{background:var(--panel2);color:var(--bright);}
-.nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;}
-.nav-item.t.active::before{background:var(--purple);}
-.nav-item.d.active::before{background:var(--green);}
-.nav-item.s.active::before{background:var(--stock);}
-.nav-item.c.active::before{background:var(--crypto);}
-.nav-item.l.active::before{background:var(--text);}
-.nav-tooltip{display:none;}
+*::-webkit-scrollbar{width:4px;}
+*::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:2px;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;height:100vh;display:flex;overflow:hidden;}
 
-.sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
-.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid #e5e7eb;width:100%;}
-.sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
-.sdot{width:6px;height:6px;border-radius:50%;}
+.sidebar{width:var(--sidebar);flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;}
+.sidebar-logo{height:56px;display:flex;align-items:center;padding:0 16px;gap:10px;border-bottom:1px solid var(--border);}
+.logo-mark{width:32px;height:32px;background:var(--stock);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:13px;color:white;font-weight:700;}
+.logo-text{font-size:14px;font-weight:700;color:var(--bright);}
+.logo-sub{font-size:10px;color:var(--muted);font-weight:500;margin-top:1px;}
+.sidebar-section{padding:12px 16px 4px;font-size:10px;font-weight:700;color:var(--muted);letter-spacing:0.8px;text-transform:uppercase;}
+.sidebar-nav{flex:1;padding:8px;display:flex;flex-direction:column;gap:2px;}
+.nav-item{width:100%;height:38px;border-radius:8px;display:flex;align-items:center;padding:0 10px;gap:10px;cursor:pointer;color:var(--muted);font-size:13px;font-weight:500;transition:all 0.1s;}
+.nav-item:hover{background:var(--panel2);color:var(--text);}
+.nav-item.active{background:#f5f3ff;color:var(--purple);font-weight:600;}
+.nav-item.active.d{background:#eff6ff;color:var(--stock);}
+.nav-item.active.s{background:#eff6ff;color:var(--stock);}
+.nav-item.active.c{background:#fef3c7;color:var(--crypto);}
+.nav-item.active.l{background:#f0fdf4;color:var(--green);}
+.nav-item.active.j{background:#f5f3ff;color:var(--purple);}
+.nav-icon{font-size:16px;width:20px;text-align:center;}
+.sidebar-bottom{padding:12px 8px;border-top:1px solid var(--border);}
+.sdot-row{display:flex;gap:12px;padding:6px 8px;}
+.sdot-item{display:flex;align-items:center;gap:5px;}
+.sdot{width:8px;height:8px;border-radius:50%;background:#d1d5db;}
 .sdot.on{background:var(--green);}
-.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
+.sdot-label{font-size:11px;color:#374151;font-weight:700;}
+
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.topbar{height:52px;background:var(--panel);border-bottom:1px solid #e5e7eb;display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
-.page-label{font-size:14px;font-weight:600;color:var(--bright);}
-.topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
-.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#059669;font-weight:600;}
-.live-dot{width:7px;height:7px;border-radius:50%;background:#10b981;animation:blink 1.5s infinite;}
+.topbar{height:56px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;}
+.page-title{font-size:15px;font-weight:700;color:var(--bright);}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:12px;}
+.live-badge{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:var(--green);background:#f0fdf4;padding:4px 10px;border-radius:20px;border:1px solid #bbf7d0;}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
-.clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
-.page{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.page-header{padding:14px 20px;border-bottom:1px solid #e5e7eb;background:var(--panel);display:flex;align-items:center;justify-content:space-between;}
-.ph-left{display:flex;align-items:center;gap:12px;}
-.ph-dot{width:10px;height:10px;border-radius:50%;background:var(--purple);}
-.ph-title{font-size:15px;font-weight:700;color:var(--bright);}
-.ph-sub{font-size:11px;color:var(--muted);margin-top:2px;}
-.add-btn{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:7px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);color:var(--purple);font-size:12px;font-weight:600;cursor:pointer;}
-.content-area{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow-y:auto;}
-.section{border-right:1px solid #e5e7eb;padding:18px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;}
-.section:last-child{border-right:none;}
-.sec-title{font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;display:flex;align-items:center;gap:8px;}
-.sec-dot{width:6px;height:6px;border-radius:50%;}
-/* card */
-.sc{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;}
-.sc.as{border-color:rgba(91,143,255,0.35);}
-.sc.ac{border-color:rgba(240,165,0,0.35);}
-.sc-header{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e5e7eb;}
-.sc-title{font-size:14px;font-weight:600;color:var(--bright);}
-.sc-desc{font-size:11px;color:var(--muted);margin-top:2px;}
-.toggle{width:36px;height:20px;border-radius:10px;position:relative;cursor:pointer;flex-shrink:0;}
-.toggle.on{background:var(--green);}.toggle.off{background:var(--border);}
-.toggle::after{content:'';position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;box-shadow:0 1px 3px rgba(0,0,0,0.3);}
-.toggle.on::after{left:19px;}.toggle.off::after{left:3px;}
-.sc-body{padding:12px 14px;display:flex;flex-direction:column;gap:10px;}
-.param-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
-.pr{display:flex;flex-direction:column;gap:4px;}
-.pr-label{font-size:10px;color:var(--muted);}
-.pr-row{display:flex;align-items:center;gap:6px;}
-.pr-input{background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:5px 8px;font-family:var(--mono);font-size:12px;color:var(--bright);width:72px;outline:none;}
-.pr-input:focus{border-color:var(--stock);}
-.pr-input.cf:focus{border-color:var(--crypto);}
-.pr-unit{font-size:11px;color:var(--muted);}
-.sig-bar{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;font-size:11px;}
-.sig-bar.wait{background:rgba(75,82,112,0.2);border:1px solid #e5e7eb;color:var(--muted);}
-.sig-bar.act{background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.25);color:var(--green);}
-.sig-bar.alr{background:rgba(240,165,0,0.08);border:1px solid rgba(240,165,0,0.25);color:var(--crypto);}
-.sig-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;}
-.perf-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
-.ps{background:var(--panel2);border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;}
-.ps-label{font-size:9px;color:var(--muted);letter-spacing:0.5px;margin-bottom:3px;}
-.ps-value{font-size:13px;font-weight:700;font-family:var(--mono);}
-.ps-value.pos{color:#059669;}.ps-value.stock{color:var(--stock);}.ps-value.crypto{color:var(--crypto);}
-.save-btn{display:flex;align-items:center;justify-content:center;padding:8px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;width:100%;}
-.save-btn.s{background:rgba(91,143,255,0.1);border:1px solid rgba(91,143,255,0.25);color:var(--stock);}
-.save-btn.c{background:rgba(240,165,0,0.1);border:1px solid rgba(240,165,0,0.25);color:var(--crypto);}
-@media(max-width:768px){.sidebar{width:100%!important;height:56px!important;flex-direction:row!important;position:fixed!important;bottom:0!important;top:auto!important;z-index:100!important;border-right:none!important;border-top:1px solid #e5e7eb!important;padding:0 8px!important;}.sidebar-logo{display:none!important;}.sidebar-nav{flex-direction:row!important;padding:0!important;gap:0!important;justify-content:space-around!important;width:100%!important;flex:1!important;}.nav-item{flex-direction:column!important;height:56px!important;justify-content:center!important;padding:0!important;font-size:20px!important;gap:2px!important;flex:1!important;}.nav-item span{font-size:10px!important;}.nav-divider{display:none!important;}.sidebar-bottom{display:none!important;}.main{padding-bottom:56px!important;}body{height:100dvh!important;}}</style>
-  <link rel="stylesheet" href="/static/mobile.css">
+.clock{font-size:12px;color:var(--muted);font-family:var(--mono);font-weight:500;}
+
+.content{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;}
+.section-header{display:flex;align-items:center;gap:10px;margin-bottom:2px;}
+.section-dot{width:10px;height:10px;border-radius:50%;}
+.section-title{font-size:14px;font-weight:700;color:var(--bright);}
+.section-sub{font-size:12px;color:var(--muted);font-weight:500;}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+
+.strat-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+.strat-card.active-card{border-color:#a7f3d0;}
+.strat-header{padding:14px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);}
+.strat-header.active{background:#f0fdf4;border-bottom-color:#a7f3d0;}
+.strat-header.inactive{background:#f9fafb;}
+.strat-info{flex:1;}
+.strat-name{font-size:14px;font-weight:700;color:var(--bright);}
+.strat-desc{font-size:11px;color:var(--muted);margin-top:3px;font-weight:500;}
+.toggle{width:40px;height:22px;border-radius:11px;position:relative;cursor:pointer;flex-shrink:0;transition:background 0.2s;}
+.toggle.on{background:var(--green);}
+.toggle.off{background:#d1d5db;}
+.toggle::after{content:'';position:absolute;width:16px;height:16px;background:white;border-radius:50%;top:3px;transition:left 0.2s;}
+.toggle.on::after{left:21px;}
+.toggle.off::after{left:3px;}
+.status-pill{font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;}
+.status-pill.on{background:#d1fae5;color:#065f46;}
+.status-pill.off{background:#f3f4f6;color:var(--muted);}
+.sensing{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--green);}
+.sensing-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+
+.strat-body{padding:16px 18px;display:flex;flex-direction:column;gap:12px;}
+.param-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.param-item{display:flex;flex-direction:column;gap:4px;}
+.param-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;}
+.param-input{height:36px;border:1px solid var(--border);border-radius:8px;padding:0 10px;font-size:13px;font-family:var(--mono);font-weight:600;color:var(--bright);background:var(--panel2);width:100%;outline:none;transition:border 0.15s;}
+.param-input:focus{border-color:var(--stock);background:white;}
+.strat-footer{display:flex;justify-content:space-between;align-items:center;padding-top:4px;}
+.perf-row{display:flex;gap:16px;}
+.perf-item{font-size:11px;color:var(--muted);font-weight:500;}
+.perf-item b{color:var(--bright);font-weight:700;}
+.save-btn{height:36px;padding:0 20px;background:var(--stock);color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font);transition:opacity 0.15s;}
+.save-btn:hover{opacity:0.85;}
+.save-btn.crypto{background:var(--crypto);}
+
+.toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;z-index:999;display:none;}
+.toast.ok{background:#d1fae5;color:#065f46;border:1px solid #a7f3d0;}
+.toast.err{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
+</style>
 </head>
 <body>
+
 <div class="sidebar">
-  <div class="sidebar-logo"><div class="logo-mark">AT</div></div>
+  <div class="sidebar-logo">
+    <div class="logo-mark">AT</div>
+    <div>
+      <div class="logo-text">AutoTrader</div>
+      <div class="logo-sub">AI 자동매매 시스템</div>
+    </div>
+  </div>
   <div class="sidebar-nav">
-    <div class="nav-item j" onclick="location.href='jarvis.html'">🤖<span style="font-size:11px;font-weight:500;color:inherit;">Jarvis</span></div>
-    <div class="nav-divider"></div>
-    <div class="nav-item d" onclick="location.href='dashboard-C.html'"">⊞<div class="nav-tooltip">대시보드</div></div>
-    <div class="nav-item s" onclick="location.href='stock.html'">📈<span style="font-size:11px;font-weight:500;color:inherit;">주식</span></div>
-    <div class="nav-item c" onclick="location.href='crypto.html'">₿<span style="font-size:11px;font-weight:500;color:inherit;">코인</span></div>
-    <div class="nav-item t active" onclick="location.href='strategy.html'">⚙<span style="font-size:11px;font-weight:500;color:inherit;">전략</span></div>
-    <div class="nav-item l" onclick="location.href='/analysis.html'">🧠 <span>분석</span></div>
+    <div class="sidebar-section">메뉴</div>
+    <div class="nav-item d" onclick="location.href='dashboard-C.html'"><span class="nav-icon">⊞</span>대시보드</div>
+    <div class="nav-item s" onclick="location.href='stock.html'"><span class="nav-icon">📈</span>주식</div>
+    <div class="nav-item c" onclick="location.href='crypto.html'"><span class="nav-icon">₿</span>코인</div>
+    <div class="nav-item active t" onclick="location.href='strategy.html'"><span class="nav-icon">⚙</span>전략</div>
+    <div class="nav-item l" onclick="location.href='/analysis.html'"><span class="nav-icon">🧠</span>분석</div>
+    <div class="sidebar-section">AI</div>
+    <div class="nav-item j" onclick="location.href='jarvis.html'"><span class="nav-icon">🤖</span>Jarvis</div>
   </div>
   <div class="sidebar-bottom">
-    <div class="sdot-group">
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">STK</div></div>
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">CRY</div></div>
-      <div class="sdot-wrap"><div class="sdot on"></div><div class="sdot-label">DAT</div></div>
+    <div class="sdot-row">
+      <div class="sdot-item"><div class="sdot" id="dot-stk"></div><span class="sdot-label">STK</span></div>
+      <div class="sdot-item"><div class="sdot" id="dot-cry"></div><span class="sdot-label">CRY</span></div>
+      <div class="sdot-item"><div class="sdot" id="dot-dat"></div><span class="sdot-label">DAT</span></div>
     </div>
   </div>
 </div>
+
 <div class="main">
   <div class="topbar">
-    <div class="page-label">전략 관리</div>
+    <div class="page-title">전략 관리</div>
     <div class="topbar-right">
-      <div class="live-pill"><div class="live-dot"></div>LIVE</div>
-      <div class="clock" id="clock">-</div>
+      <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+      <div class="clock" id="clock">--:--:--</div>
     </div>
   </div>
-  <div class="page">
-    <div class="page-header">
-      <div class="ph-left"><div class="ph-dot"></div><div><div class="ph-title">전략 관리</div><div class="ph-sub">매매 전략 ON/OFF 및 파라미터 설정</div></div></div>
-      <div class="add-btn" onclick="showAddForm()">＋ 전략 추가</div>
-    </div>
-    <!-- 전략 추가 폼 (기본 숨김) -->
-    <div id="add-form" style="display:none;border-bottom:1px solid #e5e7eb;background:var(--panel);padding:16px 20px;">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;align-items:end;">
+
+  <div class="content">
+    <!-- 주식 전략 -->
+    <div>
+      <div class="section-header">
+        <div class="section-dot" style="background:var(--stock)"></div>
         <div>
-          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">봇 선택</div>
-          <select id="af-bot" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
-            <option value="stock_trader">주식 (stock-trader)</option>
-            <option value="crypto_trader">코인 (crypto-trader)</option>
-          </select>
-        </div>
-        <div>
-          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">전략명</div>
-          <input id="af-name" type="text" placeholder="예: 볼린저밴드" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
-        </div>
-        <div>
-          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">손절선 (%)</div>
-          <input id="af-stop" type="number" value="-2" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
-        </div>
-        <div>
-          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">익절선 (%)</div>
-          <input id="af-profit" type="number" value="5" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
-        </div>
-        <div>
-          <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">1회 매수금액 (원)</div>
-          <input id="af-amount" type="number" value="500000" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
-        </div>
-        <div style="display:flex;gap:8px;align-items:flex-end;">
-          <div onclick="submitAddForm()" style="flex:1;padding:7px 0;border-radius:6px;background:var(--purple);color:white;font-size:12px;font-weight:600;cursor:pointer;text-align:center;">저장</div>
-          <div onclick="hideAddForm()" style="flex:1;padding:7px 0;border-radius:6px;background:var(--panel2);border:1px solid #e5e7eb;color:#6b7280;font-size:12px;cursor:pointer;text-align:center;">취소</div>
+          <div class="section-title">STOCK-TRADER</div>
+          <div class="section-sub">한국주식 · KIS API</div>
         </div>
       </div>
     </div>
-    <div class="content-area">
-      <div class="section" id="section-stock">
-        <div class="sec-title"><div class="sec-dot" style="background:var(--stock)"></div><span style="color:var(--stock)">stock-trader</span>&nbsp;한국주식 전략</div>
-        <div id="stock-cards"><div style="color:#6b7280;font-size:12px;padding:10px;">로딩 중...</div></div>
-      </div>
-      <div class="section" id="section-crypto">
-        <div class="sec-title"><div class="sec-dot" style="background:var(--crypto)"></div><span style="color:var(--crypto)">crypto-trader</span>&nbsp;코인 전략</div>
-        <div id="crypto-cards"><div style="color:#6b7280;font-size:12px;padding:10px;">로딩 중...</div></div>
+    <div class="grid-2" id="stock-strategies"></div>
+
+    <!-- 코인 전략 -->
+    <div style="margin-top:8px">
+      <div class="section-header">
+        <div class="section-dot" style="background:var(--crypto)"></div>
+        <div>
+          <div class="section-title">CRYPTO-TRADER</div>
+          <div class="section-sub">코인 · 업비트 API</div>
+        </div>
       </div>
     </div>
+    <div class="grid-2" id="crypto-strategies"></div>
   </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
 <script>
-function updateClock(){const now=new Date();const d=now.toLocaleDateString("ko-KR",{year:"numeric",month:"2-digit",day:"2-digit"}).replace(/\. /g,".").replace(".","");const t=now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});const el=document.getElementById("clock");if(el)el.textContent=d+" "+t;}setInterval(updateClock,1000);updateClock();
-const API = '';
-let strategiesData = [];
+const API='';
+function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+setInterval(updateClock,1000);updateClock();
 
-async function loadStrategies() {
-  try {
-    const res = await fetch(`${API}/api/strategies`);
-    const { data } = await res.json();
-    if (!data) return;
-    strategiesData = data;
-
-    const stockCards  = document.getElementById('stock-cards');
-    const cryptoCards = document.getElementById('crypto-cards');
-    stockCards.innerHTML  = '';
-    cryptoCards.innerHTML = '';
-
-    const stockList  = data.filter(s => s.bot === 'stock_trader');
-    const cryptoList = data.filter(s => s.bot === 'crypto_trader');
-
-    if (!stockList.length)  stockCards.innerHTML  = '<div style="color:#6b7280;font-size:12px;padding:10px;">전략 없음 — + 전략 추가로 추가하세요</div>';
-    if (!cryptoList.length) cryptoCards.innerHTML = '<div style="color:#6b7280;font-size:12px;padding:10px;">전략 없음 — + 전략 추가로 추가하세요</div>';
-
-    stockList.forEach(s  => stockCards.insertAdjacentHTML('beforeend',  buildCard(s, 'stock')));
-    cryptoList.forEach(s => cryptoCards.insertAdjacentHTML('beforeend', buildCard(s, 'crypto')));
-  } catch(e) { console.log('loadStrategies error', e); }
+function showToast(msg,type='ok'){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.className=`toast ${type}`;t.style.display='block';
+  setTimeout(()=>t.style.display='none',2500);
 }
 
-function buildCard(s, type) {
-  const isActive = s.is_active;
-  const params   = s.params || {};
-  const accent   = type === 'stock' ? 'as' : 'ac';
-  const btnClass = type === 'stock' ? 's' : 'c';
-  const color    = type === 'stock' ? 'var(--stock)' : 'var(--crypto)';
-
-  const paramHTML = Object.entries(params).map(([k,v]) => `
-    <div class="pr">
-      <div class="pr-label">${k}</div>
-      <div class="pr-row">
-        <input class="pr-input ${type==='crypto'?'cf':''}"
-          data-bot="${s.bot}" data-name="${s.name}" data-key="${k}"
-          value="${v}" style="width:80px">
-      </div>
+function buildParamInputs(params){
+  return Object.entries(params||{}).map(([k,v])=>`
+    <div class="param-item">
+      <div class="param-label">${k}</div>
+      <input class="param-input" name="${k}" value="${v}" type="${typeof v==='number'?'number':'text'}" step="any">
     </div>`).join('');
+}
 
-  const sigColor = isActive ? color : 'var(--muted)';
-  const sigText  = isActive ? '활성 — 신호 감지 중' : '비활성 — 전략을 켜면 신호 감지 시작';
-  const sigClass = isActive ? 'act' : 'wait';
-
-  return `
-    <div class="sc ${isActive ? accent : ''}">
-      <div class="sc-header">
-        <div>
-          <div class="sc-title">${s.name}</div>
-          <div class="sc-desc">${getDesc(s.name)}</div>
+function renderStrategies(data, containerId, bot){
+  const el=document.getElementById(containerId);
+  if(!data.length){el.innerHTML='<div style="color:var(--muted);font-size:12px;padding:8px">전략 없음</div>';return;}
+  el.innerHTML=data.map(s=>{
+    const on=s.is_active;
+    const isCrypto=bot==='crypto';
+    return `<div class="strat-card ${on?'active-card':''}">
+      <div class="strat-header ${on?'active':'inactive'}">
+        <div class="strat-info">
+          <div class="strat-name">${s.name}</div>
+          <div class="strat-desc">${s.description||''}</div>
         </div>
-        <div class="toggle ${isActive?'on':'off'}"
-          onclick="toggleStrategy('${s.bot}','${s.name}',this)"
-          data-active="${isActive}"></div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${on?`<div class="sensing"><div class="sensing-dot"></div>신호 감지 중</div>`:''}
+          <div class="toggle ${on?'on':'off'}" data-bot="${s.bot}" data-name="${s.name}" data-active="${on}" onclick="toggleStrategy(this)"></div>
+          <span class="status-pill ${on?'on':'off'}">${on?'ON':'OFF'}</span>
+        </div>
       </div>
-      <div class="sc-body">
-        <div class="param-grid">${paramHTML}</div>
-        <div class="sig-bar ${sigClass}">
-          <div class="sig-dot" style="background:${sigColor}"></div>${sigText}
+      <div class="strat-body">
+        <div class="param-grid" data-bot="${s.bot}" data-name="${s.name}">
+          ${buildParamInputs(s.params)}
         </div>
-        <div class="perf-row">
-          <div class="ps"><div class="ps-label">30일 수익률</div><div class="ps-value">-</div></div>
-          <div class="ps"><div class="ps-label">승률</div><div class="ps-value">-</div></div>
-          <div class="ps"><div class="ps-label">총 체결</div><div class="ps-value">-</div></div>
+        <div class="strat-footer">
+          <div class="perf-row">
+            <div class="perf-item">30일 수익률 <b>-</b></div>
+            <div class="perf-item">승률 <b>-</b></div>
+            <div class="perf-item">총 체결 <b>-</b></div>
+          </div>
+          <button class="save-btn ${isCrypto?'crypto':''}" onclick="saveParams(this)">파라미터 저장</button>
         </div>
-        <div class="save-btn ${btnClass}" onclick="saveStrategy('${s.bot}','${s.name}')">파라미터 저장</div>
       </div>
     </div>`;
+  }).join('');
 }
 
-function getDesc(name) {
-  const map = {
-    'MA크로스':'이동평균선 골든/데드크로스 기반 진입',
-    'RSI반등':'과매도 구간 진입 후 반등 노리기',
-    '볼린저밴드':'볼린저밴드 상하단 돌파 매매',
-    'MACD':'MACD 라인 / 시그널 라인 교차 매매',
-    '변동성돌파':'Larry Williams K값 기반 당일 돌파 매매',
-    'RSI과매도':'과매도 구간 코인 진입',
-  };
-  return map[name] || name;
-}
-
-async function toggleStrategy(bot, name, el) {
-  const isActive = el.dataset.active === 'true';
-  const newActive = !isActive;
-  el.className = `toggle ${newActive?'on':'off'}`;
-  el.dataset.active = newActive;
-  const params = collectParams(bot, name);
-  try {
-    const res = await fetch(`${API}/api/strategies/update`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({bot, name, is_active:newActive, params})
+async function toggleStrategy(el){
+  const bot=el.dataset.bot;
+  const name=el.dataset.name;
+  const wasActive=el.dataset.active==='true';
+  const newActive=!wasActive;
+  el.dataset.active=newActive;
+  el.className=`toggle ${newActive?'on':'off'}`;
+  el.nextElementSibling.textContent=newActive?'ON':'OFF';
+  el.nextElementSibling.className=`status-pill ${newActive?'on':'off'}`;
+  const paramGrid=el.closest('.strat-card').querySelector('.param-grid');
+  const params={};
+  paramGrid.querySelectorAll('input').forEach(i=>{params[i.name]=isNaN(i.value)?i.value:parseFloat(i.value);});
+  try{
+    const r=await fetch(`${API}/api/strategies`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({bot,name,is_active:newActive,params})
     });
-    const { success, message } = await res.json();
-    if (success) { showToast(message,'success'); await loadStrategies(); }
-    else { showToast('저장 실패','error'); el.className=`toggle ${isActive?'on':'off'}`; el.dataset.active=isActive; }
-  } catch(e) { showToast('오류 발생','error'); }
+    const res=await r.json();
+    if(res.success){showToast(`${name} ${newActive?'활성화':'비활성화'}됨`,'ok');}
+    else{showToast('저장 실패','err');el.dataset.active=wasActive;el.className=`toggle ${wasActive?'on':'off'}`;}
+  }catch(e){showToast('서버 오류','err');}
 }
 
-async function saveStrategy(bot, name) {
-  const params = collectParams(bot, name);
-  const s = strategiesData.find(x => x.bot===bot && x.name===name);
-  try {
-    const res = await fetch(`${API}/api/strategies/update`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({bot, name, is_active:s?.is_active||false, params})
+async function saveParams(btn){
+  const card=btn.closest('.strat-card');
+  const paramGrid=card.querySelector('.param-grid');
+  const bot=paramGrid.dataset.bot;
+  const name=paramGrid.dataset.name;
+  const params={};
+  paramGrid.querySelectorAll('input').forEach(i=>{params[i.name]=isNaN(i.value)?i.value:parseFloat(i.value);});
+  try{
+    const r=await fetch(`${API}/api/strategies`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({bot,name,params})
     });
-    const { success } = await res.json();
-    showToast(success?'저장 완료!':'저장 실패', success?'success':'error');
-  } catch(e) { showToast('오류 발생','error'); }
+    const res=await r.json();
+    showToast(res.success?`${name} 저장 완료`:'저장 실패',res.success?'ok':'err');
+  }catch(e){showToast('서버 오류','err');}
 }
 
-function collectParams(bot, name) {
-  const params = {};
-  document.querySelectorAll(`input[data-bot="${bot}"][data-name="${name}"]`).forEach(inp => {
-    const v = parseFloat(inp.value);
-    params[inp.dataset.key] = isNaN(v) ? inp.value : v;
-  });
-  return params;
+async function loadStrategies(){
+  try{
+    const r=await fetch(`${API}/api/strategies`);
+    const res=await r.json();
+    const data=res.data||[];
+    renderStrategies(data.filter(s=>s.bot==='stock_trader'),'stock-strategies','stock');
+    renderStrategies(data.filter(s=>s.bot==='crypto_trader'),'crypto-strategies','crypto');
+    // 봇 상태
+    const sr=await fetch(`${API}/api/status`);
+    const bots=(await sr.json()).data||{};
+    if(bots.stock_trader?.status==='running')document.getElementById('dot-stk').className='sdot on';
+    if(bots.crypto_trader?.status==='running')document.getElementById('dot-cry').className='sdot on';
+    if(bots.data_collector?.status==='running')document.getElementById('dot-dat').className='sdot on';
+  }catch(e){}
 }
-
-function showAddForm() {
-  const f = document.getElementById('add-form');
-  f.style.display = 'block';
-  f.scrollIntoView({behavior:'smooth'});
-}
-function hideAddForm() { document.getElementById('add-form').style.display='none'; }
-
-async function submitAddForm() {
-  const bot    = document.getElementById('af-bot').value;
-  const name   = document.getElementById('af-name').value.trim();
-  const stop   = parseFloat(document.getElementById('af-stop').value);
-  const profit = parseFloat(document.getElementById('af-profit').value);
-  const amount = parseFloat(document.getElementById('af-amount').value);
-  if (!name) { showToast('전략명을 입력해주세요','error'); return; }
-  try {
-    const res = await fetch(`${API}/api/strategies/add`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({bot, name, is_active:false, params:{stop_loss:stop,take_profit:profit,buy_amount:amount}})
-    });
-    const { success, message } = await res.json();
-    if (success) {
-      showToast(`${name} 추가 완료!`,'success');
-      hideAddForm();
-      document.getElementById('af-name').value='';
-      await loadStrategies();
-    } else { showToast(message||'추가 실패','error'); }
-  } catch(e) { showToast('오류 발생','error'); }
-}
-
-function showToast(msg, type) {
-  const t = document.createElement('div');
-  t.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;background:${type==='success'?'var(--green)':'var(--red)'};color:white;box-shadow:0 4px 12px rgba(0,0,0,0.3);`;
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),300); },2500);
-}
-
 loadStrategies();
 </script>
 </body>

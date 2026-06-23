@@ -4,26 +4,26 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AutoTrader — Jarvis</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 :root{
   --bg:#f5f6fa;--panel:#ffffff;--panel2:#f9fafb;--border:#d1d5db;
   --stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;
-  --purple:#6d28d9;--gold:#854F0B;--muted:#6b7280;--text:#374151;--bright:#111827;
-  --grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;
+  --purple:#6d28d9;--gold:#b45309;--muted:#6b7280;--text:#374151;--bright:#111827;
+  --font:'Inter',sans-serif;--mono:'JetBrains Mono',monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 *::-webkit-scrollbar{display:none;}
 *{scrollbar-width:none;}
-body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;height:100vh;display:flex;overflow:hidden;}
 
 /* Sidebar */
-.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid #e5e7eb;display:flex;flex-direction:column;height:100vh;}
+.sidebar{width:200px;flex-shrink:0;background:var(--panel);border-right:1px solid #e5e7eb;display:flex;flex-direction:column;height:100vh;}
 .sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid #e5e7eb;flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:var(--stock);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
 .logo-text{font-size:13px;font-weight:700;color:var(--bright);font-family:var(--mono);}
 .sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
 .nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:16px;transition:background 0.15s,color 0.15s;position:relative;}
-.nav-item span{font-size:11px;font-weight:500;color:inherit;}
+
 .nav-divider{width:80%;height:1px;background:var(--border);margin:4px 6px;}
 .nav-item:hover{background:var(--panel2);color:var(--text);}
 .nav-item.active{background:var(--panel2);color:var(--bright);}
@@ -39,7 +39,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
 .sdot{width:6px;height:6px;border-radius:50%;background:var(--muted);}
 .sdot.on{background:var(--green);}
-.sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
+.sdot-label{font-size:11px;color:#374151;font-weight:700;}
 
 /* Main */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
@@ -102,7 +102,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .msg-input{
   flex:1;background:var(--panel2);border:1px solid #e5e7eb;
   border-radius:10px;padding:10px 14px;
-  font-family:var(--grotesk);font-size:13px;color:var(--bright);
+  font-family:var(--font);font-size:13px;color:var(--bright);
   outline:none;resize:none;min-height:40px;max-height:120px;line-height:1.5;
 }
 .msg-input:focus{border-color:rgba(155,109,255,0.5);}
@@ -267,15 +267,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 <body>
 
 <div class="sidebar">
-  <div class="sidebar-logo"><div class="logo-mark">AT</div><span class="logo-text">AutoTrader</span></div>
+  <div class="sidebar-logo"><div class="logo-mark">AT</div><div><div class="logo-text">AutoTrader</div><div style="font-size:10px;color:var(--muted);font-weight:500;margin-top:1px">AI 자동매매 시스템</div></div></div>
   <div class="sidebar-nav">
-    <div class="nav-item j active" onclick="location.href='jarvis.html'">🤖<span>Jarvis</span></div>
-    <div class="nav-divider"></div>
-    <div class="nav-item d" onclick="location.href='dashboard-C.html'">⊞<span>대시보드</span></div>
-    <div class="nav-item s" onclick="location.href='stock.html'">📈<span>주식</span></div>
-    <div class="nav-item c" onclick="location.href='crypto.html'">₿<span>코인</span></div>
-    <div class="nav-item t" onclick="location.href='strategy.html'">⚙<span>전략</span></div>
-    <div class="nav-item" onclick="location.href='/analysis.html'">🧠 <span>분석</span></div>
+    <div style="padding:10px 16px 4px;font-size:10px;font-weight:700;color:var(--muted);letter-spacing:0.8px;text-transform:uppercase">메뉴</div>
+    <div class="nav-item d" onclick="location.href='dashboard-C.html'"><span style="font-size:16px;width:20px;text-align:center">⊞</span>대시보드</div>
+    <div class="nav-item s" onclick="location.href='stock.html'"><span style="font-size:16px;width:20px;text-align:center">📈</span>주식</div>
+    <div class="nav-item c" onclick="location.href='crypto.html'"><span style="font-size:16px;width:20px;text-align:center">₿</span>코인</div>
+    <div class="nav-item t" onclick="location.href='strategy.html'"><span style="font-size:16px;width:20px;text-align:center">⚙</span>전략</div>
+    <div class="nav-item l" onclick="location.href='/analysis.html'"><span style="font-size:16px;width:20px;text-align:center">🧠</span>분석</div>
+    <div style="padding:10px 16px 4px;font-size:10px;font-weight:700;color:var(--muted);letter-spacing:0.8px;text-transform:uppercase">AI</div>
+    <div class="nav-item j active" onclick="location.href='jarvis.html'"><span style="font-size:16px;width:20px;text-align:center">🤖</span>Jarvis</div>
   </div>
   <div class="sidebar-bottom">
     <div class="sdot-group">

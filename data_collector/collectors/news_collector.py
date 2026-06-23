@@ -197,6 +197,10 @@ class NewsCollector:
                 return {"score": -1, "signal": "SELL", "reason": "부정적 뉴스"}
             return {"score": 0, "signal": "NEUTRAL", "reason": "중립적 뉴스"}
 
+        except Exception as e:
+            logger.debug(f"감성 분석 실패 [{symbol}]: {e}")
+            return {"score": 0, "signal": "NEUTRAL", "reason": "분석 실패"}
+
     async def collect_and_save(self, symbols: list[str]) -> dict:
         """전체 종목 뉴스 수집 + 감성 분석 + DB 저장"""
         logger.info(f"📰 뉴스 감성 분석 시작 — {len(symbols)}종목")

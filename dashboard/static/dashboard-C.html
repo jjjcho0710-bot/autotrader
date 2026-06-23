@@ -6,9 +6,9 @@
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 :root{
-  --bg:#f5f6fa;--panel:#ffffff;--panel2:#f3f4f6;--border:#e5e7eb;
+  --bg:#f5f6fa;--panel:#ffffff;--panel2:#f9fafb;--border:#d1d5db;
   --stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;
-  --purple:#6d28d9;--muted:#9ca3af;--text:#374151;--bright:#111827;
+  --purple:#6d28d9;--muted:#6b7280;--text:#374151;--bright:#111827;
   --sidebar:120px;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -55,15 +55,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .content{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;}
 .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
 .kpi{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;}
-.kpi-label{font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;}
+.kpi-label{font-size:11px;color:#6b7280;margin-bottom:4px;font-weight:600;letter-spacing:0.3px;}
 .kpi-val{font-size:22px;font-weight:700;font-family:var(--mono);color:var(--bright);}
 .kpi-val.pos{color:#059669;}
 .kpi-val.neg{color:#dc2626;}
-.kpi-sub{font-size:10px;color:var(--muted);margin-top:2px;}
+.kpi-sub{font-size:11px;color:#6b7280;margin-top:2px;font-weight:500;}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
 .card{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;}
-.card-title{font-size:11px;font-weight:700;color:#374151;text-transform:none;letter-spacing:0.5px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
+.card-title{font-size:12px;font-weight:700;color:#374151;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
 .badge{font-size:10px;padding:2px 7px;border-radius:20px;font-weight:600;}
 .badge.ok{background:#EAF3DE;color:var(--green);}
 .badge.warn{background:#FAEEDA;color:var(--crypto);}
@@ -193,7 +193,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="card">
         <div class="card-title"><span>오늘 주요 이벤트</span></div>
         <div id="events-list">
-          <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">이벤트 없음</div>
+          <div style="text-align:center;padding:20px;color:#6b7280;font-size:12px">이벤트 없음</div>
         </div>
       </div>
     </div>
@@ -209,7 +209,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="card">
         <div class="card-title"><span>최근 매매 이력</span></div>
         <div id="trade-list">
-          <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">매매 이력 없음</div>
+          <div style="text-align:center;padding:20px;color:#6b7280;font-size:12px">매매 이력 없음</div>
         </div>
       </div>
     </div>

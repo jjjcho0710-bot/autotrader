@@ -5,7 +5,7 @@
 <title>AutoTrader — 주식</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
-:root{--bg:#f5f6fa;--panel:#ffffff;--panel2:#f3f4f6;--border:#e5e7eb;--stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;--purple:#6d28d9;--muted:#9ca3af;--text:#374151;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+:root{--bg:#f5f6fa;--panel:#ffffff;--panel2:#f9fafb;--border:#d1d5db;--stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;--purple:#6d28d9;--muted:#6b7280;--text:#374151;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}
 *::-webkit-scrollbar{width:4px;}
 *::-webkit-scrollbar-track{background:transparent;}
@@ -81,15 +81,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 /* KPI */
 .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
 .kpi{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;}
-.kpi-label{font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;}
+.kpi-label{font-size:11px;color:#6b7280;margin-bottom:4px;font-weight:600;letter-spacing:0.3px;}
 .kpi-val{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--bright);}
 .kpi-val.pos{color:#059669;}
 .kpi-val.neg{color:#dc2626;}
-.kpi-sub{font-size:10px;color:var(--muted);margin-top:2px;}
+.kpi-sub{font-size:11px;color:#6b7280;margin-top:2px;font-weight:500;}
 
 /* 카드 */
 .card{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;}
-.card-title{font-size:11px;font-weight:700;color:#374151;text-transform:none;letter-spacing:0.5px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
+.card-title{font-size:12px;font-weight:700;color:#374151;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
 .badge{font-size:10px;padding:2px 7px;border-radius:20px;font-weight:600;}
 .badge.live{background:#d1fae5;color:var(--green);}
 .badge.buy{background:#d1fae5;color:var(--green);}
@@ -252,14 +252,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
             <tr><th>종목</th><th>수량</th><th>평균단가</th><th>현재가</th><th>평가손익</th><th>수익률</th><th>전략</th></tr>
           </table>
           <div id="positions-body" style="margin-top:4px"></div>
-          <div id="no-positions" style="text-align:center;padding:30px;color:var(--muted);font-size:12px">보유 종목 없음</div>
+          <div id="no-positions" style="text-align:center;padding:30px;color:#6b7280;font-size:12px">보유 종목 없음</div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-title"><span>오늘 매매 이력</span></div>
         <div id="trade-history">
-          <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">매매 이력 없음</div>
+          <div style="text-align:center;padding:20px;color:#6b7280;font-size:12px">매매 이력 없음</div>
         </div>
       </div>
     </div>
@@ -270,20 +270,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div class="card">
           <div class="card-title"><span>외국인 / 기관 수급</span><span id="supply-date" style="font-size:10px;color:var(--muted)">-</span></div>
           <div id="supply-list">
-            <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">수급 데이터 없음<br><span style="font-size:10px">16:00 이후 수집됩니다</span></div>
+            <div style="text-align:center;padding:20px;color:#6b7280;font-size:12px">수급 데이터 없음<br><span style="font-size:10px">16:00 이후 수집됩니다</span></div>
           </div>
         </div>
         <div class="card">
           <div class="card-title"><span>DART 주요 공시</span></div>
           <div id="disclosure-list">
-            <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">공시 데이터 없음</div>
+            <div style="text-align:center;padding:20px;color:#6b7280;font-size:12px">공시 데이터 없음</div>
           </div>
         </div>
       </div>
       <div class="card">
         <div class="card-title"><span>뉴스 감성 분석</span></div>
         <div id="sentiment-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px">
-          <div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--muted);font-size:12px">뉴스 데이터 없음</div>
+          <div style="grid-column:1/-1;text-align:center;padding:20px;color:#6b7280;font-size:12px">뉴스 데이터 없음</div>
         </div>
       </div>
     </div>
@@ -294,13 +294,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
         <div class="card">
           <div class="card-title"><span>ML 예측 신호</span></div>
           <div id="ml-signals">
-            <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">ML 예측 데이터 없음</div>
+            <div style="text-align:center;padding:20px;color:#6b7280;font-size:12px">ML 예측 데이터 없음</div>
           </div>
         </div>
         <div class="card">
           <div class="card-title"><span>전략 상태</span><a href="strategy.html" style="font-size:10px;color:var(--stock);text-decoration:none">전략 관리 →</a></div>
           <div id="strategy-list">
-            <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">로딩 중...</div>
+            <div style="text-align:center;padding:20px;color:#6b7280;font-size:12px">로딩 중...</div>
           </div>
         </div>
       </div>

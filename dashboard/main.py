@@ -982,6 +982,50 @@ async def get_status():
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/price/{symbol}")
+async def get_single_price(symbol: str):
+    """단일 종목/코인 실시간 시세 조회 (Jarvis Tool용)"""
+    try:
+        symbol = symbol.upper()
+
+        # 코인 (KRW- 포함)
+        if "KRW-" in symbol or symbol in ["BTC","ETH","XRP","SOL","ADA","DOGE"]:
+            pair = symbol if "KRW-" in symbol else f"KRW-{symbol}"
+            cached = await redis_client.get("crypto:prices")
+            if cached:
+                prices = json.loads(cached)
+                if pair in prices:
+                    p = prices[pair]
+                    return {
+                        "success": True,
+                        "symbol": pair,
+                        "price": p["price"],
+                        "change_rate": p.get("change_rate", 0),
+                        "type": "crypto"
+                    }
+
+        # 주식 - KIS API 직접 조회
+        from stock_trader.kis_trader import KISTrader
+        import aiohttp as http
+        trader = KISTrader()
+        trader.session = http.ClientSession()
+        await trader._get_token()
+        price = await trader.get_current_price(symbol)
+        await trader.session.close()
+
+        if price > 0:
+            return {
+                "success": True,
+                "symbol": symbol,
+                "price": price,
+                "type": "stock"
+            }
+
+        return {"success": False, "error": "시세 조회 실패"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/prices/stock")
 async def get_stock_prices():
     """주식 실시간 시세 (Redis) — watchlist 기준"""

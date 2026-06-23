@@ -274,23 +274,34 @@ class CryptoTrader:
                     continue
 
                 # ML 판단
-                ml_ok = await self._check_ml(pair, rows)
+                ml_ok, ml_prob = await self._check_ml(pair, rows)
                 if not ml_ok:
                     logger.info(f"⛔ [{pair}] ML 필터 차단")
                     continue
 
-                # 자동 매수 실행 (텔레그램 없음)
-                result = await self.trader.buy_market(pair, buy_amount)
+                # Jarvis가 잔고/신호강도 보고 매수 금액 결정
+                actual_amount = await self._decide_amount(
+                    pair=pair,
+                    krw_balance=krw_balance,
+                    ml_prob=ml_prob,
+                    base_amount=buy_amount,
+                )
+                if actual_amount < 5000:
+                    logger.info(f"⛔ [{pair}] Jarvis 결정 금액 부족 ({actual_amount:,.0f}원)")
+                    continue
+
+                # 자동 매수 실행
+                result = await self.trader.buy_market(pair, actual_amount)
                 if result["success"]:
-                    qty = buy_amount / cur_price
+                    qty = actual_amount / cur_price
                     await db.insert_trade(
                         bot="crypto_trader", asset_type="crypto",
                         symbol=pair, side="BUY",
                         price=cur_price, quantity=qty,
-                        amount=buy_amount, strategy=strat_name,
+                        amount=actual_amount, strategy=strat_name,
                     )
-                    krw_balance -= buy_amount
-                    logger.info(f"✅ 매수 완료 [{pair}] {buy_amount:,.0f}원")
+                    krw_balance -= actual_amount
+                    logger.info(f"✅ 매수 완료 [{pair}] {actual_amount:,.0f}원 (ML확률:{ml_prob:.0%})")
 
         # Redis 캐시 업데이트
         await cache.set_bot_status("crypto_trader", {
@@ -316,8 +327,8 @@ class CryptoTrader:
         ]
         await cache.client.setex("crypto:positions", 120, json.dumps(positions_data))
 
-    async def _check_ml(self, pair: str, rows: list) -> bool:
-        """ML 모델로 매수 신호 검증"""
+    async def _check_ml(self, pair: str, rows: list) -> tuple:
+        """ML 모델로 매수 신호 검증 → (통과여부, 확률)"""
         try:
             from ml.model import MLModelManager
             ml = MLModelManager(db_pool=db.pool)
@@ -335,14 +346,56 @@ class CryptoTrader:
             result = await ml.predict(pair, ohlcv)
             if not result.get("success"):
                 logger.info(f"[{pair}] ML 모델 없음 → 신호 허용")
-                return True
+                return True, 0.65  # 기본 확률
             signal = result.get("signal", "HOLD")
             prob   = result.get("buy_prob", 0.5)
             logger.info(f"[{pair}] ML 판단: {signal} ({prob:.0%})")
-            return signal == "BUY" and prob >= 0.60
+            return (signal == "BUY" and prob >= 0.60), prob
         except Exception as e:
             logger.warning(f"[{pair}] ML 오류 → 허용: {e}")
-            return True
+            return True, 0.65
+
+    async def _decide_amount(self, pair: str, krw_balance: float,
+                              ml_prob: float, base_amount: float) -> float:
+        """Jarvis가 잔고와 ML 확률 보고 매수 금액 결정
+        
+        ML 확률에 따른 비중:
+          90%+ → 잔고의 40% (강한 신호)
+          80%+ → 잔고의 25%
+          70%+ → 잔고의 15%
+          60%+ → 잔고의 10% (최소)
+        단, base_amount(전략 설정값) 이하로는 안 내려감
+        최대 잔고의 50% 초과 금지
+        """
+        if krw_balance < 5000:
+            return 0
+
+        if ml_prob >= 0.90:
+            ratio = 0.40
+            strength = "강함"
+        elif ml_prob >= 0.80:
+            ratio = 0.25
+            strength = "보통"
+        elif ml_prob >= 0.70:
+            ratio = 0.15
+            strength = "약함"
+        else:
+            ratio = 0.10
+            strength = "최소"
+
+        amount = krw_balance * ratio
+        # base_amount와 비교해서 더 큰 값 사용 (최소 보장)
+        amount = max(amount, base_amount)
+        # 잔고 50% 초과 금지
+        amount = min(amount, krw_balance * 0.50)
+        # 최소 5,000원
+        amount = max(amount, 5000)
+        # 잔고 초과 방지
+        amount = min(amount, krw_balance)
+
+        logger.info(f"💡 [{pair}] Jarvis 금액 결정: {amount:,.0f}원 "
+                    f"(ML:{ml_prob:.0%} 신호강도:{strength} 잔고:{krw_balance:,.0f}원)")
+        return round(amount)
 
     async def _notify_error(self, error: str):
         import os

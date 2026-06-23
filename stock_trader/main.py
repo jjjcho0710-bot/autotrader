@@ -171,7 +171,15 @@ class StockTrader:
             ml = MLModelManager(db_pool=db.pool)
 
             results = []
-            for symbol in config.STOCK_SYMBOLS:
+            # watchlist 전체 종목 학습 (고정 심볼 아님)
+            try:
+                watchlist_symbols = await db.get_watchlist_symbols()
+            except Exception:
+                watchlist_symbols = []
+            symbols_to_train = watchlist_symbols if watchlist_symbols else config.STOCK_SYMBOLS
+            logger.info(f"🎓 ML 학습 대상: {len(symbols_to_train)}종목 (watchlist)")
+
+            for symbol in symbols_to_train:
                 try:
                     ohlcv = await db.get_recent_ohlcv(symbol, limit=1500, asset="stock", daily=True)
                     if len(ohlcv) < 60:

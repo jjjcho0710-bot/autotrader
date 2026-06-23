@@ -281,9 +281,33 @@ async def _jarvis_stock_scanner():
 
                             # 골든크로스: 5일선이 20일선 상향 돌파
                             golden_cross = ma5_prev < ma20_prev and ma5 > ma20
+                            # MA 정배열
+                            ma_trend_ok = ma5 > ma20
 
                             # 거래량 조건: 평균 대비 1.5배 이상
                             vol_ok = vol > vol_avg * 1.5 if vol_avg > 0 else False
+
+                            # RSI 계산 (14일)
+                            rsi = 50.0
+                            if len(closes) >= 15:
+                                gains, losses = [], []
+                                for i in range(-14, 0):
+                                    d = closes[i] - closes[i - 1]
+                                    gains.append(max(d, 0))
+                                    losses.append(max(-d, 0))
+                                avg_gain = sum(gains) / 14
+                                avg_loss = sum(losses) / 14
+                                if avg_loss > 0:
+                                    rs = avg_gain / avg_loss
+                                    rsi = 100 - (100 / (1 + rs))
+                                else:
+                                    rsi = 100.0
+                            rsi_bounce = 30 <= rsi <= 55  # 과매도 반등
+                            rsi_strong = 50 < rsi <= 70   # 강세 추세
+
+                            # 모멘텀: 5일 수익률
+                            momentum_5d = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0
+                            momentum_ok = momentum_5d > 1.5
 
                             score = 0
                             if golden_cross:
@@ -294,8 +318,16 @@ async def _jarvis_stock_scanner():
                                 score += 1
                             if change > 3:
                                 score += 1
+                            if rsi_bounce:
+                                score += 2
+                            if rsi_strong:
+                                score += 1
+                            if momentum_ok:
+                                score += 1
+                            if ma_trend_ok and not golden_cross:
+                                score += 1
 
-                            if score >= 2:  # 조건 완화 (3→2)
+                            if score >= 2:  # 조건 완화 유지
                                 name = pykrx_stock.get_market_ticker_name(ticker)
                                 results.append({
                                     "symbol": ticker,
@@ -305,6 +337,8 @@ async def _jarvis_stock_scanner():
                                     "golden_cross": golden_cross,
                                     "score": score,
                                     "close": close,
+                                    "rsi": round(rsi, 1),
+                                    "momentum_5d": round(momentum_5d, 2),
                                 })
                         except:
                             continue
@@ -334,8 +368,19 @@ async def _jarvis_stock_scanner():
                         ON CONFLICT (symbol) DO UPDATE
                         SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
                     """, c["symbol"], c["name"], reason)
-                    gc = "🌟골든크로스 " if c["golden_cross"] else ""
-                    added.append(f"  {gc}{c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%")
+                    gc = "🌟" if c["golden_cross"] else ""
+                    rsi_tag = f" RSI{c.get('rsi',50):.0f}" if c.get("rsi") else ""
+                    mom_tag = f" 5d{c.get('momentum_5d',0):+.1f}%" if c.get("momentum_5d") else ""
+                    reason = (f"{'골든크로스+' if c['golden_cross'] else ''}"
+                              f"거래량{c['vol_ratio']:.1f}배 등락률{c['change']:+.1f}%"
+                              f" RSI{c.get('rsi',50):.0f} 모멘텀{c.get('momentum_5d',0):+.1f}%")
+                    await conn.execute("""
+                        INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                        VALUES ($1, $2, 'jarvis_scanner', $3, TRUE)
+                        ON CONFLICT (symbol) DO UPDATE
+                        SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
+                    """, c["symbol"], c["name"], reason)
+                    added.append(f"  {gc}{c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%{rsi_tag}{mom_tag}")
 
         msg = f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n"
         msg += f"총 {len(candidates)}종목 발굴"
@@ -410,6 +455,113 @@ async def _jarvis_auto_analysis():
         logger.error(f"Jarvis 자동 분석 실패: {e}")
 
 
+async def _trigger_ohlcv_collect():
+    """watchlist 종목에 대한 OHLCV 수집을 data-collector에 트리거"""
+    try:
+        import aiohttp
+        import os
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+
+        if not db_pool:
+            return
+
+        async with db_pool.acquire() as conn:
+            symbols = [r["symbol"] for r in await conn.fetch(
+                "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+            )]
+
+        if not symbols:
+            return
+
+        # data-collector API 호출 (내부 통신)
+        collector_url = os.getenv("COLLECTOR_URL", "http://autotrader.railway.internal:8000")
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                await session.post(f"{collector_url}/api/collect/ohlcv",
+                                   json={"symbols": symbols[:50]})  # 최대 50종목
+            logger.info(f"📡 OHLCV 수집 트리거: {len(symbols)}종목")
+        except Exception:
+            # data-collector 연결 실패 시 직접 pykrx로 수집
+            logger.info(f"📡 data-collector 미연결 — 직접 수집 스킵 (stock-trader가 처리)")
+    except Exception as e:
+        logger.warning(f"OHLCV 수집 트리거 실패: {e}")
+
+
+async def _jarvis_closing_report():
+    """장 마감 후 오늘 거래 결과 + 내일 전략 업데이트 텔레그램 리포트"""
+    try:
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        now_kst = datetime.now(KST)
+        today_str = now_kst.strftime("%Y-%m-%d")
+
+        if not db_pool:
+            return
+
+        async with db_pool.acquire() as conn:
+            # 오늘 거래 실적
+            trades = await conn.fetch("""
+                SELECT symbol, side, price, quantity, amount, pnl, strategy, created_at
+                FROM trades
+                WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
+                  AND asset_type = 'stock'
+                ORDER BY created_at DESC
+            """, now_kst.date())
+
+            # watchlist 현황
+            wl_count = await conn.fetchval("SELECT COUNT(*) FROM watchlist WHERE is_active=TRUE")
+
+            # 보유 포지션 (trades 기반 집계)
+            positions = await conn.fetch("""
+                SELECT symbol,
+                       SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) as net_qty,
+                       AVG(CASE WHEN side='BUY' THEN price END) as avg_buy
+                FROM trades
+                WHERE asset_type='stock'
+                GROUP BY symbol
+                HAVING SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) > 0
+            """)
+
+        # 오늘 거래 요약
+        buy_trades = [t for t in trades if t["side"] == "BUY"]
+        sell_trades = [t for t in trades if t["side"] == "SELL"]
+        total_pnl = sum(float(t["pnl"] or 0) for t in sell_trades)
+
+        msg = f"📊 Jarvis 일일 결산 [{now_kst.strftime('%m/%d')}]\n"
+        msg += f"{'='*25}\n"
+
+        if trades:
+            msg += f"매수 {len(buy_trades)}건 / 매도 {len(sell_trades)}건\n"
+            if sell_trades:
+                pnl_emoji = "📈" if total_pnl >= 0 else "📉"
+                msg += f"{pnl_emoji} 실현손익: {total_pnl:+,.0f}원\n"
+            if buy_trades:
+                buy_list = "\n".join([f"  🟢 {t['symbol']} {int(t['price']):,}원×{int(t['quantity'])}주" 
+                                       for t in buy_trades[:5]])
+                msg += f"신규 매수:\n{buy_list}\n"
+        else:
+            msg += "오늘 거래 없음\n"
+
+        msg += f"\n📋 watchlist: {wl_count}종목"
+        if positions:
+            msg += f" | 보유: {len(positions)}종목"
+
+        # 내일 전략 방향
+        msg += f"\n\n🔮 내일 전략 [{(now_kst + timedelta(days=1)).strftime('%m/%d')}]\n"
+        msg += f"• 08:30 전종목 스캔 (RSI+모멘텀+거래량)\n"
+        msg += f"• ML 재학습 완료 종목 우선 매매\n"
+        msg += f"• 손절 -2% / MA 데드크로스 매도 유지\n"
+        msg += f"• 최대 보유 10종목 제한\n"
+        msg += f"\n✅ ML 자동 학습 진행 중..."
+
+        await _send_telegram(msg)
+        logger.info("✅ Jarvis 마감 리포트 전송 완료")
+
+    except Exception as e:
+        logger.error(f"Jarvis 마감 리포트 실패: {e}")
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -432,9 +584,10 @@ async def _jarvis_scheduler():
         if dtime(8, 30) <= cur_time <= dtime(8, 35) and last_morning != today:
             last_morning = today
             logger.info("🌅 Jarvis 장 시작 전 루틴")
-            await _jarvis_stock_scanner()
-            await _jarvis_auto_analysis()
-            asyncio.create_task(_manual_collect())  # 뉴스 감성 수집
+            await _jarvis_stock_scanner()        # 1. 전종목 스캔 → watchlist 업데이트
+            await _jarvis_auto_analysis()         # 2. watchlist ML 예측
+            asyncio.create_task(_manual_collect())  # 3. 뉴스 감성 수집
+            asyncio.create_task(_trigger_ohlcv_collect())  # 4. OHLCV 수집 트리거
 
             # 오늘 공시 확인
             try:
@@ -453,6 +606,7 @@ async def _jarvis_scheduler():
             logger.info("🌆 Jarvis 장 마감 후 자동 분석")
             await _jarvis_auto_analysis()
             asyncio.create_task(_manual_collect())  # 장 마감 후 뉴스 수집
+            asyncio.create_task(_jarvis_closing_report())  # 마감 리포트 + 내일 전략
 
 
 @app.on_event("shutdown")

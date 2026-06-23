@@ -136,6 +136,10 @@ class CryptoTrader:
             qty = pos["qty"]
 
             if strategy.check_stop_loss(avg, cur):
+                # 최소 매도 금액 체크 (5,000원 이상)
+                if cur * qty < 5000:
+                    logger.info(f"⏭️ [{pair}] 보유금액 {cur*qty:,.0f}원 < 5,000원 → 매도 스킵")
+                    continue
                 result = await self.trader.sell_market(pair, qty)
                 if result["success"]:
                     pnl = (cur - avg) * qty
@@ -150,6 +154,10 @@ class CryptoTrader:
                 continue
 
             if strategy.check_take_profit(avg, cur):
+                # 최소 매도 금액 체크 (5,000원 이상)
+                if cur * qty < 5000:
+                    logger.info(f"⏭️ [{pair}] 보유금액 {cur*qty:,.0f}원 < 5,000원 → 매도 스킵")
+                    continue
                 result = await self.trader.sell_market(pair, qty)
                 if result["success"]:
                     pnl = (cur - avg) * qty

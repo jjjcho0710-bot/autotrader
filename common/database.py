@@ -197,9 +197,13 @@ class Database:
             table = "stock_ohlcv" if asset == "stock" else "crypto_ohlcv"
             col = "symbol" if asset == "stock" else "pair"
         async with self.pool.acquire() as conn:
-            return await conn.fetch(f"""
-                SELECT * FROM {table} WHERE {col}=$1 ORDER BY ts ASC LIMIT $2
+            # 최신 N개를 DESC로 가져온 뒤 ASC로 뒤집기
+            rows = await conn.fetch(f"""
+                SELECT * FROM (
+                    SELECT * FROM {table} WHERE {col}=$1 ORDER BY ts DESC LIMIT $2
+                ) sub ORDER BY ts ASC
             """, symbol, limit)
+            return rows
 
 
 # ── Redis ──────────────────────────────────────────────

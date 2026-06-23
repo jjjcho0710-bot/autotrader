@@ -19,7 +19,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 /* Sidebar */
 .sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid #e5e7eb;display:flex;flex-direction:column;height:100vh;}
 .sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid #e5e7eb;flex-shrink:0;}
-.logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
+.logo-mark{width:28px;height:28px;background:var(--stock);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
 .logo-text{font-size:13px;font-weight:700;color:var(--bright);font-family:var(--mono);}
 .sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
 .nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:16px;transition:background 0.15s,color 0.15s;position:relative;}
@@ -75,7 +75,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
   border-bottom-left-radius:3px;color:var(--bright);
 }
 .msg.user .msg-bubble{
-  background:linear-gradient(135deg,rgba(155,109,255,0.2),rgba(240,192,96,0.15));
+  background:#eff6ff;
   border:1px solid rgba(155,109,255,0.3);
   border-bottom-right-radius:3px;color:var(--bright);
 }
@@ -109,7 +109,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .msg-input::placeholder{color:var(--muted);}
 .send-btn{
   width:40px;height:40px;border-radius:10px;flex-shrink:0;
-  background:linear-gradient(135deg,var(--purple),var(--gold));
+  background:var(--purple);
   border:none;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
   font-size:16px;color:white;transition:opacity 0.15s;

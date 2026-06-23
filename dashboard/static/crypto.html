@@ -388,7 +388,10 @@ async function loadAll(){
   document.getElementById('last-update').textContent='업데이트: '+new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
 }
 loadAll();
-setInterval(loadAll,30000);
+setInterval(fetchPositions, 5000);   // 포지션 5초
+setInterval(fetchCryptoPrices, 3000); // 시세 3초
+setInterval(fetchBotStatus, 10000);   // 봇 상태 10초
+setInterval(fetchStrategies, 30000);  // 전략 30초
 </script>
 </body>
 </html>

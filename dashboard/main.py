@@ -2071,6 +2071,8 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
                 timeout=http.ClientTimeout(total=60),
             ) as res:
                 data = await res.json()
+                if "choices" not in data or not data["choices"]:
+                    raise Exception(f"응답 없음: {data.get('error', data)}")
                 reply = data["choices"][0]["message"]["content"]
 
                 # 대화 히스토리 저장
@@ -2641,10 +2643,14 @@ async def jarvis_signal(request: Request):
 시장 상황을 분석하고 이 매매를 실행해야 할지 판단해줘.
 실행 여부를 결정하고 EXECUTE 또는 SKIP으로 시작해서 이유를 한 줄로 설명해줘.
 """
-        jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
-
-        # 2. Jarvis 판단 결과 확인
-        should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
+        # 2. Jarvis 판단 (Open-WebUI 실패시 자동 EXECUTE)
+        try:
+            jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
+            should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
+        except Exception as e:
+            logger.warning(f"Jarvis 판단 실패 → 자동 실행: {e}")
+            jarvis_reply = "EXECUTE (Jarvis 자동승인 - AI 응답 없음)"
+            should_execute = True
 
         if should_execute:
             # 3. 실제 매매 실행 (주식 vs 코인 분기)

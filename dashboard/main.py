@@ -2123,7 +2123,7 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
         }
         payload = {
             "model": jarvis_model,
-            "messages": [{"role": "system", "content": JARVIS_SYSTEM_PROMPT}] + messages,
+            "messages": messages,  # Open-WebUI 모델 프롬프트 사용 (중복 제거)
             "stream": False,
         }
         async with http.ClientSession() as session:

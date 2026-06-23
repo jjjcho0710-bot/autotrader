@@ -228,7 +228,7 @@ async function toggleStrategy(el){
   const params={};
   paramGrid.querySelectorAll('input').forEach(i=>{params[i.name]=isNaN(i.value)?i.value:parseFloat(i.value);});
   try{
-    const r=await fetch(`${API}/api/strategies`,{
+    const r=await fetch(`${API}/api/strategies/update`,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({bot,name,is_active:newActive,params})
     });
@@ -246,7 +246,7 @@ async function saveParams(btn){
   const params={};
   paramGrid.querySelectorAll('input').forEach(i=>{params[i.name]=isNaN(i.value)?i.value:parseFloat(i.value);});
   try{
-    const r=await fetch(`${API}/api/strategies`,{
+    const r=await fetch(`${API}/api/strategies/update`,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({bot,name,params})
     });

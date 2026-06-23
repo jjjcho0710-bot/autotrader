@@ -6,11 +6,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
-:root{--bg:#f8f9fc;--panel:#ffffff;--panel2:#f1f3f8;--border:#e2e6ef;--stock:#185FA5;--crypto:#854F0B;--green:#3B6D11;--red:#A32D2D;--purple:#534AB7;--muted:#9ca3af;--text:#4b5563;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+:root{--bg:#f5f6fa;--panel:#ffffff;--panel2:#f3f4f6;--border:#e5e7eb;--stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;--purple:#6d28d9;--muted:#9ca3af;--text:#374151;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
-.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
-.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid #e5e7eb;display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid #e5e7eb;flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
 .logo-text{font-size:13px;font-weight:700;color:var(--bright);font-family:var(--mono);}
 .sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
@@ -20,13 +20,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .nav-item.active{background:var(--panel2);color:var(--bright);}
 .nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;background:var(--green);}
 .sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
-.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid #e5e7eb;width:100%;}
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
 .sdot{width:6px;height:6px;border-radius:50%;}
 .sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
 .sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid #e5e7eb;display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
 .page-label{font-size:14px;font-weight:600;color:var(--bright);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
 .clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
@@ -34,7 +34,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 
 /* KPI 카드 */
 .kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;}
-.kpi-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:4px;}
+.kpi-card{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:4px;}
 .kpi-label{font-size:10px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;}
 .kpi-value{font-size:20px;font-weight:700;color:var(--bright);font-family:var(--mono);}
 .kpi-value.green{color:var(--green);}
@@ -43,35 +43,35 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 
 /* 차트 카드 */
 .chart-row{display:grid;grid-template-columns:2fr 1fr;gap:14px;}
-.chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;overflow:hidden;}
+.chart-card{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:16px;overflow:hidden;}
 .card-title{font-size:12px;font-weight:600;color:var(--bright);margin-bottom:12px;display:flex;align-items:center;gap:6px;}
 .card-title .dot{width:6px;height:6px;border-radius:50%;}
 canvas{width:100%!important;max-height:200px;}
 .chart-card{min-height:0;}
 
 /* 테이블 */
-.table-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
+.table-card{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:16px;}
 .perf-table{width:100%;border-collapse:collapse;font-size:12px;}
-.perf-table th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);font-size:11px;}
+.perf-table th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:500;border-bottom:1px solid #e5e7eb;font-size:11px;}
 .perf-table td{padding:8px 10px;border-bottom:1px solid rgba(39,42,61,0.5);color:var(--text);}
 .perf-table tr:last-child td{border-bottom:none;}
 .perf-table tr:hover td{background:var(--panel2);}
 .badge{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;font-family:var(--mono);}
 .badge.buy{background:rgba(91,143,255,0.15);color:var(--stock);}
-.badge.sell{background:rgba(248,113,113,0.15);color:var(--red);}
+.badge.sell{background:#fee2e2;color:var(--red);}
 .pnl-pos{color:var(--green);}
 .pnl-neg{color:var(--red);}
 
 /* 학습 데이터 섹션 */
 .learn-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;}
-.learn-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;}
+.learn-card{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:16px;}
 .learn-stat{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(39,42,61,0.5);}
 .learn-stat:last-child{border-bottom:none;}
 .learn-stat-label{font-size:11px;color:var(--muted);}
 .learn-stat-value{font-size:12px;font-weight:600;color:var(--bright);font-family:var(--mono);}
 
-.section-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px;}
-@media(max-width:768px){.sidebar{width:100%!important;height:56px!important;flex-direction:row!important;position:fixed!important;bottom:0!important;top:auto!important;z-index:100!important;border-right:none!important;border-top:1px solid var(--border)!important;padding:0 8px!important;}.sidebar-logo{display:none!important;}.sidebar-nav{flex-direction:row!important;padding:0!important;gap:0!important;justify-content:space-around!important;width:100%!important;flex:1!important;}.nav-item{flex-direction:column!important;height:56px!important;justify-content:center!important;padding:0!important;font-size:20px!important;gap:2px!important;flex:1!important;}.nav-item span{font-size:10px!important;}.sidebar-bottom{display:none!important;}.main{padding-bottom:56px!important;}body{height:100dvh!important;}}</style>
+.section-title{font-size:11px;font-weight:700;color:#374151;text-transform:none;letter-spacing:0.5px;margin-bottom:2px;}
+@media(max-width:768px){.sidebar{width:100%!important;height:56px!important;flex-direction:row!important;position:fixed!important;bottom:0!important;top:auto!important;z-index:100!important;border-right:none!important;border-top:1px solid #e5e7eb!important;padding:0 8px!important;}.sidebar-logo{display:none!important;}.sidebar-nav{flex-direction:row!important;padding:0!important;gap:0!important;justify-content:space-around!important;width:100%!important;flex:1!important;}.nav-item{flex-direction:column!important;height:56px!important;justify-content:center!important;padding:0!important;font-size:20px!important;gap:2px!important;flex:1!important;}.nav-item span{font-size:10px!important;}.sidebar-bottom{display:none!important;}.main{padding-bottom:56px!important;}body{height:100dvh!important;}}</style>
 <link rel="stylesheet" href="/static/mobile.css">
 </head>
 <body>
@@ -109,7 +109,7 @@ canvas{width:100%!important;max-height:200px;}
   </div>
 
   <!-- 탭 메뉴 -->
-  <div style="display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--border);background:var(--bg);">
+  <div style="display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid #e5e7eb;background:var(--bg);">
     <button id="tab-perf" onclick="switchTab('perf')" style="padding:6px 14px;border:none;border-radius:6px 6px 0 0;font-size:12px;font-weight:600;cursor:pointer;background:var(--purple);color:white;">📊 성과</button>
     <button id="tab-ml" onclick="switchTab('ml')" style="padding:6px 14px;border:none;border-radius:6px 6px 0 0;font-size:12px;font-weight:600;cursor:pointer;background:var(--panel);color:var(--muted);">🤖 ML 예측</button>
     <button id="tab-learn" onclick="switchTab('learn')" style="padding:6px 14px;border:none;border-radius:6px 6px 0 0;font-size:12px;font-weight:600;cursor:pointer;background:var(--panel);color:var(--muted);">🧠 학습 데이터</button>
@@ -229,7 +229,7 @@ canvas{width:100%!important;max-height:200px;}
         <div class="learn-card" style="grid-column:span 2;">
           <div class="card-title"><div class="dot" style="background:var(--purple)"></div>모델 학습 & 예측</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
-            <select id="ml-symbol" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
+            <select id="ml-symbol" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
               <option value="005930">삼성전자</option>
               <option value="000660">SK하이닉스</option>
               <option value="035420">NAVER</option>
@@ -260,14 +260,14 @@ canvas{width:100%!important;max-height:200px;}
         <div class="learn-card" style="grid-column:span 2;">
           <div class="card-title"><div class="dot" style="background:var(--purple)"></div>전략 백테스트</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
-            <select id="bt-symbol" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
+            <select id="bt-symbol" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
               <option value="005930">삼성전자</option>
               <option value="000660">SK하이닉스</option>
               <option value="035420">NAVER</option>
               <option value="035720">카카오</option>
               <option value="005380">현대차</option>
             </select>
-            <select id="bt-strategy" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
+            <select id="bt-strategy" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;">
               <option value="ma_cross">MA 크로스</option>
               <option value="rsi">RSI 반등</option>
               <option value="optimize">파라미터 최적화</option>
@@ -279,7 +279,7 @@ canvas{width:100%!important;max-height:200px;}
         <div class="learn-card">
           <div class="card-title"><div class="dot" style="background:var(--green)"></div>지표 분석</div>
           <div style="display:flex;gap:8px;margin-bottom:10px;">
-            <select id="ind-symbol" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;flex:1;">
+            <select id="ind-symbol" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;flex:1;">
               <option value="005930">삼성전자</option>
               <option value="000660">SK하이닉스</option>
             </select>
@@ -571,10 +571,10 @@ async function analyzeAll() {
     <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
       <span style="font-size:12px;color:var(--muted)">✅ <b style="color:var(--text)">${trainData.trained}/${trainData.total}</b>종목 분석완료</span>
       <div style="margin-left:auto;display:flex;gap:4px;">
-        <button onclick="renderMlCards('ALL')" id="f-all" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">전체</button>
-        <button onclick="renderMlCards('BUY')" id="f-buy" style="background:var(--panel);border:1px solid var(--border);color:var(--green);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟢 BUY</button>
-        <button onclick="renderMlCards('HOLD')" id="f-hold" style="background:var(--panel);border:1px solid var(--border);color:#f0b429;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟡 HOLD</button>
-        <button onclick="renderMlCards('SELL')" id="f-sell" style="background:var(--panel);border:1px solid var(--border);color:var(--red);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔴 SELL</button>
+        <button onclick="renderMlCards('ALL')" id="f-all" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--text);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">전체</button>
+        <button onclick="renderMlCards('BUY')" id="f-buy" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--green);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟢 BUY</button>
+        <button onclick="renderMlCards('HOLD')" id="f-hold" style="background:var(--panel);border:1px solid #e5e7eb;color:#f0b429;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟡 HOLD</button>
+        <button onclick="renderMlCards('SELL')" id="f-sell" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--red);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔴 SELL</button>
       </div>
     </div>
     <div id="ml-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;"></div>`;
@@ -608,7 +608,7 @@ function renderMlCards(filter) {
     const accColor = acc >= 60 ? 'var(--green)' : acc >= 50 ? '#f0b429' : 'var(--red)';
     const sigColor = r.signal === 'BUY' ? 'var(--green)' : r.signal === 'SELL' ? 'var(--red)' : 'var(--muted)';
     const sigEmoji = r.signal === 'BUY' ? '🟢' : r.signal === 'SELL' ? '🔴' : '🟡';
-    return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;" onclick="document.getElementById('ml-symbol').value='${r.symbol}'">
+    return `<div style="background:var(--panel);border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;cursor:pointer;" onclick="document.getElementById('ml-symbol').value='${r.symbol}'">
       <div style="font-size:11px;color:var(--muted)">${r.symbol}</div>
       <div style="font-size:13px;font-weight:600;color:var(--text);margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</div>
       <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
@@ -786,10 +786,10 @@ async function loadSavedPredictions() {
       <div style="margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
         <span style="font-size:12px;color:var(--muted)">📂 저장된 분석 <b style="color:var(--text)">${data.data.length}</b>종목 · <span style="color:var(--muted)">${data.data[0]?.ts?.slice(0,16) || ''}</span></span>
         <div style="margin-left:auto;display:flex;gap:4px;">
-          <button onclick="renderMlCards('ALL')" id="f-all" style="background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">전체</button>
-          <button onclick="renderMlCards('BUY')" id="f-buy" style="background:var(--panel);border:1px solid var(--border);color:var(--green);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟢 BUY</button>
-          <button onclick="renderMlCards('HOLD')" id="f-hold" style="background:var(--panel);border:1px solid var(--border);color:#f0b429;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟡 HOLD</button>
-          <button onclick="renderMlCards('SELL')" id="f-sell" style="background:var(--panel);border:1px solid var(--border);color:var(--red);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔴 SELL</button>
+          <button onclick="renderMlCards('ALL')" id="f-all" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--text);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">전체</button>
+          <button onclick="renderMlCards('BUY')" id="f-buy" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--green);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟢 BUY</button>
+          <button onclick="renderMlCards('HOLD')" id="f-hold" style="background:var(--panel);border:1px solid #e5e7eb;color:#f0b429;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🟡 HOLD</button>
+          <button onclick="renderMlCards('SELL')" id="f-sell" style="background:var(--panel);border:1px solid #e5e7eb;color:var(--red);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">🔴 SELL</button>
         </div>
       </div>
       <div id="ml-cards-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;"></div>`;

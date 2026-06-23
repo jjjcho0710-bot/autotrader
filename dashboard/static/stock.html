@@ -5,7 +5,7 @@
 <title>AutoTrader — 주식</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
-:root{--bg:#f8f9fc;--panel:#ffffff;--panel2:#f1f3f8;--border:#e2e6ef;--stock:#185FA5;--crypto:#854F0B;--green:#3B6D11;--red:#A32D2D;--purple:#534AB7;--muted:#9ca3af;--text:#4b5563;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+:root{--bg:#f5f6fa;--panel:#ffffff;--panel2:#f3f4f6;--border:#e5e7eb;--stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;--purple:#6d28d9;--muted:#9ca3af;--text:#374151;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}
 *::-webkit-scrollbar{width:4px;}
 *::-webkit-scrollbar-track{background:transparent;}
@@ -13,8 +13,8 @@
 body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
 
 /* 사이드바 */
-.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
-.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid #e5e7eb;display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid #e5e7eb;flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
 .logo-text{font-size:13px;font-weight:700;color:var(--bright);font-family:var(--mono);}
 .sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
@@ -31,7 +31,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .nav-item.j.active::before{background:var(--purple);}
 .nav-item.l.active::before{background:var(--text);}
 .sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
-.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid #e5e7eb;width:100%;}
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
 .sdot{width:6px;height:6px;border-radius:50%;background:var(--muted);}
 .sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
@@ -39,16 +39,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 
 /* 메인 */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid #e5e7eb;display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
 .page-label{font-size:14px;font-weight:600;color:var(--bright);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
-.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);font-family:var(--mono);}
-.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#059669;font-weight:600;}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#10b981;animation:blink 1.5s infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 .clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
 
 /* 페이지 헤더 */
-.page-header{padding:12px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.page-header{padding:12px 20px;border-bottom:1px solid #e5e7eb;background:var(--panel);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 .ph-left{display:flex;align-items:center;gap:12px;}
 .ph-dot{width:10px;height:10px;border-radius:50%;background:var(--stock);box-shadow:0 0 10px var(--stock);}
 .ph-title{font-size:15px;font-weight:700;color:var(--bright);}
@@ -57,21 +57,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .ph-psub{font-size:10px;color:var(--muted);text-align:right;}
 
 /* 시장 상태 바 */
-.market-bar{padding:8px 20px;background:var(--panel2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;font-size:11px;flex-shrink:0;}
+.market-bar{padding:8px 20px;background:var(--panel2);border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:16px;font-size:11px;flex-shrink:0;}
 .market-status{display:flex;align-items:center;gap:6px;font-weight:600;}
 .market-dot{width:7px;height:7px;border-radius:50%;}
 .market-dot.open{background:var(--green);box-shadow:0 0 6px var(--green);}
 .market-dot.closed{background:var(--muted);}
 .market-index{color:var(--text);}
 .market-index span{font-family:var(--mono);color:var(--bright);margin-right:4px;}
-.pos{color:var(--green);}
-.neg{color:var(--red);}
+.pos{color:#059669;}
+.neg{color:#dc2626;}
 
 /* 내부 탭 */
-.inner-tabs{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 20px;background:var(--panel);flex-shrink:0;}
+.inner-tabs{display:flex;gap:0;border-bottom:1px solid #e5e7eb;padding:0 20px;background:var(--panel);flex-shrink:0;}
 .inner-tab{padding:10px 16px;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;}
 .inner-tab:hover{color:var(--text);}
-.inner-tab.active{color:var(--bright);border-bottom-color:var(--stock);}
+.inner-tab.active{color:var(--bright);border-bottom-color:#1261c4;}
 
 /* 컨텐츠 */
 .content{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;}
@@ -80,28 +80,28 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 
 /* KPI */
 .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
-.kpi{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
+.kpi{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;}
 .kpi-label{font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;}
 .kpi-val{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--bright);}
-.kpi-val.pos{color:var(--green);}
-.kpi-val.neg{color:var(--red);}
+.kpi-val.pos{color:#059669;}
+.kpi-val.neg{color:#dc2626;}
 .kpi-sub{font-size:10px;color:var(--muted);margin-top:2px;}
 
 /* 카드 */
-.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px;}
-.card-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
+.card{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;}
+.card-title{font-size:11px;font-weight:700;color:#374151;text-transform:none;letter-spacing:0.5px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
 .badge{font-size:10px;padding:2px 7px;border-radius:20px;font-weight:600;}
-.badge.live{background:rgba(52,211,153,0.15);color:var(--green);}
-.badge.buy{background:rgba(52,211,153,0.15);color:var(--green);}
-.badge.sell{background:rgba(248,113,113,0.15);color:var(--red);}
-.badge.wait{background:var(--panel2);color:var(--muted);}
+.badge.live{background:#d1fae5;color:var(--green);}
+.badge.buy{background:#d1fae5;color:var(--green);}
+.badge.sell{background:#fee2e2;color:var(--red);}
+.badge.wait{background:#f3f4f6;color:#6b7280;}
 .badge.alert{background:rgba(240,165,0,0.15);color:var(--crypto);}
 
 /* 보유 포지션 테이블 */
 .pos-table{width:100%;border-collapse:collapse;}
-.pos-table th{font-size:10px;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);font-weight:500;text-transform:uppercase;}
+.pos-table th{font-size:10px;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid #e5e7eb;font-weight:500;text-transform:uppercase;}
 .pos-table th:first-child{text-align:left;}
-.pos-table td{font-size:12px;color:var(--text);text-align:right;padding:10px 8px;border-bottom:1px solid var(--border);font-family:var(--mono);}
+.pos-table td{font-size:12px;color:var(--text);text-align:right;padding:10px 8px;border-bottom:1px solid #e5e7eb;font-family:var(--mono);}
 .pos-table td:first-child{text-align:left;font-family:var(--grotesk);}
 .pos-table tr:last-child td{border-bottom:none;}
 .pos-name{font-size:13px;font-weight:600;color:var(--bright);}
@@ -112,7 +112,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
 
 /* 수급 */
-.supply-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;}
+.supply-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #e5e7eb;font-size:12px;}
 .supply-row:last-child{border-bottom:none;}
 .supply-name{color:var(--bright);font-weight:500;}
 .supply-val{display:flex;align-items:center;gap:6px;}
@@ -121,11 +121,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .arrow-nt{color:var(--muted);font-size:14px;}
 
 /* 공시 */
-.disc-row{display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--border);}
+.disc-row{display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid #e5e7eb;}
 .disc-row:last-child{border-bottom:none;}
 .disc-badge{font-size:10px;padding:2px 6px;border-radius:4px;flex-shrink:0;margin-top:1px;font-weight:600;}
-.disc-badge.urgent{background:rgba(248,113,113,0.15);color:var(--red);}
-.disc-badge.normal{background:var(--panel2);color:var(--muted);}
+.disc-badge.urgent{background:#fee2e2;color:var(--red);}
+.disc-badge.normal{background:#f3f4f6;color:#6b7280;}
 .disc-text{font-size:12px;color:var(--bright);line-height:1.4;}
 .disc-co{font-size:10px;color:var(--muted);margin-top:2px;}
 
@@ -133,28 +133,28 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .dot-grid{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;}
 .dot-item{display:flex;flex-direction:column;align-items:center;gap:4px;}
 .dot{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:var(--mono);}
-.dot.up{background:rgba(52,211,153,0.15);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
-.dot.dn{background:rgba(248,113,113,0.15);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
-.dot.nt{background:var(--panel2);color:var(--muted);border:1px solid var(--border);}
+.dot.up{background:#d1fae5;color:var(--green);border:1px solid #6ee7b7;}
+.dot.dn{background:#fee2e2;color:var(--red);border:1px solid #fca5a5;}
+.dot.nt{background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;}
 .dot-name{font-size:9px;color:var(--muted);max-width:36px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
 /* Jarvis 신호 */
-.signal-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);}
+.signal-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #e5e7eb;}
 .signal-row:last-child{border-bottom:none;}
 .signal-name{font-size:13px;font-weight:500;color:var(--bright);}
-.jarvis-box{background:var(--panel2);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12px;color:var(--text);line-height:1.6;border-left:3px solid var(--purple);}
+.jarvis-box{background:var(--panel2);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12px;color:var(--text);line-height:1.6;border-left:3px solid #1261c4;}
 
 /* 감시종목 테이블 */
 .watch-table{width:100%;border-collapse:collapse;}
-.watch-table th{font-size:10px;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);font-weight:500;}
+.watch-table th{font-size:10px;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid #e5e7eb;font-weight:500;}
 .watch-table th:first-child{text-align:left;}
-.watch-table td{font-size:12px;color:var(--text);text-align:right;padding:8px;border-bottom:1px solid var(--border);font-family:var(--mono);}
+.watch-table td{font-size:12px;color:var(--text);text-align:right;padding:8px;border-bottom:1px solid #e5e7eb;font-family:var(--mono);}
 .watch-table td:first-child{text-align:left;font-family:var(--grotesk);}
 .watch-table tr:last-child td{border-bottom:none;}
 .watch-table tr:hover td{background:var(--panel2);}
 
 /* 전략 상태 */
-.strat-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
+.strat-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #e5e7eb;}
 .strat-row:last-child{border-bottom:none;}
 .strat-name{font-size:13px;font-weight:500;color:var(--bright);}
 .strat-desc{font-size:10px;color:var(--muted);margin-top:2px;}
@@ -162,7 +162,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .toggle-on{font-size:10px;color:var(--green);font-weight:600;font-family:var(--mono);}
 .toggle-off{font-size:10px;color:var(--muted);font-family:var(--mono);}
 .sensing{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;}
-.sensing::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+.sensing::before{content:'';width:5px;height:5px;border-radius:50%;background:#10b981;animation:blink 1.5s infinite;}
 </style>
 </head>
 <body>
@@ -319,7 +319,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
           <span>감시 종목 실시간 시세</span>
           <div style="display:flex;gap:8px;align-items:center">
             <span id="watch-count" style="font-size:10px;color:var(--muted)">0종목</span>
-            <button onclick="location.href='/api/watchlist'" style="font-size:10px;padding:3px 8px;background:var(--panel2);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">종목 관리</button>
+            <button onclick="location.href='/api/watchlist'" style="font-size:10px;padding:3px 8px;background:var(--panel2);border:1px solid #e5e7eb;border-radius:4px;color:var(--text);cursor:pointer">종목 관리</button>
           </div>
         </div>
         <div class="dot-grid" id="watch-dots" style="margin-bottom:14px"></div>
@@ -543,7 +543,7 @@ async function fetchSentiment() {
     el.innerHTML = data.map(s => {
       const cls = s.signal === 'BUY' ? 'buy' : s.signal === 'SELL' ? 'sell' : 'wait';
       const score = parseInt(s.sentiment_score || 0);
-      return `<div style="background:var(--panel2);border-radius:8px;padding:10px;border:1px solid var(--border)">
+      return `<div style="background:var(--panel2);border-radius:8px;padding:10px;border:1px solid #e5e7eb">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
           <span style="font-size:12px;font-weight:500;color:var(--bright)">${s.name || s.symbol}</span>
           <span class="badge ${cls}">${s.signal}</span>

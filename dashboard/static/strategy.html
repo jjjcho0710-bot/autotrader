@@ -5,11 +5,11 @@
 <title>AutoTrader — 전략</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
-:root{--bg:#f8f9fc;--panel:#ffffff;--panel2:#f1f3f8;--border:#e2e6ef;--stock:#185FA5;--crypto:#854F0B;--green:#3B6D11;--red:#A32D2D;--purple:#534AB7;--muted:#9ca3af;--text:#4b5563;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
+:root{--bg:#f5f6fa;--panel:#ffffff;--panel2:#f3f4f6;--border:#e5e7eb;--stock:#1261c4;--crypto:#b45309;--green:#059669;--red:#dc2626;--purple:#6d28d9;--muted:#9ca3af;--text:#374151;--bright:#111827;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
-.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
-.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid #e5e7eb;display:flex;flex-direction:column;align-items:center;height:100vh;}
+.sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid #e5e7eb;flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
 .sidebar-nav{flex:1;display:flex;flex-direction:column;align-items:flex-start;padding:10px 6px;gap:2px;width:100%;}
 .nav-item{width:100%;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:flex-start;padding:0 10px;gap:8px;cursor:pointer;color:var(--muted);font-size:17px;transition:background 0.15s,color 0.15s;position:relative;}
@@ -25,36 +25,36 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .nav-tooltip{display:none;}
 
 .sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
-.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
+.sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid #e5e7eb;width:100%;}
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
 .sdot{width:6px;height:6px;border-radius:50%;}
 .sdot.on{background:var(--green);box-shadow:0 0 5px var(--green);}
 .sdot-label{font-size:7px;color:var(--muted);font-family:var(--mono);}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid #e5e7eb;display:flex;align-items:center;padding:0 20px;flex-shrink:0;}
 .page-label{font-size:14px;font-weight:600;color:var(--bright);}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:16px;}
-.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--green);font-family:var(--mono);}
-.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+.live-pill{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#059669;font-weight:600;}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#10b981;animation:blink 1.5s infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 .clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
 .page{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.page-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;}
+.page-header{padding:14px 20px;border-bottom:1px solid #e5e7eb;background:var(--panel);display:flex;align-items:center;justify-content:space-between;}
 .ph-left{display:flex;align-items:center;gap:12px;}
 .ph-dot{width:10px;height:10px;border-radius:50%;background:var(--purple);box-shadow:0 0 10px var(--purple);}
 .ph-title{font-size:15px;font-weight:700;color:var(--bright);}
 .ph-sub{font-size:11px;color:var(--muted);margin-top:2px;}
 .add-btn{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:7px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);color:var(--purple);font-size:12px;font-weight:600;cursor:pointer;}
 .content-area{flex:1;display:grid;grid-template-columns:1fr 1fr;overflow-y:auto;}
-.section{border-right:1px solid var(--border);padding:18px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;}
+.section{border-right:1px solid #e5e7eb;padding:18px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;}
 .section:last-child{border-right:none;}
 .sec-title{font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;display:flex;align-items:center;gap:8px;}
 .sec-dot{width:6px;height:6px;border-radius:50%;}
 /* card */
-.sc{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+.sc{background:var(--panel);border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;}
 .sc.as{border-color:rgba(91,143,255,0.35);}
 .sc.ac{border-color:rgba(240,165,0,0.35);}
-.sc-header{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);}
+.sc-header{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e5e7eb;}
 .sc-title{font-size:14px;font-weight:600;color:var(--bright);}
 .sc-desc{font-size:11px;color:var(--muted);margin-top:2px;}
 .toggle{width:36px;height:20px;border-radius:10px;position:relative;cursor:pointer;flex-shrink:0;}
@@ -66,24 +66,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .pr{display:flex;flex-direction:column;gap:4px;}
 .pr-label{font-size:10px;color:var(--muted);}
 .pr-row{display:flex;align-items:center;gap:6px;}
-.pr-input{background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:5px 8px;font-family:var(--mono);font-size:12px;color:var(--bright);width:72px;outline:none;}
+.pr-input{background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:5px 8px;font-family:var(--mono);font-size:12px;color:var(--bright);width:72px;outline:none;}
 .pr-input:focus{border-color:var(--stock);}
 .pr-input.cf:focus{border-color:var(--crypto);}
 .pr-unit{font-size:11px;color:var(--muted);}
 .sig-bar{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;font-size:11px;}
-.sig-bar.wait{background:rgba(75,82,112,0.2);border:1px solid var(--border);color:var(--muted);}
+.sig-bar.wait{background:rgba(75,82,112,0.2);border:1px solid #e5e7eb;color:var(--muted);}
 .sig-bar.act{background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.25);color:var(--green);}
 .sig-bar.alr{background:rgba(240,165,0,0.08);border:1px solid rgba(240,165,0,0.25);color:var(--crypto);}
 .sig-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;}
 .perf-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
-.ps{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;}
+.ps{background:var(--panel2);border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;}
 .ps-label{font-size:9px;color:var(--muted);letter-spacing:0.5px;margin-bottom:3px;}
 .ps-value{font-size:13px;font-weight:700;font-family:var(--mono);}
-.ps-value.pos{color:var(--green);}.ps-value.stock{color:var(--stock);}.ps-value.crypto{color:var(--crypto);}
+.ps-value.pos{color:#059669;}.ps-value.stock{color:var(--stock);}.ps-value.crypto{color:var(--crypto);}
 .save-btn{display:flex;align-items:center;justify-content:center;padding:8px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;width:100%;}
 .save-btn.s{background:rgba(91,143,255,0.1);border:1px solid rgba(91,143,255,0.25);color:var(--stock);}
 .save-btn.c{background:rgba(240,165,0,0.1);border:1px solid rgba(240,165,0,0.25);color:var(--crypto);}
-@media(max-width:768px){.sidebar{width:100%!important;height:56px!important;flex-direction:row!important;position:fixed!important;bottom:0!important;top:auto!important;z-index:100!important;border-right:none!important;border-top:1px solid var(--border)!important;padding:0 8px!important;}.sidebar-logo{display:none!important;}.sidebar-nav{flex-direction:row!important;padding:0!important;gap:0!important;justify-content:space-around!important;width:100%!important;flex:1!important;}.nav-item{flex-direction:column!important;height:56px!important;justify-content:center!important;padding:0!important;font-size:20px!important;gap:2px!important;flex:1!important;}.nav-item span{font-size:10px!important;}.nav-divider{display:none!important;}.sidebar-bottom{display:none!important;}.main{padding-bottom:56px!important;}body{height:100dvh!important;}}</style>
+@media(max-width:768px){.sidebar{width:100%!important;height:56px!important;flex-direction:row!important;position:fixed!important;bottom:0!important;top:auto!important;z-index:100!important;border-right:none!important;border-top:1px solid #e5e7eb!important;padding:0 8px!important;}.sidebar-logo{display:none!important;}.sidebar-nav{flex-direction:row!important;padding:0!important;gap:0!important;justify-content:space-around!important;width:100%!important;flex:1!important;}.nav-item{flex-direction:column!important;height:56px!important;justify-content:center!important;padding:0!important;font-size:20px!important;gap:2px!important;flex:1!important;}.nav-item span{font-size:10px!important;}.nav-divider{display:none!important;}.sidebar-bottom{display:none!important;}.main{padding-bottom:56px!important;}body{height:100dvh!important;}}</style>
   <link rel="stylesheet" href="/static/mobile.css">
 </head>
 <body>
@@ -120,34 +120,34 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
       <div class="add-btn" onclick="showAddForm()">＋ 전략 추가</div>
     </div>
     <!-- 전략 추가 폼 (기본 숨김) -->
-    <div id="add-form" style="display:none;border-bottom:1px solid var(--border);background:var(--panel);padding:16px 20px;">
+    <div id="add-form" style="display:none;border-bottom:1px solid #e5e7eb;background:var(--panel);padding:16px 20px;">
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;align-items:end;">
         <div>
           <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">봇 선택</div>
-          <select id="af-bot" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+          <select id="af-bot" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
             <option value="stock_trader">주식 (stock-trader)</option>
             <option value="crypto_trader">코인 (crypto-trader)</option>
           </select>
         </div>
         <div>
           <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">전략명</div>
-          <input id="af-name" type="text" placeholder="예: 볼린저밴드" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+          <input id="af-name" type="text" placeholder="예: 볼린저밴드" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
         </div>
         <div>
           <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">손절선 (%)</div>
-          <input id="af-stop" type="number" value="-2" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+          <input id="af-stop" type="number" value="-2" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
         </div>
         <div>
           <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">익절선 (%)</div>
-          <input id="af-profit" type="number" value="5" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+          <input id="af-profit" type="number" value="5" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
         </div>
         <div>
           <div style="font-size:10px;color:var(--muted);margin-bottom:5px;">1회 매수금액 (원)</div>
-          <input id="af-amount" type="number" value="500000" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
+          <input id="af-amount" type="number" value="500000" style="width:100%;background:var(--panel2);border:1px solid #e5e7eb;border-radius:5px;padding:6px 10px;color:var(--bright);font-size:12px;outline:none;">
         </div>
         <div style="display:flex;gap:8px;align-items:flex-end;">
           <div onclick="submitAddForm()" style="flex:1;padding:7px 0;border-radius:6px;background:var(--purple);color:white;font-size:12px;font-weight:600;cursor:pointer;text-align:center;">저장</div>
-          <div onclick="hideAddForm()" style="flex:1;padding:7px 0;border-radius:6px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);font-size:12px;cursor:pointer;text-align:center;">취소</div>
+          <div onclick="hideAddForm()" style="flex:1;padding:7px 0;border-radius:6px;background:var(--panel2);border:1px solid #e5e7eb;color:var(--muted);font-size:12px;cursor:pointer;text-align:center;">취소</div>
         </div>
       </div>
     </div>

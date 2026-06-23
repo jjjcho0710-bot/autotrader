@@ -2755,6 +2755,103 @@ async def jarvis_signal(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/admin/fetch-historical")
+async def fetch_historical_data(request: Request):
+    """watchlist 전종목 과거 OHLCV 데이터 일괄 수집 (백그라운드)"""
+    try:
+        body = await request.json()
+        start_date = body.get("start_date", "20260601")
+        end_date   = body.get("end_date", datetime.now().strftime("%Y%m%d"))
+
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT symbol, name FROM watchlist WHERE is_active=TRUE")
+        symbols = [r["symbol"] for r in rows]
+        if not symbols:
+            return {"success": False, "error": "watchlist가 비어있어요. 먼저 스캐너를 실행하세요."}
+
+        asyncio.create_task(_run_historical_fetch(symbols, start_date, end_date))
+        return {
+            "success": True,
+            "message": f"{len(symbols)}종목 과거 데이터 적재 시작 (백그라운드)",
+            "symbols": symbols,
+            "period": f"{start_date} ~ {end_date}",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def _run_historical_fetch(symbols: list, start_date: str, end_date: str):
+    """백그라운드로 pykrx 과거 데이터 수집 후 DB 저장"""
+    import asyncio
+    from pykrx import stock as pykrx_stock
+
+    logger.info(f"🚀 과거 데이터 적재 시작: {start_date}~{end_date} / {len(symbols)}종목")
+    await _send_telegram(f"📥 과거 데이터 적재 시작\n기간: {start_date[:4]}.{start_date[4:6]}.{start_date[6:]} ~ {end_date[:4]}.{end_date[4:6]}.{end_date[6:]}\n종목: {len(symbols)}개")
+
+    total_saved = 0
+    failed = []
+
+    loop = asyncio.get_event_loop()
+
+    for i, symbol in enumerate(symbols):
+        try:
+            def _fetch(sym, sd, ed):
+                df = pykrx_stock.get_market_ohlcv(sd, ed, sym)
+                return df
+
+            df = await loop.run_in_executor(None, _fetch, symbol, start_date, end_date)
+
+            if df is None or df.empty:
+                logger.warning(f"[{symbol}] 데이터 없음")
+                failed.append(symbol)
+                continue
+
+            candles = []
+            for date, row in df.iterrows():
+                if int(row.get("종가", 0)) <= 0:
+                    continue
+                candles.append({
+                    "date":   date.strftime("%Y%m%d"),
+                    "open":   int(row.get("시가", 0)),
+                    "high":   int(row.get("고가", 0)),
+                    "low":    int(row.get("저가", 0)),
+                    "close":  int(row.get("종가", 0)),
+                    "volume": int(row.get("거래량", 0)),
+                    "change_rate": float(row.get("등락률", 0)),
+                })
+
+            if not candles:
+                continue
+
+            async with db_pool.acquire() as conn:
+                for c in candles:
+                    ts = datetime.strptime(c["date"], "%Y%m%d")
+                    await conn.execute("""
+                        INSERT INTO stock_daily_ohlcv
+                            (symbol, ts, open, high, low, close, volume, change_rate)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                        ON CONFLICT (symbol, ts) DO UPDATE
+                        SET open=$3, high=$4, low=$5, close=$6, volume=$7, change_rate=$8
+                    """, symbol, ts,
+                        c["open"], c["high"], c["low"], c["close"],
+                        c["volume"], c["change_rate"])
+            total_saved += len(candles)
+            logger.info(f"✅ [{symbol}] {len(candles)}개 저장 ({i+1}/{len(symbols)})")
+
+        except Exception as e:
+            logger.error(f"❌ [{symbol}] 적재 실패: {e}")
+            failed.append(symbol)
+
+        await asyncio.sleep(0.5)  # pykrx 레이트 리밋
+
+    msg = f"✅ 과거 데이터 적재 완료\n총 {total_saved}개 캔들 저장\n성공: {len(symbols)-len(failed)}종목"
+    if failed:
+        msg += f"\n실패: {len(failed)}종목 ({', '.join(failed[:5])})"
+    msg += "\n\n이제 자동매매 시작 가능! 🚀"
+    await _send_telegram(msg)
+    logger.info(f"🎉 과거 데이터 적재 완료: {total_saved}개 저장, 실패 {len(failed)}종목")
+
+
 @app.post("/api/trade/execute")
 async def execute_trade(request: Request):
     """Jarvis가 직접 매수/매도 명령"""

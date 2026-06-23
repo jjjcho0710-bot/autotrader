@@ -2632,18 +2632,29 @@ async def jarvis_signal(request: Request):
         token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
         chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
 
-        # 1. Jarvis에게 분석 요청
-        analysis_prompt = f"""\n{name}({symbol}) {action_kr} 신호 발생!
+        # 1. DB 컨텍스트 수집
+        ctx = await get_portfolio_context()
+
+        # 2. Jarvis에게 분석 요청 (DB 데이터 포함)
+        analysis_prompt = f"""[매매 신호 발생]
+종목: {name}({symbol})
+방향: {action_kr}
 전략: {strategy}
 현재가: {price:,}원
-수량: {qty}주
-금액: {price*qty:,}원
-이유: {reason}
+수량: {qty}
+금액: {price * (qty if isinstance(qty, (int,float)) else 0):,.0f}원
+신호 이유: {reason}
 
-시장 상황을 분석하고 이 매매를 실행해야 할지 판단해줘.
-실행 여부를 결정하고 EXECUTE 또는 SKIP으로 시작해서 이유를 한 줄로 설명해줘.
-"""
-        # 2. Jarvis 판단
+[현재 포트폴리오 현황]
+{ctx}
+
+위 데이터를 기반으로 이 {action_kr} 신호를 실행해야 할지 판단해줘.
+- 잔고가 충분한지
+- 현재 포지션과 중복되지 않는지
+- 시장 흐름이 신호와 일치하는지
+반드시 EXECUTE 또는 SKIP 으로 시작해서 이유를 한 줄로 설명해줘."""
+
+        # 3. Jarvis 판단
         jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
         should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
 

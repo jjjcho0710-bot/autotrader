@@ -37,9 +37,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .sidebar-bottom{padding:12px 8px;border-top:1px solid var(--border);}
 .sdot-row{display:flex;gap:12px;align-items:center;padding:8px 4px;}
 .sdot-item{display:flex;align-items:center;gap:5px;}
-.sdot{width:7px;height:7px;border-radius:50%;background:#d1d5db;}
+.sdot{width:8px;height:8px;border-radius:50%;background:#d1d5db;}
 .sdot.on{background:var(--green);}
-.sdot-label{font-size:10px;color:var(--muted);font-weight:600;}
+.sdot-label{font-size:11px;color:#374151;font-weight:700;}
 
 /* 메인 */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
@@ -57,7 +57,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 
 /* KPI */
 .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
-.kpi{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
+.kpi{background:var(--panel);border:1px solid #d1d5db;border-radius:12px;padding:16px 18px;}
 .kpi-label{font-size:11px;font-weight:600;color:var(--muted);margin-bottom:6px;}
 .kpi-val{font-size:24px;font-weight:700;font-family:var(--mono);color:var(--bright);}
 .kpi-val.pos{color:var(--green);}
@@ -65,7 +65,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .kpi-sub{font-size:11px;color:var(--muted);margin-top:4px;font-weight:500;}
 
 /* 카드 */
-.card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
+.card{background:var(--panel);border:1px solid #d1d5db;border-radius:12px;padding:16px 18px;}
 .card-title{font-size:12px;font-weight:700;color:var(--bright);margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
 
@@ -201,7 +201,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
           <span id="overall-badge" style="font-size:11px;font-weight:600;color:var(--green);">● 전체 정상</span>
         </div>
         <div class="bot-row">
-          <div class="bot-indicator stk">📈</div>
+          <div class="bot-indicator stk" style="font-size:14px;font-weight:700;color:#1261c4;">STK</div>
           <div class="bot-info">
             <div class="bot-name">stock-trader</div>
             <div class="bot-sub" id="stock-sub">KIS API · 확인 중...</div>
@@ -212,7 +212,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
           </div>
         </div>
         <div class="bot-row">
-          <div class="bot-indicator cry">₿</div>
+          <div class="bot-indicator cry" style="font-size:14px;font-weight:700;color:#b45309;">CRY</div>
           <div class="bot-info">
             <div class="bot-name">crypto-trader</div>
             <div class="bot-sub" id="crypto-sub">업비트 API · 24시간</div>
@@ -223,7 +223,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
           </div>
         </div>
         <div class="bot-row">
-          <div class="bot-indicator dat">📡</div>
+          <div class="bot-indicator dat" style="font-size:14px;font-weight:700;color:#059669;">DAT</div>
           <div class="bot-info">
             <div class="bot-name">data-collector</div>
             <div class="bot-sub" id="data-sub">1분봉 수집 중</div>

@@ -178,7 +178,8 @@ class CryptoTrader:
                 logger.info(f"⏳ [{pair}] 데이터 부족 ({len(rows)}개)")
                 continue
 
-            prices = [float(r["close"]) for r in reversed(rows)]
+            # DB는 ASC 정렬 → 오래된 것부터 → 그대로 사용
+            prices = [float(r["close"]) for r in rows]
             signal_type = strategy.generate_signal(pair, prices)
 
             if signal_type == "BUY":

@@ -103,14 +103,13 @@ class CryptoTrader:
         logger.info("📡 전략 변경 구독 시작")
         while self.running:
             now = datetime.now(KST)
-            cur_time = now.time().replace(tzinfo=None)
             logger.info(f"🔄 코인 매매 사이클 [{now.strftime('%H:%M:%S')}]")
             try:
                 await self._run_cycle()
             except Exception as e:
                 logger.error(f"매매 사이클 오류: {e}")
                 await self._notify_error(str(e))
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)  # 10초마다
 
     async def _run_cycle(self):
         strat_name, params = self.get_active_strategy()
@@ -218,7 +217,7 @@ class CryptoTrader:
             "krw_balance": krw_balance,
         })
 
-        # 포지션 Redis 캐시 저장 (dashboard에서 조회)
+        # 포지션 + 시세 Redis 캐시 저장 (dashboard에서 조회)
         import json
         positions_data = [
             {
@@ -233,7 +232,23 @@ class CryptoTrader:
             }
             for pair, pos in self.positions.items()
         ]
-        await cache.client.setex("crypto:positions", 120, json.dumps(positions_data))
+        await cache.client.setex("crypto:positions", 30, json.dumps(positions_data))
+
+        # 모니터링 코인 시세도 Redis 저장
+        prices_data = {}
+        for pair in config.CRYPTO_PAIRS:
+            try:
+                cur = await self.trader.get_current_price(pair)
+                if cur > 0:
+                    prices_data[pair] = {
+                        "pair": pair,
+                        "price": cur,
+                        "change_rate": 0,
+                    }
+            except:
+                pass
+        if prices_data:
+            await cache.client.setex("crypto:prices", 30, json.dumps(prices_data))
 
     async def _signal_jarvis(self, action: str, pair: str, price: float,
                               qty: float, amount: float, strategy: str, reason: str = ""):

@@ -869,11 +869,18 @@ async def get_stock_prices():
 async def get_crypto_prices():
     """코인 실시간 시세 (Redis)"""
     try:
+        # crypto-trader가 저장한 시세 캐시
+        val = await redis_client.get("crypto:prices")
+        if val:
+            import json
+            return {"success": True, "data": json.loads(val)}
+
+        # fallback: 개별 키 조회
         prices = {}
         for pair in config.CRYPTO_PAIRS:
-            val = await redis_client.get(f"crypto:price:{pair}")
-            if val:
-                prices[pair] = json.loads(val)
+            v = await redis_client.get(f"crypto:price:{pair}")
+            if v:
+                prices[pair] = json.loads(v)
         return {"success": True, "data": prices}
     except Exception as e:
         return {"success": False, "error": str(e)}

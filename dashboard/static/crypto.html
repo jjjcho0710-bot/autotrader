@@ -7,10 +7,11 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 :root{--bg:#12131a;--panel:#1a1c27;--panel2:#1f2133;--border:#272a3d;--stock:#5b8fff;--crypto:#f0a500;--green:#34d399;--red:#f87171;--purple:#a78bfa;--muted:#4b5270;--text:#8892b0;--bright:#e2e8f7;--grotesk:'Space Grotesk',sans-serif;--mono:'Space Mono',monospace;}
 *{box-sizing:border-box;margin:0;padding:0;}
-*::-webkit-scrollbar{display:none;}
-*{scrollbar-width:none;}
+*::-webkit-scrollbar{width:4px;}
+*::-webkit-scrollbar-track{background:transparent;}
+*::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size:13px;height:100vh;display:flex;overflow:hidden;}
-.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;}
+.sidebar{width:120px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;height:100vh;}
 .sidebar-logo{width:100%;height:52px;display:flex;align-items:center;justify-content:flex-start;padding:0 12px;gap:8px;border-bottom:1px solid var(--border);flex-shrink:0;}
 .logo-mark{width:28px;height:28px;background:linear-gradient(135deg,var(--stock),var(--crypto));border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:white;font-weight:700;font-family:var(--mono);}
 .logo-text{font-size:13px;font-weight:700;color:var(--bright);font-family:var(--mono);}
@@ -21,12 +22,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .nav-item:hover{background:var(--panel2);color:var(--text);}
 .nav-item.active{background:var(--panel2);color:var(--bright);}
 .nav-item.active::before{content:'';position:absolute;left:-1px;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 3px 3px 0;}
+.nav-item.s.active::before{background:var(--stock);}
 .nav-item.c.active::before{background:var(--crypto);}
 .nav-item.d.active::before{background:var(--green);}
-.nav-item.s.active::before{background:var(--stock);}
 .nav-item.t.active::before{background:var(--purple);}
-.nav-item.l.active::before{background:var(--text);}
 .nav-item.j.active::before{background:var(--purple);}
+.nav-item.l.active::before{background:var(--text);}
 .sidebar-bottom{padding-bottom:12px;display:flex;flex-direction:column;align-items:center;width:100%;}
 .sdot-group{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);width:100%;}
 .sdot-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;}
@@ -41,83 +42,77 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
 .live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 .clock{font-family:var(--mono);font-size:11px;color:var(--muted);}
-.page{flex:1;display:flex;flex-direction:column;overflow:hidden;}
-.page-header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.page-header{padding:12px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 .ph-left{display:flex;align-items:center;gap:12px;}
 .ph-dot{width:10px;height:10px;border-radius:50%;background:var(--crypto);box-shadow:0 0 10px var(--crypto);}
 .ph-title{font-size:15px;font-weight:700;color:var(--bright);}
 .ph-sub{font-size:11px;color:var(--muted);margin-top:2px;}
 .ph-pnl{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--green);}
-.ph-psub{font-size:10px;color:var(--muted);margin-top:2px;text-align:right;}
-.kpi-strip{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--border);flex-shrink:0;}
-.kpi{padding:12px 18px;border-right:1px solid var(--border);}
-.kpi:last-child{border-right:none;}
-.kpi-label{font-size:9px;color:var(--muted);letter-spacing:1.2px;text-transform:uppercase;margin-bottom:5px;}
-.kpi-value{font-size:17px;font-weight:700;font-family:var(--mono);line-height:1;}
-.kpi-value.pos{color:var(--green);}.kpi-value.neg{color:var(--red);}.kpi-value.crypto{color:var(--crypto);}.kpi-value.bright{color:var(--bright);}
-.kpi-sub{font-size:10px;color:var(--muted);margin-top:3px;}
-.content-grid{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;overflow:hidden;}
-.pbox{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;flex-direction:column;overflow:hidden;}
-.pbox.nr{border-right:none;}.pbox.nb{border-bottom:none;}
-.ptitle{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
-.paction{font-size:10px;color:var(--crypto);cursor:pointer;letter-spacing:0;text-transform:none;}
-/* 코인 카드 */
-.coin-cards{display:flex;flex-direction:column;gap:10px;overflow-y:auto;flex:1;}
-.coin-card{background:var(--panel2);border:1px solid var(--border);border-radius:8px;border-left:3px solid var(--crypto);padding:12px 14px;flex-shrink:0;}
-.cc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
-.cc-sym{font-size:14px;font-weight:700;color:var(--bright);font-family:var(--mono);}
-.cc-ex{font-size:10px;color:var(--muted);}
-.cc-pct{font-size:13px;font-weight:700;font-family:var(--mono);}
-.cc-pct.pos{color:var(--green);}.cc-pct.neg{color:var(--red);}
-.cc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
-.cc-sl{font-size:9px;color:var(--muted);margin-bottom:3px;}
-.cc-sv{font-size:12px;font-weight:600;font-family:var(--mono);color:var(--text);}
-.cc-sv.bright{color:var(--bright);}.cc-sv.pos{color:var(--green);}.cc-sv.neg{color:var(--red);}
-/* 마켓 현황 */
-.mkt-list{display:flex;flex-direction:column;gap:4px;overflow-y:auto;flex:1;}
-.mi{display:grid;grid-template-columns:22px 1fr auto auto;align-items:center;gap:8px;padding:8px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;transition:background 0.1s;}
-.mi:hover{background:#252840;}
-.mi-rank{font-family:var(--mono);font-size:10px;color:var(--muted);}
-.mi-name{font-size:12px;font-weight:600;color:var(--bright);}
-.mi-code{font-size:10px;color:var(--muted);font-family:var(--mono);}
-.mi-price{font-family:var(--mono);font-size:12px;color:var(--bright);text-align:right;}
-.mi-chg{font-family:var(--mono);font-size:11px;font-weight:700;text-align:right;min-width:52px;}
-.mi-chg.pos{color:var(--green);}.mi-chg.neg{color:var(--red);}
-.mi-badge{font-size:8px;font-family:var(--mono);padding:1px 4px;border-radius:3px;margin-left:4px;}
-.mi-badge.live{background:rgba(52,211,153,0.15);color:var(--green);}
-.mi-badge.mock{background:rgba(240,165,0,0.15);color:var(--crypto);}
-/* 이력 */
-.hist-list{display:flex;flex-direction:column;gap:5px;flex:1;overflow-y:auto;}
-.hist-item{display:grid;grid-template-columns:56px 44px 1fr auto auto;gap:8px;align-items:center;padding:8px 10px;background:var(--panel2);border-radius:6px;border:1px solid var(--border);font-size:11px;}
-.h-time{font-family:var(--mono);color:var(--muted);font-size:10px;}
-.h-tag{font-size:9px;font-weight:700;padding:2px 5px;border-radius:4px;text-align:center;}
-.tag-buy{background:rgba(52,211,153,0.12);color:var(--green);}
-.tag-sell{background:rgba(248,113,113,0.12);color:var(--red);}
-.h-name{color:var(--bright);font-weight:500;}
-.h-price{font-family:var(--mono);color:var(--text);text-align:right;font-size:10px;}
-.h-res{font-family:var(--mono);font-size:11px;font-weight:600;text-align:right;}
-.h-res.pos{color:var(--green);}.h-res.neg{color:var(--red);}.h-res.pend{color:var(--muted);font-size:10px;}
-/* 전략 */
-.strat-list{display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1;}
-.strat-item{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:11px 13px;flex-shrink:0;}
-.strat-item.active-c{border-color:rgba(240,165,0,0.4);background:rgba(240,165,0,0.04);}
-.sh{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;}
-.sn{font-size:12px;font-weight:600;color:var(--bright);}
-.spill{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;}
-.spill.on{background:rgba(52,211,153,0.12);color:var(--green);}
-.spill.off{background:rgba(75,82,112,0.3);color:var(--muted);}
-.sparams{display:flex;gap:8px;flex-wrap:wrap;}
-.sp{font-size:10px;color:var(--muted);font-family:var(--mono);}
-.sp span{color:var(--crypto);}
-.ssig{margin-top:5px;font-size:10px;display:flex;align-items:center;gap:5px;}
-.sig-dot{width:5px;height:5px;border-radius:50%;}
-.empty-msg{color:var(--muted);font-size:11px;padding:10px 0;}
-@media(max-width:768px){.sidebar{width:100%!important;height:56px!important;flex-direction:row!important;position:fixed!important;bottom:0!important;top:auto!important;z-index:100!important;border-right:none!important;border-top:1px solid var(--border)!important;padding:0 8px!important;}.sidebar-logo{display:none!important;}.sidebar-nav{flex-direction:row!important;padding:0!important;gap:0!important;justify-content:space-around!important;width:100%!important;flex:1!important;}.nav-item{flex-direction:column!important;height:56px!important;justify-content:center!important;padding:0!important;font-size:20px!important;gap:2px!important;flex:1!important;}.nav-item span{font-size:10px!important;}.nav-divider{display:none!important;}.sidebar-bottom{display:none!important;}.main{padding-bottom:56px!important;}body{height:100dvh!important;}}</style>
-  <link rel="stylesheet" href="/static/mobile.css">
+.ph-psub{font-size:10px;color:var(--muted);text-align:right;}
+.market-bar{padding:8px 20px;background:var(--panel2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;font-size:11px;flex-shrink:0;}
+.pos{color:var(--green);}
+.neg{color:var(--red);}
+.inner-tabs{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 20px;background:var(--panel);flex-shrink:0;}
+.inner-tab{padding:10px 16px;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;}
+.inner-tab:hover{color:var(--text);}
+.inner-tab.active{color:var(--bright);border-bottom-color:var(--crypto);}
+.content{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;}
+.panel{display:none;flex-direction:column;gap:14px;}
+.panel.active{display:flex;}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+.kpi{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
+.kpi-label{font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px;}
+.kpi-val{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--bright);}
+.kpi-val.pos{color:var(--green);}
+.kpi-val.neg{color:var(--red);}
+.kpi-sub{font-size:10px;color:var(--muted);margin-top:2px;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px;}
+.card-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;}
+.badge{font-size:10px;padding:2px 7px;border-radius:20px;font-weight:600;}
+.badge.live{background:rgba(52,211,153,0.15);color:var(--green);}
+.badge.buy{background:rgba(52,211,153,0.15);color:var(--green);}
+.badge.sell{background:rgba(248,113,113,0.15);color:var(--red);}
+.badge.wait{background:var(--panel2);color:var(--muted);}
+.pos-table{width:100%;border-collapse:collapse;}
+.pos-table th{font-size:10px;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);font-weight:500;text-transform:uppercase;}
+.pos-table th:first-child{text-align:left;}
+.pos-table td{font-size:12px;color:var(--text);text-align:right;padding:10px 8px;border-bottom:1px solid var(--border);font-family:var(--mono);}
+.pos-table td:first-child{text-align:left;font-family:var(--grotesk);}
+.pos-table tr:last-child td{border-bottom:none;}
+.pos-name{font-size:13px;font-weight:600;color:var(--bright);}
+.pos-code{font-size:10px;color:var(--muted);margin-top:2px;}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.dot-grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;}
+.dot-item{display:flex;flex-direction:column;align-items:center;gap:4px;}
+.dot{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:var(--mono);}
+.dot.up{background:rgba(52,211,153,0.15);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
+.dot.dn{background:rgba(248,113,113,0.15);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.dot.nt{background:var(--panel2);color:var(--muted);border:1px solid var(--border);}
+.dot-name{font-size:10px;color:var(--muted);}
+.signal-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);}
+.signal-row:last-child{border-bottom:none;}
+.signal-name{font-size:13px;font-weight:500;color:var(--bright);}
+.jarvis-box{background:var(--panel2);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12px;color:var(--text);line-height:1.6;border-left:3px solid var(--purple);}
+.strat-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
+.strat-row:last-child{border-bottom:none;}
+.strat-name{font-size:13px;font-weight:500;color:var(--bright);}
+.strat-desc{font-size:10px;color:var(--muted);margin-top:2px;}
+.sensing{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;}
+.sensing::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.bar-label{font-size:11px;color:var(--muted);width:50px;flex-shrink:0;}
+.bar-bg{flex:1;height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;}
+.bar-fill{height:100%;border-radius:3px;}
+.bar-val{font-size:11px;font-family:var(--mono);color:var(--text);width:90px;text-align:right;flex-shrink:0;}
+</style>
 </head>
 <body>
+
 <div class="sidebar">
-  <div class="sidebar-logo"><div class="logo-mark">AT</div><span class="logo-text">AutoTrader</span></div>
+  <div class="sidebar-logo">
+    <div class="logo-mark">AT</div>
+    <div class="logo-text">Auto</div>
+  </div>
   <div class="sidebar-nav">
     <div class="nav-item j" onclick="location.href='jarvis.html'">🤖<span>Jarvis</span></div>
     <div class="nav-divider"></div>
@@ -125,7 +120,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     <div class="nav-item s" onclick="location.href='stock.html'">📈<span>주식</span></div>
     <div class="nav-item c active" onclick="location.href='crypto.html'">₿<span>코인</span></div>
     <div class="nav-item t" onclick="location.href='strategy.html'">⚙<span>전략</span></div>
-    <div class="nav-item l" onclick="location.href='/analysis.html'">🧠 <span>분석</span></div>
+    <div class="nav-item l" onclick="location.href='/analysis.html'">🧠<span>분석</span></div>
   </div>
   <div class="sidebar-bottom">
     <div class="sdot-group">
@@ -135,246 +130,272 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     </div>
   </div>
 </div>
+
 <div class="main">
   <div class="topbar">
     <div class="page-label">코인</div>
     <div class="topbar-right">
       <div class="live-pill"><div class="live-dot"></div>LIVE</div>
-      <div class="clock" id="clock">-</div>
+      <div class="clock" id="clock"></div>
     </div>
   </div>
-  <div class="page">
-    <div class="page-header">
-      <div class="ph-left">
-        <div class="ph-dot"></div>
-        <div><div class="ph-title">crypto-trader</div><div class="ph-sub">업비트 API · 24시간 운영중</div></div>
-      </div>
-      <div style="text-align:right;">
-        <div class="ph-pnl" id="ch-today-pnl">+0원</div>
-        <div class="ph-psub">오늘 수익 / 누적 <span id="ch-total-pnl">+0</span>원</div>
+
+  <div class="page-header">
+    <div class="ph-left">
+      <div class="ph-dot"></div>
+      <div>
+        <div class="ph-title">crypto-trader</div>
+        <div class="ph-sub">업비트 API · 24시간 운영중</div>
       </div>
     </div>
-    <div class="kpi-strip">
-      <div class="kpi"><div class="kpi-label">코인 평가금액</div><div class="kpi-value crypto" id="c-eval">-</div><div class="kpi-sub">원</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-value pos" id="c-pnl">0</div><div class="kpi-sub" id="c-pnl-sub">-</div></div>
-      <div class="kpi"><div class="kpi-label">보유 코인</div><div class="kpi-value bright" id="c-pos-cnt">-</div><div class="kpi-sub">모니터링 5종</div></div>
-      <div class="kpi"><div class="kpi-label">오늘 체결</div><div class="kpi-value bright" id="c-trades">-</div><div class="kpi-sub">매매</div></div>
-      <div class="kpi"><div class="kpi-label">BTC 현재가</div><div class="kpi-value crypto" id="c-btc-price">-</div><div class="kpi-sub" id="c-btc-chg">-</div></div>
+    <div>
+      <div class="ph-pnl" id="today-pnl">+0원</div>
+      <div class="ph-psub">오늘 수익 / 누적 0원</div>
     </div>
-    <div class="content-grid">
-      <!-- 보유 코인 -->
-      <div class="pbox">
-        <div class="ptitle">보유 포지션<span class="paction">업비트 연동</span></div>
-        <div class="coin-cards" id="c-cards"><div class="empty-msg">로딩 중...</div></div>
+  </div>
+
+  <div class="market-bar">
+    <div style="display:flex;align-items:center;gap:6px;font-weight:600">
+      <div style="width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green)"></div>
+      <span style="color:var(--green)">24시간 운영중</span>
+    </div>
+    <span style="color:var(--border)">|</span>
+    <span style="color:var(--text)">BTC <span id="btc-price" style="font-family:var(--mono);color:var(--bright)">-</span> <span id="btc-chg" class="pos">-</span></span>
+    <span style="color:var(--text)">ETH <span id="eth-price" style="font-family:var(--mono);color:var(--bright)">-</span></span>
+    <span style="margin-left:auto;font-size:10px;color:var(--muted)" id="last-update">-</span>
+  </div>
+
+  <div class="inner-tabs">
+    <div class="inner-tab active" onclick="showTab('position',this)">포지션</div>
+    <div class="inner-tab" onclick="showTab('market',this)">마켓 현황</div>
+    <div class="inner-tab" onclick="showTab('jarvis',this)">Jarvis 신호</div>
+  </div>
+
+  <div class="content">
+
+    <!-- 탭1: 포지션 -->
+    <div class="panel active" id="tab-position">
+      <div class="kpi-grid">
+        <div class="kpi"><div class="kpi-label">코인 평가금액</div><div class="kpi-val" id="total-eval">-</div><div class="kpi-sub">원</div></div>
+        <div class="kpi"><div class="kpi-label">오늘 수익</div><div class="kpi-val pos" id="today-pnl-kpi">+0</div><div class="kpi-sub">원</div></div>
+        <div class="kpi"><div class="kpi-label">보유 코인</div><div class="kpi-val" id="pos-count">-</div><div class="kpi-sub" id="monitor-count">모니터링 5종</div></div>
+        <div class="kpi"><div class="kpi-label">KRW 잔고</div><div class="kpi-val" id="krw-balance">-</div><div class="kpi-sub">원</div></div>
       </div>
-      <!-- 마켓 현황 -->
-      <div class="pbox nr">
-        <div class="ptitle">코인 마켓 현황 <span style="color:var(--muted);font-weight:400;">(실시간)</span></div>
-        <div class="mkt-list" id="mkt-list"><div class="empty-msg">로딩 중...</div></div>
+
+      <div class="card">
+        <div class="card-title"><span>보유 포지션</span><span class="badge live">업비트 연동</span></div>
+        <div id="positions-area">
+          <div id="no-positions" style="text-align:center;padding:30px;color:var(--muted);font-size:12px">보유 코인 없음</div>
+        </div>
       </div>
-      <!-- 매매 이력 -->
-      <div class="pbox nb">
-        <div class="ptitle">오늘 매매 이력</div>
-        <div class="hist-list" id="hist-list"><div class="empty-msg">로딩 중...</div></div>
-      </div>
-      <!-- 전략 -->
-      <div class="pbox nr nb">
-        <div class="ptitle">전략 상태<span class="paction" onclick="location.href='strategy.html'">전략 관리 →</span></div>
-        <div class="strat-list" id="strat-list"><div class="empty-msg">로딩 중...</div></div>
+
+      <div class="card">
+        <div class="card-title"><span>오늘 매매 이력</span></div>
+        <div id="trade-history">
+          <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">매매 이력 없음</div>
+        </div>
       </div>
     </div>
+
+    <!-- 탭2: 마켓 현황 -->
+    <div class="panel" id="tab-market">
+      <div class="card">
+        <div class="card-title"><span>모니터링 코인 동향</span></div>
+        <div class="dot-grid" id="market-dots"></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span>가격 비교</span></div>
+        <div id="price-bars" style="margin-top:4px"></div>
+      </div>
+    </div>
+
+    <!-- 탭3: Jarvis 신호 -->
+    <div class="panel" id="tab-jarvis">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title"><span>MACD 신호</span></div>
+          <div id="signal-list">
+            <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">신호 대기 중...</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>전략 상태</span><a href="strategy.html" style="font-size:10px;color:var(--crypto);text-decoration:none">전략 관리 →</a></div>
+          <div id="strategy-list">
+            <div style="text-align:center;padding:20px;color:var(--muted);font-size:12px">로딩 중...</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span>Jarvis 최근 판단</span></div>
+        <div class="jarvis-box">Jarvis AI가 코인 매매 신호를 분석하고 있습니다. 신호 발생 시 여기에 표시됩니다.</div>
+      </div>
+    </div>
+
   </div>
 </div>
 
 <script>
 const API = '';
+function fmt(n) { return Number(n||0).toLocaleString(); }
+function fmtRate(r) { r=parseFloat(r||0); return (r>0?'+':'')+r.toFixed(2)+'%'; }
 
-async function fetchWithFallback(realPath, mockPath) {
-  try {
-    const res = await fetch(`${API}${realPath}`);
-    const json = await res.json();
-    const d = json.data;
-    const hasData = d && (Array.isArray(d) ? d.length > 0 : Object.keys(d).length > 0);
-    if (json.success && hasData) return json;
-    throw new Error('empty or no data');
-  } catch {
-    try {
-      const res = await fetch(`${API}${mockPath}`);
-      return res.json();
-    } catch(e2) { return { success: false, data: null }; }
-  }
+function showTab(id, el) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.inner-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  el.classList.add('active');
 }
 
-// 시계 (동적)
 function updateClock() {
-  const now = new Date();
-  const d = now.toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).replace(/\. /g,'.').replace('.','');
-  const t = now.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  document.getElementById('clock').textContent = `${d} ${t}`;
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 setInterval(updateClock, 1000); updateClock();
 
-const fmt = (n, p=true) => { if(n==null)return'-'; const s=n>=0?(p?'+':''):'-'; return s+Math.abs(Math.round(n)).toLocaleString(); };
-const pc = n => n>=0?'pos':'neg';
-
-// 봇 상태
-async function fetchStatus() {
-  try {
-    const { data } = await fetchWithFallback('/api/status','/api/mock/status');
-    if (!data) return;
-    ['dot-stk','dot-cry','dot-dat'].forEach((id,i)=>{
-      const bot=['stock_trader','crypto_trader','data_collector'][i];
-      const el=document.getElementById(id);
-      if(!el)return;
-      const on=data[bot]?.status==='running';
-      el.style.background=on?'var(--green)':'var(--red)';
-      el.style.boxShadow=on?'0 0 5px var(--green)':'none';
-    });
-  } catch(e){}
-}
-
-// 요약
-async function fetchSummary() {
-  try {
-    const { data } = await fetchWithFallback('/api/summary','/api/mock/summary');
-    if (!data) return;
-    const cp=Math.round(data.bot_pnl?.crypto_trader||0);
-    const tp=Math.round(data.total_pnl||0);
-    const el=id=>document.getElementById(id);
-    el('ch-today-pnl').textContent=fmt(cp)+'원';
-    el('ch-today-pnl').style.color=cp>=0?'var(--green)':'var(--red)';
-    el('ch-total-pnl').textContent=fmt(tp,false);
-    el('c-pnl').textContent=fmt(cp);
-    el('c-pnl').className='kpi-value '+(cp>=0?'pos':'neg');
-    el('c-trades').textContent=data.today_trades||0;
-  } catch(e){}
-}
-
-// 마켓 현황 (실시간 or 모의)
-async function fetchMarket() {
-  try {
-    const { data, source } = await fetchWithFallback('/api/prices/crypto','/api/mock/prices/crypto');
-    const list=document.getElementById('mkt-list');
-    if (!data||!Object.keys(data).length) { list.innerHTML='<div class="empty-msg">시세 없음</div>'; return; }
-
-    // BTC 상단 KPI
-    const btc = data['KRW-BTC'];
-    if (btc) {
-      const el=document.getElementById;
-      el('c-btc-price').textContent=(Math.round(btc.price/10000)/100)+'억';
-      el('c-btc-chg').textContent=(btc.change_rate>=0?'+':'')+btc.change_rate.toFixed(2)+'%';
-      el('c-btc-chg').style.color=btc.change_rate>=0?'var(--green)':'var(--red)';
-    }
-
-    list.innerHTML='';
-    Object.entries(data).forEach(([pair, p], i)=>{
-      const name=p.name||pair.replace('KRW-','');
-      const cls=p.change_rate>=0?'pos':'neg';
-      const sign=p.change_rate>=0?'+':'';
-      const badge=p.source==='live'?'<span class="mi-badge live">LIVE</span>':'<span class="mi-badge mock">MOCK</span>';
-      list.innerHTML+=`<div class="mi">
-        <div class="mi-rank">${i+1}</div>
-        <div><div class="mi-name">${name}${badge}</div><div class="mi-code">${pair}</div></div>
-        <div class="mi-price">${p.price>=10000?Math.round(p.price).toLocaleString():p.price.toLocaleString()}</div>
-        <div class="mi-chg ${cls}">${sign}${(p.change_rate||0).toFixed(2)}%</div>
-      </div>`;
-    });
-  } catch(e) { console.warn('market', e); }
-}
-
-// 코인 포지션
+// 포지션 로드
 async function fetchPositions() {
   try {
-    const { data } = await fetchWithFallback('/api/positions/crypto','/api/mock/positions/crypto');
-    const cards=document.getElementById('c-cards');
-    if (!data||!data.length) {
-      cards.innerHTML='<div class="empty-msg">보유 코인 없음</div>';
-      document.getElementById('c-pos-cnt').textContent='0';
-      document.getElementById('c-eval').textContent='-';
+    const r = await fetch(`${API}/api/positions/crypto`);
+    const res = await r.json();
+    const data = res.data || [];
+
+    document.getElementById('pos-count').textContent = data.length;
+    const noPosEl = document.getElementById('no-positions');
+    const area = document.getElementById('positions-area');
+
+    if (!data.length) {
+      area.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:12px">보유 코인 없음</div>';
       return;
     }
-    document.getElementById('c-pos-cnt').textContent=data.length;
-    let totalEval=0;
-    cards.innerHTML='';
-    data.forEach(p=>{
-      const cls=pc(p.pnl_rate||0);
-      const borderColor=p.pnl_rate>=0?'var(--crypto)':'rgba(248,113,113,0.6)';
-      const qty=typeof p.qty==='number'?p.qty.toFixed(4):p.qty;
-      totalEval+=(p.cur_price||0)*(p.qty||0);
-      cards.innerHTML+=`
-        <div class="coin-card" style="border-left-color:${borderColor}">
-          <div class="cc-header">
-            <div><div class="cc-sym">${p.name||p.pair}</div><div class="cc-ex">${p.pair} · 업비트</div></div>
-            <div class="cc-pct ${cls}">${p.pnl_rate>=0?'+':''}${(p.pnl_rate||0).toFixed(1)}%</div>
-          </div>
-          <div class="cc-grid">
-            <div><div class="cc-sl">보유량</div><div class="cc-sv bright">${qty} ${p.currency}</div></div>
-            <div><div class="cc-sl">평균단가</div><div class="cc-sv">${(p.avg_price||0).toLocaleString()}</div></div>
-            <div><div class="cc-sl">현재가</div><div class="cc-sv bright">${(p.cur_price||0).toLocaleString()}</div></div>
-            <div><div class="cc-sl">평가손익</div><div class="cc-sv ${cls}">${fmt(p.pnl)}원</div></div>
-          </div>
-        </div>`;
-    });
-    document.getElementById('c-eval').textContent=Math.round(totalEval).toLocaleString();
-  } catch(e) { console.warn('crypto pos', e); }
+
+    let totalEval = 0;
+    let totalPnl = 0;
+    area.innerHTML = `<table class="pos-table">
+      <tr><th>코인</th><th>보유량</th><th>평균단가</th><th>현재가</th><th>평가손익</th><th>수익률</th><th>신호</th></tr>
+      ${data.map(p => {
+        const pnl = parseFloat(p.pnl || 0);
+        const rate = parseFloat(p.pnl_rate || 0);
+        const cur = parseFloat(p.cur_price || 0);
+        const qty = parseFloat(p.qty || 0);
+        totalEval += cur * qty;
+        totalPnl += pnl;
+        const cls = rate >= 0 ? 'pos' : 'neg';
+        const signal = rate <= -3 ? 'sell' : rate >= 7 ? 'buy' : 'wait';
+        const signalTxt = rate <= -3 ? '손절 검토' : rate >= 7 ? '익절 검토' : '관망';
+        return `<tr>
+          <td><div class="pos-name">${p.name || p.currency || p.pair}</div><div class="pos-code">${p.pair}</div></td>
+          <td>${parseFloat(qty).toFixed(4)}</td>
+          <td>${fmt(Math.round(p.avg_price || 0))}</td>
+          <td>${fmt(Math.round(cur))}</td>
+          <td class="${cls}">${pnl >= 0?'+':''}${fmt(Math.round(pnl))}원</td>
+          <td class="${cls}">${fmtRate(rate)}</td>
+          <td><span class="badge ${signal}">${signalTxt}</span></td>
+        </tr>`;
+      }).join('')}
+    </table>`;
+
+    document.getElementById('total-eval').textContent = fmt(Math.round(totalEval));
+    const pnlEl = document.getElementById('today-pnl-kpi');
+    pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + fmt(Math.round(totalPnl));
+    pnlEl.className = 'kpi-val ' + (totalPnl >= 0 ? 'pos' : 'neg');
+
+    // BTC/ETH 현재가 업데이트
+    const btc = data.find(p => p.pair === 'KRW-BTC');
+    const eth = data.find(p => p.pair === 'KRW-ETH');
+    if (btc) document.getElementById('btc-price').textContent = fmt(Math.round(btc.cur_price));
+    if (eth) document.getElementById('eth-price').textContent = fmt(Math.round(eth.cur_price));
+
+  } catch(e) {}
 }
 
-// 매매 이력
-async function fetchHistory() {
+// 코인 시세 로드
+async function fetchCryptoPrices() {
   try {
-    let data;
-    try {
-      const r = await fetch('/api/trades?bot=crypto_trader&limit=10');
-      const j = await r.json();
-      data = j.success ? j.data : [];
-    } catch { data = []; }
-    const list=document.getElementById('hist-list');
-    if (!data||!data.length) { list.innerHTML='<div class="empty-msg">매매 이력 없음</div>'; return; }
-    list.innerHTML='';
-    data.forEach(t=>{
-      const time=new Date(t.ts).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
-      const pnl=t.pnl!=null?(t.pnl>=0?'+':'')+Math.round(t.pnl).toLocaleString()+'원':'보유중';
-      const pnlCls=t.pnl!=null?(t.pnl>=0?'pos':'neg'):'pend';
-      const qty=typeof t.quantity==='number'&&t.quantity<1?t.quantity.toFixed(4):t.quantity;
-      list.innerHTML+=`<div class="hist-item">
-        <span class="h-time">${time}</span>
-        <span class="h-tag ${t.side==='BUY'?'tag-buy':'tag-sell'}">${t.side==='BUY'?'매수':'매도'}</span>
-        <span class="h-name">${t.symbol}</span>
-        <span class="h-price">${(t.price||0).toLocaleString()}×${qty}</span>
-        <span class="h-res ${pnlCls}">${pnl}</span>
+    const r = await fetch(`${API}/api/prices/crypto`);
+    const res = await r.json();
+    const data = res.data || {};
+    const entries = Object.values(data);
+
+    // 도트
+    const dots = document.getElementById('market-dots');
+    dots.innerHTML = entries.map(p => {
+      const rate = parseFloat(p.change_rate || 0);
+      const cls = rate > 0 ? 'up' : rate < 0 ? 'dn' : 'nt';
+      const name = (p.pair || p.symbol || '').replace('KRW-','');
+      return `<div class="dot-item">
+        <div class="dot ${cls}">${rate >= 0?'+':''}${rate.toFixed(1)}%</div>
+        <div class="dot-name">${name}</div>
       </div>`;
-    });
-  } catch(e){}
+    }).join('');
+
+    // 바 차트
+    const bars = document.getElementById('price-bars');
+    const maxPrice = Math.max(...entries.map(p => parseFloat(p.price || p.close || 0)));
+    bars.innerHTML = entries.map(p => {
+      const price = parseFloat(p.price || p.close || 0);
+      const rate = parseFloat(p.change_rate || 0);
+      const pct = maxPrice > 0 ? (price / maxPrice * 100) : 0;
+      const name = (p.pair || '').replace('KRW-','');
+      const cls = rate >= 0 ? 'var(--green)' : 'var(--red)';
+      return `<div class="bar-row">
+        <span class="bar-label">${name}</span>
+        <div class="bar-bg"><div class="bar-fill" style="width:${pct}%;background:${cls}"></div></div>
+        <span class="bar-val">${fmt(Math.round(price))}원</span>
+      </div>`;
+    }).join('');
+
+    // BTC 업데이트
+    const btc = entries.find(p => (p.pair||'').includes('BTC'));
+    if (btc) {
+      document.getElementById('btc-price').textContent = fmt(Math.round(btc.price || btc.close));
+      const chg = parseFloat(btc.change_rate || 0);
+      const chgEl = document.getElementById('btc-chg');
+      chgEl.textContent = (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+      chgEl.className = chg >= 0 ? 'pos' : 'neg';
+    }
+
+  } catch(e) {}
 }
 
-// 전략
+// 봇 상태
+async function fetchBotStatus() {
+  try {
+    const r = await fetch(`${API}/api/status`);
+    const res = await r.json();
+    const bots = res.data || {};
+    const cry = bots.crypto_trader || {};
+    document.getElementById('krw-balance').textContent = fmt(Math.round(cry.krw_balance || 0));
+    if (cry.status === 'running') document.getElementById('dot-cry').className = 'sdot on';
+  } catch(e) {}
+}
+
+// 전략 로드
 async function fetchStrategies() {
   try {
-    const { data } = await fetchWithFallback('/api/strategies?bot=crypto_trader','/api/strategies?bot=crypto_trader');
-    const list=document.getElementById('strat-list');
-    if (!data||!data.length) { list.innerHTML='<div class="empty-msg">전략 없음</div>'; return; }
-    list.innerHTML='';
-    data.forEach(s=>{
-      const params=s.params||{};
-      const paramStr=Object.entries(params).slice(0,3).map(([k,v])=>`<span class="sp">${k} <span>${v}</span></span>`).join('');
-      list.innerHTML+=`
-        <div class="strat-item ${s.is_active?'active-c':''}">
-          <div class="sh"><span class="sn">${s.name}</span><span class="spill ${s.is_active?'on':'off'}">${s.is_active?'ON':'OFF'}</span></div>
-          <div class="sparams">${paramStr}</div>
-          ${s.is_active?`<div class="ssig"><div class="sig-dot" style="background:var(--green)"></div><span style="color:var(--green);font-size:10px;">활성 — 신호 감지 중</span></div>`:''}
-        </div>`;
-    });
-  } catch(e){}
+    const r = await fetch(`${API}/api/strategies`);
+    const res = await r.json();
+    const data = (res.data || []).filter(s => s.bot === 'crypto_trader');
+    const el = document.getElementById('strategy-list');
+    if (!data.length) return;
+    el.innerHTML = data.map(s => `
+      <div class="strat-row">
+        <div>
+          <div class="strat-name">${s.name}</div>
+          <div class="strat-desc">${Object.entries(s.params||{}).slice(0,3).map(([k,v]) => `${k} ${v}`).join(' · ')}</div>
+        </div>
+        <div>
+          ${s.is_active ? `<div class="sensing">신호 감지 중</div><span style="font-size:10px;color:var(--green);font-family:var(--mono);font-weight:600">ON</span>` : `<span style="font-size:10px;color:var(--muted);font-family:var(--mono)">OFF</span>`}
+        </div>
+      </div>`).join('');
+  } catch(e) {}
 }
 
 async function loadAll() {
-  await Promise.all([fetchStatus(), fetchSummary(), fetchMarket(), fetchPositions(), fetchHistory(), fetchStrategies()]);
+  await Promise.all([fetchPositions(), fetchCryptoPrices(), fetchBotStatus(), fetchStrategies()]);
+  document.getElementById('last-update').textContent = '업데이트: ' + new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
 }
 
 loadAll();
-setInterval(fetchStatus, 10000);
-setInterval(fetchMarket, 5000);    // 시세 5초 갱신
-setInterval(() => { fetchSummary(); fetchPositions(); fetchHistory(); }, 30000);
+setInterval(loadAll, 30000);
 </script>
 </body>
 </html>

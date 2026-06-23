@@ -1004,20 +1004,33 @@ async def get_single_price(symbol: str):
                         "type": "crypto"
                     }
 
-        # 주식 - KIS API 직접 조회
+        # 주식 - KIS API 직접 조회 (현재가 + 등락률)
         from stock_trader.kis_trader import KISTrader
         import aiohttp as http
         trader = KISTrader()
         trader.session = http.ClientSession()
         await trader._get_token()
-        price = await trader.get_current_price(symbol)
+
+        url = f"{trader.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
+        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+        async with trader.session.get(
+            url, headers=trader._headers("FHKST01010100"), params=params
+        ) as resp:
+            data = await resp.json()
+            output = data.get("output", {})
+            price = int(output.get("stck_prpr", 0))
+            change_rate = float(output.get("prdy_ctrt", 0))  # 전일대비등락률
+            name = output.get("hts_kor_isnm", symbol)        # 종목명
+
         await trader.session.close()
 
         if price > 0:
             return {
                 "success": True,
                 "symbol": symbol,
+                "name": name,
                 "price": price,
+                "change_rate": change_rate,
                 "type": "stock"
             }
 

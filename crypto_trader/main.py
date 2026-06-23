@@ -218,6 +218,23 @@ class CryptoTrader:
             "krw_balance": krw_balance,
         })
 
+        # 포지션 Redis 캐시 저장 (dashboard에서 조회)
+        import json
+        positions_data = [
+            {
+                "pair": pair,
+                "currency": pos.get("currency", pair.replace("KRW-", "")),
+                "qty": pos.get("qty", 0),
+                "avg_price": pos.get("avg_price", 0),
+                "cur_price": pos.get("cur_price", 0),
+                "pnl": pos.get("pnl", 0),
+                "pnl_rate": pos.get("pnl_rate", 0),
+                "name": pos.get("currency", pair.replace("KRW-", "")),
+            }
+            for pair, pos in self.positions.items()
+        ]
+        await cache.client.setex("crypto:positions", 120, json.dumps(positions_data))
+
     async def _signal_jarvis(self, action: str, pair: str, price: float,
                               qty: float, amount: float, strategy: str, reason: str = ""):
         """매매 신호를 Jarvis에게 전달 → Jarvis가 판단 후 자동 실행"""

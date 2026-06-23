@@ -2137,50 +2137,17 @@ async def get_stock_positions():
 
 @app.get("/api/positions/crypto")
 async def get_crypto_positions():
-    """업비트 API - 코인 보유 포지션 실시간 조회"""
+    """업비트 코인 보유 포지션 - Redis 캐시에서 조회"""
     try:
-        import aiohttp as http
-        import jwt, uuid, hashlib
-
-        payload = {
-            "access_key": config.UPBIT_ACCESS_KEY,
-            "nonce": str(uuid.uuid4()),
-        }
-        token = jwt.encode(payload, config.UPBIT_SECRET_KEY, algorithm="HS256")
-        headers = {"Authorization": f"Bearer {token}"}
-
-        async with http.ClientSession() as session:
-            res = await session.get("https://api.upbit.com/v1/accounts", headers=headers)
-            balances = await res.json()
-
-            positions = []
-            for b in balances:
-                if b["currency"] == "KRW":
-                    continue
-                qty = float(b.get("balance", 0))
-                if qty < 0.00001:
-                    continue
-                avg = float(b.get("avg_buy_price", 0))
-                pair = f"KRW-{b['currency']}"
-
-                # 현재가 조회
-                price_res = await session.get(
-                    "https://api.upbit.com/v1/ticker",
-                    params={"markets": pair}
-                )
-                price_data = await price_res.json()
-                cur = float(price_data[0].get("trade_price", 0)) if price_data else 0
-
-                positions.append({
-                    "pair":      pair,
-                    "currency":  b["currency"],
-                    "qty":       qty,
-                    "avg_price": avg,
-                    "cur_price": cur,
-                    "pnl":       (cur - avg) * qty,
-                    "pnl_rate":  (cur - avg) / avg * 100 if avg > 0 else 0,
-                })
+        # crypto-trader가 저장한 포지션 캐시 조회
+        cached = await redis_client.get("crypto:positions")
+        if cached:
+            import json
+            positions = json.loads(cached)
             return {"success": True, "data": positions}
+
+        # 캐시 없으면 빈 데이터
+        return {"success": True, "data": [], "message": "포지션 데이터 없음 (crypto-trader 실행 중인지 확인)"}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 

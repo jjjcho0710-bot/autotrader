@@ -1472,16 +1472,18 @@ STOCK_NAME_MAP = {
 }
 
 async def _manual_collect():
-    """수동 데이터 수집 (뉴스 감성)"""
+    """수동 데이터 수집 (뉴스 감성) + Jarvis 세션에 기록"""
     try:
         import aiohttp, os, json, re
         openwebui_url = os.getenv("OPENWEBUI_URL", "")
         openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
         jarvis_model = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
+        shared_session = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
 
         async with db_pool.acquire() as conn:
             rows = await conn.fetch("SELECT symbol, name FROM watchlist WHERE is_active=TRUE LIMIT 10")
 
+        results = []
         for r in rows:
             symbol, name = r["symbol"], r["name"] or r["symbol"]
             try:
@@ -1499,9 +1501,9 @@ async def _manual_collect():
                     ) as resp:
                         data = await resp.json()
 
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                content = re.sub(r'```json|```', '', content).strip()
-                match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+                content_raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content_clean = re.sub(r'```json|```', '', content_raw).strip()
+                match = re.search(r'\{[^{}]*\}', content_clean, re.DOTALL)
                 if match:
                     result = json.loads(match.group())
                     score = max(-2, min(2, int(result.get("score", 0))))
@@ -1518,11 +1520,42 @@ async def _manual_collect():
                             ON CONFLICT (symbol, date) DO UPDATE
                             SET sentiment_score=$3, signal=$4, summary=$5
                         """, symbol, datetime.now().date(), score, signal, summary)
+
+                    emoji = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
+                    results.append(f"{emoji} {name}: {summary}")
                     logger.info(f"📰 {name}: {signal} ({score:+d}) - {summary}")
+
             except Exception as e:
                 logger.error(f"수집 실패 [{symbol}]: {e}")
 
-        logger.info("✅ 수동 수집 완료")
+        # Jarvis Open-WebUI 세션에 뉴스 분석 결과 기록 (기억)
+        if results:
+            from datetime import timezone, timedelta
+            KST = timezone(timedelta(hours=9))
+            now_kst = datetime.now(KST).strftime("%m/%d %H:%M")
+            memory_msg = f"""[시스템: 자동 뉴스 분석 {now_kst}]
+오늘 감시 종목 뉴스 감성 분석 결과야. 이 내용을 기억하고 투자 조언에 활용해줘:
+
+{chr(10).join(results)}"""
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    await session.post(
+                        f"{openwebui_url}/api/chat/completions",
+                        headers={"Authorization": f"Bearer {openwebui_token}", "Content-Type": "application/json"},
+                        json={
+                            "model": jarvis_model,
+                            "messages": [{"role": "user", "content": memory_msg}],
+                            "stream": False,
+                            "session_id": shared_session,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    )
+                logger.info("✅ Jarvis 뉴스 기억 완료")
+            except Exception as e:
+                logger.warning(f"Jarvis 기억 실패: {e}")
+
+        logger.info(f"✅ 수동 수집 완료: {len(results)}종목")
     except Exception as e:
         logger.error(f"수동 수집 오류: {e}")
 

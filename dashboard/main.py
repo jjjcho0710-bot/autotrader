@@ -2006,21 +2006,53 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None):
 
 # 텔레그램 채팅별 대화 히스토리 (Redis 저장)
 async def _get_chat_history(chat_id: str, max_turns: int = 8) -> list:
-    """Redis에서 대화 히스토리 로드"""
-    if not redis_client:
-        return []
+    """대화 히스토리 로드 — Redis 캐시 우선, 없으면 PostgreSQL"""
+    # Redis 캐시 먼저 (빠름)
+    if redis_client:
+        try:
+            key = f"jarvis:history:{chat_id}"
+            raw = await redis_client.get(key)
+            if raw:
+                return json.loads(raw)[-(max_turns * 2):]
+        except:
+            pass
+
+    # Redis 없으면 PostgreSQL에서 로드 (영구 메모리)
     try:
-        key = f"jarvis:history:{chat_id}"
-        raw = await redis_client.get(key)
-        if raw:
-            return json.loads(raw)[-max_turns*2:]  # 최근 N턴
-    except:
-        pass
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT role, content FROM jarvis_memory
+                    WHERE session_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                """, chat_id, max_turns * 2)
+            history = [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+            # Redis에 캐시 복원
+            if redis_client and history:
+                key = f"jarvis:history:{chat_id}"
+                await redis_client.setex(key, 604800, json.dumps(history))
+            return history
+    except Exception as e:
+        logger.debug(f"PostgreSQL 히스토리 로드 실패: {e}")
+
     return []
 
 
 async def _save_chat_history(chat_id: str, role: str, content: str):
-    """Redis에 대화 히스토리 저장"""
+    """대화 히스토리 저장 — PostgreSQL(영구) + Redis(캐시)"""
+    # PostgreSQL 영구 저장
+    try:
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO jarvis_memory (session_id, role, content, created_at)
+                    VALUES ($1, $2, $3, NOW())
+                """, chat_id, role, content)
+    except Exception as e:
+        logger.debug(f"메모리 DB 저장 실패(테이블 없을 수 있음): {e}")
+
+    # Redis 캐시 (최근 40턴, 빠른 조회용)
     if not redis_client:
         return
     try:
@@ -2028,12 +2060,28 @@ async def _save_chat_history(chat_id: str, role: str, content: str):
         raw = await redis_client.get(key)
         history = json.loads(raw) if raw else []
         history.append({"role": role, "content": content})
-        # 최근 20턴만 보관
         if len(history) > 40:
             history = history[-40:]
-        await redis_client.setex(key, 86400, json.dumps(history))  # 24시간 보관
+        await redis_client.setex(key, 604800, json.dumps(history))  # 7일 보관
     except Exception as e:
-        logger.warning(f"히스토리 저장 실패: {e}")
+        logger.warning(f"히스토리 Redis 저장 실패: {e}")
+
+
+async def _save_trade_memory(symbol: str, action: str, price: float,
+                              amount: float, result: str, pnl: float = 0,
+                              reason: str = ""):
+    """매매 결과를 Jarvis 메모리에 저장 (학습용)"""
+    now = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
+    pnl_str = f" PnL: {pnl:+,.0f}원" if pnl != 0 else ""
+    memory_content = (
+        f"[매매기록 {now}] {action} {symbol} "
+        f"{amount:,.0f}원 @ {price:,.0f}원 → {result}{pnl_str}"
+        f"{f' ({reason})' if reason else ''}"
+    )
+    # 메인 Jarvis 세션에 기록
+    session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
+    await _save_chat_history(session_id, "system", memory_content)
+    logger.info(f"🧠 Jarvis 메모리 저장: {memory_content}")
 
 
 async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
@@ -2696,6 +2744,13 @@ async def jarvis_signal(request: Request):
                     await _send_telegram(msg, chat_id, token)
                     logger.info(f"✅ Jarvis 코인 {action_kr}: {symbol} {amount:,.0f}원")
 
+                    # Jarvis 메모리에 매매 기록 저장
+                    await _save_trade_memory(
+                        symbol=symbol, action=action_kr,
+                        price=float(price), amount=float(amount),
+                        result="성공", reason=reason
+                    )
+
                     # SSE 실시간 알림
                     await push_event("trade", {
                         "type": "trade",
@@ -2748,6 +2803,13 @@ async def jarvis_signal(request: Request):
                 )
                 await _send_telegram(msg, chat_id, token)
                 logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")
+
+                # Jarvis 메모리에 매매 기록 저장
+                await _save_trade_memory(
+                    symbol=symbol, action=action_kr,
+                    price=float(price), amount=float(price*qty),
+                    result="성공", reason=reason
+                )
                 return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
             else:
                 await _send_telegram(

@@ -141,6 +141,15 @@ class Database:
                     is_important BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
+                CREATE TABLE IF NOT EXISTS jarvis_memory (
+                    id SERIAL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_jarvis_memory_session ON jarvis_memory (session_id, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS stock_news_sentiment (
                     id SERIAL PRIMARY KEY,
                     symbol VARCHAR(10) NOT NULL,

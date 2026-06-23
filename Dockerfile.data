@@ -3,7 +3,8 @@ WORKDIR /app
 COPY common/ ./common/
 COPY ml/ ./ml/
 COPY data_collector/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir setuptools && \
+    pip install --no-cache-dir -r requirements.txt
 COPY data_collector/ ./data_collector/
 ENV PYTHONPATH=/app
 WORKDIR /app/data_collector

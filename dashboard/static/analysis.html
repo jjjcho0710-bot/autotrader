@@ -243,7 +243,7 @@ canvas{width:100%!important;max-height:200px;}
         </div>
         <div class="learn-card">
           <div class="card-title"><div class="dot" style="background:var(--green)"></div>전체 종목 예측 현황</div>
-          <button onclick="loadAllPredictions()" style="background:var(--green);color:#12131a;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600;margin-bottom:10px;">전체 조회</button>
+          <button onclick="loadAllPredictions()" style="background:var(--green);color:#111827;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600;margin-bottom:10px;">전체 조회</button>
           <div id="ml-all-result" style="font-size:12px;color:var(--muted);">조회 버튼을 눌러주세요</div>
         </div>
       </div>
@@ -283,7 +283,7 @@ canvas{width:100%!important;max-height:200px;}
               <option value="005930">삼성전자</option>
               <option value="000660">SK하이닉스</option>
             </select>
-            <button onclick="loadIndicators()" style="background:var(--green);color:#12131a;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600;">조회</button>
+            <button onclick="loadIndicators()" style="background:var(--green);color:#111827;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600;">조회</button>
           </div>
           <div id="ind-result" style="font-size:12px;color:var(--muted);">종목 선택 후 조회하세요</div>
         </div>
@@ -438,7 +438,7 @@ function drawPnlChart(trades) {
         label: '일별 손익',
         data,
         backgroundColor: data.map(v => v >= 0 ? 'rgba(52,211,153,0.6)' : 'rgba(248,113,113,0.6)'),
-        borderColor: data.map(v => v >= 0 ? '#34d399' : '#f87171'),
+        borderColor: data.map(v => v >= 0 ? '#059669' : '#dc2626'),
         borderWidth: 1,
         borderRadius: 4,
       }]
@@ -475,7 +475,7 @@ function drawStrategyChart(sells) {
       datasets: [{
         data: data.length ? data : [100],
         backgroundColor: colors,
-        borderColor: '#1a1c27',
+        borderColor: '#f3f4f6',
         borderWidth: 2,
       }]
     },

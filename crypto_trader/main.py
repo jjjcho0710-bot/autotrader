@@ -101,6 +101,8 @@ class CryptoTrader:
 
     async def _loop(self):
         logger.info("📡 전략 변경 구독 시작")
+        # 시세 업데이트 태스크 별도 실행
+        asyncio.create_task(self._price_loop())
         while self.running:
             now = datetime.now(KST)
             logger.info(f"🔄 코인 매매 사이클 [{now.strftime('%H:%M:%S')}]")
@@ -109,7 +111,36 @@ class CryptoTrader:
             except Exception as e:
                 logger.error(f"매매 사이클 오류: {e}")
                 await self._notify_error(str(e))
-            await asyncio.sleep(10)  # 10초마다
+            await asyncio.sleep(60)  # 매매는 60초
+
+    async def _price_loop(self):
+        """시세만 3초마다 Redis 업데이트"""
+        import json
+        while self.running:
+            try:
+                prices_data = {}
+                for pair in config.CRYPTO_PAIRS:
+                    try:
+                        cur = await self.trader.get_current_price(pair)
+                        if cur > 0:
+                            # 변화율 계산 (이전 가격 대비)
+                            prev_key = f"crypto:prev:{pair}"
+                            prev = await cache.client.get(prev_key)
+                            prev_price = float(prev) if prev else cur
+                            change_rate = ((cur - prev_price) / prev_price * 100) if prev_price > 0 else 0
+                            await cache.client.setex(prev_key, 86400, str(cur))
+                            prices_data[pair] = {
+                                "pair": pair,
+                                "price": cur,
+                                "change_rate": round(change_rate, 2),
+                            }
+                    except:
+                        pass
+                if prices_data:
+                    await cache.client.setex("crypto:prices", 10, json.dumps(prices_data))
+            except Exception as e:
+                logger.debug(f"시세 업데이트 오류: {e}")
+            await asyncio.sleep(3)  # 3초마다 시세 갱신
 
     async def _run_cycle(self):
         strat_name, params = self.get_active_strategy()

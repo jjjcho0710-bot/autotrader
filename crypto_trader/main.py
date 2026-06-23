@@ -154,9 +154,14 @@ class CryptoTrader:
 
         buy_amount = float(params.get("buy_amount", 10000))
 
-        # ① 포지션 조회
+        # ① 포지션 조회 (USDT/스테이블코인 제외)
+        STABLE_COINS = ['USDT', 'BUSD', 'USDC', 'DAI', 'TUSD']
         positions = await self.trader.get_positions()
-        self.positions = {p["pair"]: p for p in positions}
+        self.positions = {
+            p["pair"]: p for p in positions
+            if not any(s in p.get("pair", "") for s in STABLE_COINS)
+            and p.get("qty", 0) > 0
+        }
         logger.info(f"📊 보유 코인: {list(self.positions.keys()) or '없음'}")
 
         # ② 손절/익절 체크
@@ -266,7 +271,7 @@ class CryptoTrader:
             }
             for pair, pos in self.positions.items()
         ]
-        await cache.client.setex("crypto:positions", 30, json.dumps(positions_data))
+        await cache.client.setex("crypto:positions", 120, json.dumps(positions_data))  # TTL 120초 (사이클 60초보다 넉넉하게)
 
         # 모니터링 코인 시세도 Redis 저장
         prices_data = {}

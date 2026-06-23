@@ -2204,10 +2204,43 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
 
 
 async def _ask_gemini_direct(message: str) -> str:
-    """Gemini 직접 호출 (Open-WebUI fallback)"""
+    """Gemini 직접 호출 (Open-WebUI fallback) — 시세 조회 포함"""
     try:
         portfolio_ctx = await get_portfolio_context()
-        full_msg = f"{message}\n\n---\n현재 데이터:\n{portfolio_ctx}"
+
+        # 시세 관련 키워드 감지 → KIS API 직접 조회
+        price_ctx = ""
+        keywords = ["시세", "현재가", "얼마", "가격", "주가", "시가"]
+        stock_map = {"삼성전자": "005930", "SK하이닉스": "000660", "현대차": "005380",
+                     "NAVER": "035420", "카카오": "035720", "LG화학": "051910",
+                     "삼성SDI": "006400", "셀트리온": "068270"}
+
+        if any(k in message for k in keywords):
+            for name, code in stock_map.items():
+                if name in message or code in message:
+                    try:
+                        from stock_trader.kis_trader import KISTrader
+                        import aiohttp as http
+                        trader = KISTrader()
+                        trader.session = http.ClientSession()
+                        await trader._get_token()
+                        url = f"{trader.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
+                        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
+                        async with trader.session.get(
+                            url, headers=trader._headers("FHKST01010100"), params=params
+                        ) as resp:
+                            data = await resp.json()
+                            output = data.get("output", {})
+                            price = int(output.get("stck_prpr", 0))
+                            change = float(output.get("prdy_ctrt", 0))
+                        await trader.session.close()
+                        if price > 0:
+                            price_ctx = f"\n[실시간 시세] {name}({code}): {price:,}원 ({change:+.2f}%)"
+                    except:
+                        pass
+                    break
+
+        full_msg = f"{message}\n\n---\n현재 데이터:\n{portfolio_ctx}{price_ctx}"
         genai.configure(api_key=config.GEMINI_API_KEY)
         model = genai.GenerativeModel(
             model_name="gemini-2.5-flash",

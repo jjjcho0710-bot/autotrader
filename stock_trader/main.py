@@ -206,9 +206,52 @@ class StockTrader:
                 await self._notify(msg)
                 logger.info("📣 ML 학습 결과 텔레그램 전송 완료")
 
+                # Jarvis 메모리에 학습 결과 저장 (전략 회의용)
+                await self._save_ml_memory(results, symbols_to_train)
+
         except Exception as e:
             logger.error(f"❌ ML 자동 학습 전체 오류: {e}")
             await self._notify_error(f"ML 자동 학습 실패: {e}")
+
+    async def _save_ml_memory(self, results: list, symbols: list):
+        """ML 학습 결과를 Jarvis 메모리에 저장"""
+        try:
+            import aiohttp
+            import os
+            from datetime import datetime, timezone, timedelta
+            KST = timezone(timedelta(hours=9))
+            now = datetime.now(KST).strftime("%Y-%m-%d")
+
+            # 정확도 요약
+            success = [r for r in results if r.startswith("✅")]
+            avg_acc = 0
+            accs = []
+            for r in success:
+                try:
+                    acc = float(r.split("정확도 ")[1].replace("%",""))
+                    accs.append(acc)
+                except:
+                    pass
+            avg_acc = sum(accs) / len(accs) if accs else 0
+
+            memory = (
+                f"[ML학습기록 {now}] "
+                f"총 {len(symbols)}종목 학습, "
+                f"성공 {len(success)}종목, "
+                f"평균정확도 {avg_acc:.1f}%. "
+                f"상위종목: {', '.join(success[:5])}"
+            )
+
+            dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f"{dashboard_url}/api/jarvis/memory",
+                    json={"content": memory, "type": "ml_training"},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+            logger.info(f"🧠 ML 학습 결과 Jarvis 메모리 저장 완료")
+        except Exception as e:
+            logger.warning(f"Jarvis 메모리 저장 실패: {e}")
 
     # ── 매매 사이클 ───────────────────────────────────────
     async def _run_cycle(self):

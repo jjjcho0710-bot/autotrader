@@ -2829,6 +2829,24 @@ async def jarvis_signal(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/jarvis/memory")
+async def save_jarvis_memory(request: Request):
+    """외부 서비스(stock-trader 등)에서 Jarvis 메모리 저장"""
+    try:
+        body = await request.json()
+        content = body.get("content", "")
+        mem_type = body.get("type", "general")  # ml_training / trade / strategy
+        if not content:
+            return {"success": False, "error": "content 없음"}
+
+        session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
+        await _save_chat_history(session_id, "system", f"[{mem_type}] {content}")
+        logger.info(f"🧠 Jarvis 메모리 저장: [{mem_type}] {content[:60]}...")
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/admin/fetch-historical")
 async def fetch_historical_data(request: Request):
     """watchlist 전종목 과거 OHLCV 데이터 일괄 수집 (백그라운드)"""

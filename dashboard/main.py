@@ -1004,25 +1004,41 @@ async def get_single_price(symbol: str):
                         "type": "crypto"
                     }
 
-        # 주식 - KIS API 직접 조회 (현재가 + 등락률)
-        from stock_trader.kis_trader import KISTrader
+        # 주식 - KIS API 직접 호출 (stock_trader 모듈 없이)
         import aiohttp as http
-        trader = KISTrader()
-        trader.session = http.ClientSession()
-        await trader._get_token()
+        base_url = config.kis_base_url
 
-        url = f"{trader.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
-        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
-        async with trader.session.get(
-            url, headers=trader._headers("FHKST01010100"), params=params
-        ) as resp:
-            data = await resp.json()
+        # 토큰 발급
+        async with http.ClientSession() as sess:
+            token_res = await sess.post(f"{base_url}/oauth2/tokenP", json={
+                "grant_type": "client_credentials",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+            })
+            token_data = await token_res.json()
+            token = token_data.get("access_token", "")
+
+            if not token:
+                return {"success": False, "error": "KIS 토큰 발급 실패"}
+
+            # 현재가 조회
+            headers = {
+                "authorization": f"Bearer {token}",
+                "appkey": config.KIS_APP_KEY,
+                "appsecret": config.KIS_APP_SECRET,
+                "tr_id": "FHKST01010100",
+                "custtype": "P",
+            }
+            params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+            price_res = await sess.get(
+                f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers=headers, params=params
+            )
+            data = await price_res.json()
             output = data.get("output", {})
             price = int(output.get("stck_prpr", 0))
-            change_rate = float(output.get("prdy_ctrt", 0))  # 전일대비등락률
-            name = output.get("hts_kor_isnm", symbol)        # 종목명
-
-        await trader.session.close()
+            change_rate = float(output.get("prdy_ctrt", 0))
+            name = output.get("hts_kor_isnm", symbol)
 
         if price > 0:
             return {
@@ -2219,21 +2235,26 @@ async def _ask_gemini_direct(message: str) -> str:
             for name, code in stock_map.items():
                 if name in message or code in message:
                     try:
-                        from stock_trader.kis_trader import KISTrader
                         import aiohttp as http
-                        trader = KISTrader()
-                        trader.session = http.ClientSession()
-                        await trader._get_token()
-                        url = f"{trader.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
-                        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
-                        async with trader.session.get(
-                            url, headers=trader._headers("FHKST01010100"), params=params
-                        ) as resp:
-                            data = await resp.json()
-                            output = data.get("output", {})
+                        base_url = config.kis_base_url
+                        async with http.ClientSession() as sess:
+                            tr = await sess.post(f"{base_url}/oauth2/tokenP", json={
+                                "grant_type": "client_credentials",
+                                "appkey": config.KIS_APP_KEY,
+                                "appsecret": config.KIS_APP_SECRET,
+                            })
+                            token = (await tr.json()).get("access_token", "")
+                            hdrs = {"authorization": f"Bearer {token}",
+                                    "appkey": config.KIS_APP_KEY,
+                                    "appsecret": config.KIS_APP_SECRET,
+                                    "tr_id": "FHKST01010100", "custtype": "P"}
+                            pr = await sess.get(
+                                f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                                headers=hdrs, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
+                            )
+                            output = (await pr.json()).get("output", {})
                             price = int(output.get("stck_prpr", 0))
                             change = float(output.get("prdy_ctrt", 0))
-                        await trader.session.close()
                         if price > 0:
                             price_ctx = f"\n[실시간 시세] {name}({code}): {price:,}원 ({change:+.2f}%)"
                     except:

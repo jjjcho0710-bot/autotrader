@@ -12,7 +12,7 @@ from typing import Optional
 import fastapi
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import asyncpg
 import redis.asyncio as aioredis
@@ -34,6 +34,20 @@ logging.root.handlers[0].setFormatter(_fmt)
 logger = logging.getLogger("dashboard")
 
 app = FastAPI(title="AutoTrader Dashboard")
+
+# SSE 이벤트 큐 (실시간 알림)
+import queue
+sse_clients: list = []
+
+async def push_event(event_type: str, data: dict):
+    """SSE 클라이언트에게 이벤트 푸시"""
+    import json
+    msg = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    for q in sse_clients[:]:
+        try:
+            await q.put(msg)
+        except:
+            sse_clients.remove(q)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1002,6 +1016,38 @@ async def get_summary():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
+
+
+@app.get("/api/events")
+async def sse_events(request: Request):
+    """SSE - 실시간 이벤트 스트림"""
+    import asyncio
+    q = asyncio.Queue()
+    sse_clients.append(q)
+
+    async def generate():
+        try:
+            yield "data: connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=30)
+                    yield msg
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # 연결 유지
+        finally:
+            if q in sse_clients:
+                sse_clients.remove(q)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 @app.get("/api/data/supply")
@@ -2483,6 +2529,20 @@ async def jarvis_signal(request: Request):
                     )
                     await _send_telegram(msg, chat_id, token)
                     logger.info(f"✅ Jarvis 코인 {action_kr}: {symbol} {amount:,.0f}원")
+
+                    # SSE 실시간 알림
+                    await push_event("trade", {
+                        "type": "trade",
+                        "action": action.upper(),
+                        "symbol": symbol,
+                        "name": name,
+                        "amount": float(amount),
+                        "price": float(price),
+                        "strategy": strategy,
+                        "jarvis": jarvis_reply[:80],
+                        "ts": datetime.now().isoformat(),
+                    })
+
                     return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
                 else:
                     await _send_telegram(f"❌ {name} 코인 {action_kr} 실패\n{result.get('error')}", chat_id, token)

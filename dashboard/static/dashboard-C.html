@@ -404,6 +404,27 @@ loadAll();
 setInterval(fetchStatus,10000);
 setInterval(fetchTrades,30000);
 setInterval(fetchPositions,60000);
+
+// SSE 실시간 이벤트
+function connectSSE() {
+  const es = new EventSource('/api/events');
+  es.addEventListener('trade', e => {
+    const d = JSON.parse(e.data);
+    const isBuy = d.action === 'BUY';
+    const color = isBuy ? '#059669' : '#dc2626';
+    showToast(`${isBuy?'📈':'📉'} ${d.name} ${isBuy?'매수':'매도'} ${d.amount?.toLocaleString()||''}원`, color);
+    fetchTrades(); fetchPositions();
+  });
+  es.onerror = () => setTimeout(connectSSE, 3000);
+}
+function showToast(msg, color='#059669') {
+  const t = document.createElement('div');
+  t.style.cssText = `position:fixed;top:20px;right:20px;z-index:9999;background:white;border:2px solid ${color};border-radius:12px;padding:14px 20px;font-size:13px;font-weight:600;color:${color};max-width:300px;line-height:1.5;`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(),5000);
+}
+connectSSE();
 </script>
 </body>
 </html>

@@ -388,10 +388,48 @@ async function loadAll(){
   document.getElementById('last-update').textContent='업데이트: '+new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
 }
 loadAll();
-setInterval(fetchPositions, 5000);   // 포지션 5초
-setInterval(fetchCryptoPrices, 3000); // 시세 3초
-setInterval(fetchBotStatus, 10000);   // 봇 상태 10초
-setInterval(fetchStrategies, 30000);  // 전략 30초
+setInterval(fetchPositions, 5000);
+setInterval(fetchCryptoPrices, 3000);
+setInterval(fetchBotStatus, 10000);
+setInterval(fetchStrategies, 30000);
+
+// SSE 실시간 이벤트 연결
+function connectSSE() {
+  const es = new EventSource('/api/events');
+
+  es.addEventListener('trade', e => {
+    const d = JSON.parse(e.data);
+    const isBuy = d.action === 'BUY';
+    const emoji = isBuy ? '📈' : '📉';
+    const color = isBuy ? 'var(--green)' : 'var(--red)';
+    showToast(`${emoji} ${d.name} ${isBuy?'매수':'매도'} ${d.amount.toLocaleString()}원`, color);
+    loadAll(); // 즉시 갱신
+  });
+
+  es.onerror = () => {
+    setTimeout(connectSSE, 3000); // 재연결
+  };
+}
+
+function showToast(msg, color='var(--green)') {
+  const t = document.createElement('div');
+  t.style.cssText = `
+    position:fixed;top:20px;right:20px;z-index:9999;
+    background:white;border:2px solid ${color};border-radius:12px;
+    padding:14px 20px;font-size:13px;font-weight:600;color:${color};
+    box-shadow:0 4px 12px rgba(0,0,0,0.1);animation:slideIn 0.3s ease;
+    max-width:300px;line-height:1.5;
+  `;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 5000);
+}
+
+const style = document.createElement('style');
+style.textContent = '@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}';
+document.head.appendChild(style);
+
+connectSSE();
 </script>
 </body>
 </html>

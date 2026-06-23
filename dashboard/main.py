@@ -1893,10 +1893,8 @@ async def _handle_watchlist_command(msg: str) -> str | None:
 async def jarvis_chat(body: dict):
     """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
     user_msg = body.get("message", "").strip()
-    session_id = body.get("session_id", None)
-    # 웹/텔레그램 같은 세션 공유 (JARVIS_ANALYST_CHAT_ID 기준)
-    if not session_id:
-        session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
+    # 텔레그램과 완전히 같은 세션 공유
+    session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
     if not user_msg:
         return {"success": False, "error": "메시지가 없어요"}
 

@@ -1214,12 +1214,6 @@ JARVIS_SYSTEM_PROMPT = """너는 AutoTrader의 AI 집사 Jarvis야. 주인님(�
 - 감시 종목 추가/제거
 - ML 예측, 시세, 포트폴리오 분석
 
-"""## 알고 있는 것
-- 현재 포트폴리오 및 보유 종목
-- 감시 종목 목록 및 ML 예측 결과
-- 최근 매매 이력
-- 실시간 코인 시세
-- 활성 전략 상태
 """
 
 async def get_portfolio_context() -> str:

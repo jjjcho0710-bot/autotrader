@@ -2483,19 +2483,60 @@ async def jarvis_signal(request: Request):
         should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
 
         if should_execute:
-            # 3. 실제 매매 실행
-            import importlib.util, sys, aiohttp as http
-            from stock_trader.kis_trader import KISTrader
-            trader = KISTrader()
-            trader.session = http.ClientSession()
-            await trader._get_token()
+            # 3. 실제 매매 실행 (주식 vs 코인 분기)
+            import aiohttp as http
 
-            if action == "buy":
-                result = await trader.buy(symbol, price, qty)
+            if bot == "crypto_trader":
+                # 코인 매매
+                from upbit_trader import UpbitTrader
+                upbit = UpbitTrader()
+                upbit.session = http.ClientSession()
+                await upbit.start()
+                amount = body.get("amount", price * qty)
+
+                if action == "BUY" or action == "buy":
+                    result = await upbit.buy_market(symbol, amount)
+                else:
+                    result = await upbit.sell_market(symbol, qty)
+
+                await upbit.session.close()
+
+                if result.get("success"):
+                    if db_pool:
+                        async with db_pool.acquire() as conn:
+                            await conn.execute("""
+                                INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
+                                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                            """, bot, "crypto", symbol, action.upper(), float(price), float(qty), float(amount), strategy)
+
+                    emoji = "📈" if action in ["buy", "BUY"] else "📉"
+                    msg = (
+                        f"{emoji} <b>{name} {action_kr} 완료</b>\n"
+                        f"코인: {symbol}\n"
+                        f"금액: {amount:,.0f}원\n"
+                        f"전략: {strategy}\n"
+                        f"Jarvis: {jarvis_reply[:80]}"
+                    )
+                    await _send_telegram(msg, chat_id, token)
+                    logger.info(f"✅ Jarvis 코인 {action_kr}: {symbol} {amount:,.0f}원")
+                    return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
+                else:
+                    await _send_telegram(f"❌ {name} 코인 {action_kr} 실패\n{result.get('error')}", chat_id, token)
+                    return {"success": False, "executed": False, "error": result.get("error")}
+
             else:
-                result = await trader.sell(symbol, price, qty)
+                # 주식 매매
+                from stock_trader.kis_trader import KISTrader
+                trader = KISTrader()
+                trader.session = http.ClientSession()
+                await trader._get_token()
 
-            await trader.session.close()
+                if action in ["buy", "BUY"]:
+                    result = await trader.buy(symbol, price, qty)
+                else:
+                    result = await trader.sell(symbol, price, qty)
+
+                await trader.session.close()
 
             if result.get("success"):
                 # DB에 매매 기록

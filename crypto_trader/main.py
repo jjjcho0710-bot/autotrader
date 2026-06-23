@@ -1,25 +1,34 @@
 """
 crypto-trader — AutoTrader
-비트코인 자동매매 메인 프로세스
-DB에서 전략 설정 읽기 + Redis 실시간 전략 변경 구독
+업비트 코인 자동매매 메인 프로세스
+Jarvis AI 최종 판단 → 자동 매수/매도
 """
 import asyncio
 import json
 import logging
 import signal
-from datetime import datetime
+import time as _time
+from datetime import datetime, timezone, timedelta
 
 from common.config import config
 from common.database import db, cache
 from upbit_trader import UpbitTrader
 from strategy.macd import MACDStrategy, MACDConfig
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+# KST 로그 포맷
+class KSTFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        return _time.gmtime(timestamp + 9 * 3600)
+
+_fmt = KSTFormatter(
+    fmt="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
+logging.basicConfig(level=logging.INFO)
+logging.root.handlers[0].setFormatter(_fmt)
 logger = logging.getLogger("crypto-trader")
+
+KST = timezone(timedelta(hours=9))
 
 
 class CryptoTrader:
@@ -28,6 +37,19 @@ class CryptoTrader:
         self.trader     = UpbitTrader()
         self.positions  = {}
         self.strategies = {}
+
+    async def start(self):
+        self.running = True
+        await db.connect()
+        await cache.connect()
+        await self.trader.start()
+        await self.load_strategies()
+        logger.info("=" * 50)
+        logger.info("🚀 AutoTrader crypto-trader 시작")
+        logger.info("=" * 50)
+
+        asyncio.create_task(self._subscribe_strategy_changes())
+        await self._loop()
 
     async def load_strategies(self):
         try:
@@ -57,65 +79,38 @@ class CryptoTrader:
 
     def build_strategy(self, name, params):
         if name == "MACD":
-            return MACDStrategy(MACDConfig(
-                fast           = int(params.get("fast", 12)),
-                slow           = int(params.get("slow", 26)),
-                signal         = int(params.get("signal", 9)),
-                stop_loss      = float(params.get("stop_loss", -0.03)),
-                take_profit    = float(params.get("take_profit", 0.07)),
-                buy_amount_krw = float(params.get("buy_amount", 500000)),
-            ))
+            cfg = MACDConfig(
+                fast=int(params.get("fast", 12)),
+                slow=int(params.get("slow", 26)),
+                signal=int(params.get("signal", 9)),
+                buy_amount_krw=float(params.get("buy_amount", 10000)),
+            )
+            return MACDStrategy(cfg)
         return None
 
-    async def subscribe_strategy_updates(self):
+    async def _subscribe_strategy_changes(self):
         try:
             pubsub = cache.client.pubsub()
-            await pubsub.subscribe("strategy:update")
-            logger.info("📡 전략 변경 구독 시작")
-            async for msg in pubsub.listen():
-                if msg["type"] == "message":
-                    data = json.loads(msg["data"])
-                    if data.get("bot") == "crypto_trader":
-                        logger.info(f"🔄 전략 변경 감지: {data['name']} → {'ON' if data['is_active'] else 'OFF'}")
-                        await self.load_strategies()
+            await pubsub.subscribe("strategy_changes")
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    logger.info(f"🔄 전략 변경 감지 — 재로드")
+                    await self.load_strategies()
         except Exception as e:
-            logger.error(f"전략 구독 오류: {e}")
-
-    async def start(self):
-        logger.info("=" * 50)
-        logger.info("🚀 AutoTrader crypto-trader 시작")
-        logger.info("=" * 50)
-
-        await db.connect()
-        await cache.connect()
-        await self.trader.start()
-        await self.load_strategies()
-
-        positions = await self.trader.get_positions()
-        self.positions = {p["pair"]: p for p in positions}
-        logger.info(f"₿ 보유 코인: {list(self.positions.keys())}")
-
-        await cache.set_bot_status("crypto_trader", {
-            "status": "running",
-            "started_at": datetime.now().isoformat(),
-        })
-
-        self.running = True
-
-        await asyncio.gather(
-            self._loop(),
-            self.subscribe_strategy_updates(),
-        )
+            logger.warning(f"전략 구독 오류: {e}")
 
     async def _loop(self):
+        logger.info("📡 전략 변경 구독 시작")
         while self.running:
-            logger.info(f"🔄 코인 매매 사이클 [{datetime.now().strftime('%H:%M:%S')}]")
+            now = datetime.now(KST)
+            cur_time = now.time().replace(tzinfo=None)
+            logger.info(f"🔄 코인 매매 사이클 [{now.strftime('%H:%M:%S')}]")
             try:
                 await self._run_cycle()
             except Exception as e:
-                logger.error(f"❌ 사이클 오류: {e}")
+                logger.error(f"매매 사이클 오류: {e}")
                 await self._notify_error(str(e))
-            await asyncio.sleep(config.COLLECT_INTERVAL_SEC)
+            await asyncio.sleep(60)
 
     async def _run_cycle(self):
         strat_name, params = self.get_active_strategy()
@@ -127,12 +122,14 @@ class CryptoTrader:
         if not strategy:
             return
 
-        buy_amount = float(params.get("buy_amount", 500000))
+        buy_amount = float(params.get("buy_amount", 10000))
 
-        # ① 손절/익절 체크
+        # ① 포지션 조회
         positions = await self.trader.get_positions()
         self.positions = {p["pair"]: p for p in positions}
+        logger.info(f"📊 보유 코인: {list(self.positions.keys()) or '없음'}")
 
+        # ② 손절/익절 체크
         for pair, pos in self.positions.items():
             avg = pos["avg_price"]
             cur = pos["cur_price"]
@@ -149,7 +146,7 @@ class CryptoTrader:
                         amount=cur * qty,
                         strategy=f"{strat_name}_손절", pnl=pnl,
                     )
-                    await self._notify(f"🛑 손절 [{pair}] PnL: {pnl:+,.0f}원")
+                    await self._notify(f"🛑 손절 [{pair}] {cur:,.0f}원 PnL: {pnl:+,.0f}원")
                 continue
 
             if strategy.check_take_profit(avg, cur):
@@ -163,10 +160,10 @@ class CryptoTrader:
                         amount=cur * qty,
                         strategy=f"{strat_name}_익절", pnl=pnl,
                     )
-                    await self._notify(f"🎯 익절 [{pair}] PnL: {pnl:+,.0f}원")
+                    await self._notify(f"🎯 익절 [{pair}] {cur:,.0f}원 PnL: {pnl:+,.0f}원")
                 continue
 
-        # ② 신규 진입
+        # ③ 신규 진입
         krw_balance = await self.trader.get_balance("KRW")
 
         for pair in config.CRYPTO_PAIRS:
@@ -178,6 +175,7 @@ class CryptoTrader:
 
             rows = await db.get_recent_ohlcv(pair, limit=50, asset="crypto")
             if len(rows) < 40:
+                logger.info(f"⏳ [{pair}] 데이터 부족 ({len(rows)}개)")
                 continue
 
             prices = [float(r["close"]) for r in reversed(rows)]
@@ -185,25 +183,69 @@ class CryptoTrader:
 
             if signal_type == "BUY":
                 cur_price = await self.trader.get_current_price(pair)
-                result = await self.trader.buy_market(pair, buy_amount)
-                if result["success"]:
-                    qty_bought = buy_amount / cur_price
-                    await db.insert_trade(
-                        bot="crypto_trader", asset_type="crypto",
-                        symbol=pair, side="BUY",
-                        price=cur_price, quantity=qty_bought,
-                        amount=buy_amount, strategy=strat_name,
-                    )
-                    await self._notify(f"📈 매수 [{pair}] {buy_amount:,.0f}원 ({strat_name})")
-                    krw_balance -= buy_amount
+                if cur_price <= 0:
+                    continue
+
+                qty_would_buy = buy_amount / cur_price
+                logger.info(f"📈 [{pair}] 매수 신호 발생 → Jarvis 판단 요청")
+
+                # Jarvis 최종 판단
+                await self._signal_jarvis(
+                    action="BUY",
+                    pair=pair,
+                    price=cur_price,
+                    qty=qty_would_buy,
+                    amount=buy_amount,
+                    strategy=strat_name,
+                    reason=f"MACD 골든크로스 신호",
+                )
+                krw_balance -= buy_amount
 
         await cache.set_bot_status("crypto_trader", {
             "status":      "running",
-            "last_cycle":  datetime.now().isoformat(),
+            "last_cycle":  datetime.now(KST).isoformat(),
             "positions":   len(self.positions),
             "strategy":    strat_name,
             "krw_balance": krw_balance,
         })
+
+    async def _signal_jarvis(self, action: str, pair: str, price: float,
+                              qty: float, amount: float, strategy: str, reason: str = ""):
+        """매매 신호를 Jarvis에게 전달 → Jarvis가 판단 후 자동 실행"""
+        import aiohttp as http
+        import os
+        dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+        try:
+            async with http.ClientSession() as session:
+                await session.post(
+                    f"{dashboard_url}/api/jarvis/signal",
+                    json={
+                        "bot": "crypto_trader",
+                        "action": action,
+                        "symbol": pair,
+                        "name": pair.replace("KRW-", ""),
+                        "price": price,
+                        "qty": qty,
+                        "amount": amount,
+                        "strategy": strategy,
+                        "reason": reason,
+                    },
+                    timeout=http.ClientTimeout(total=60),
+                )
+            logger.info(f"📡 Jarvis에게 신호 전달: {action} {pair}")
+        except Exception as e:
+            logger.error(f"Jarvis 신호 전달 실패: {e}")
+            # Jarvis 실패 시 직접 매수
+            if action == "BUY":
+                result = await self.trader.buy_market(pair, amount)
+                if result["success"]:
+                    await db.insert_trade(
+                        bot="crypto_trader", asset_type="crypto",
+                        symbol=pair, side="BUY",
+                        price=price, quantity=qty,
+                        amount=amount, strategy=strategy,
+                    )
+                    await self._notify(f"📈 매수 [{pair}] {amount:,.0f}원 ({strategy})")
 
     async def _notify(self, msg: str):
         logger.info(f"📣 {msg}")
@@ -214,7 +256,6 @@ class CryptoTrader:
             logger.warning(f"텔레그램 전송 실패: {e}")
 
     async def _notify_error(self, error: str):
-        # crypto-trader는 Static IP 설정 전까지 에러 알림 비활성화
         import os
         if os.getenv("CRYPTO_NOTIFY_ERRORS", "false").lower() != "true":
             return

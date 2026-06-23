@@ -202,3 +202,42 @@ class KISTrader:
             else:
                 logger.error(f"❌ 매도 실패: {symbol} — {data.get('msg1')}")
                 return {"success": False, "error": data.get("msg1")}
+
+    # ── 일봉 데이터 조회 ────────────────────────────────
+    async def get_daily_ohlcv(self, symbol: str, start: str, end: str) -> list:
+        """
+        KIS 일봉 차트 조회 (FHKST03010100)
+        start/end: YYYYMMDD
+        Returns: [{"date","open","high","low","close","volume","change_rate"}, ...]
+        """
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": symbol,
+            "FID_INPUT_DATE_1": start,
+            "FID_INPUT_DATE_2": end,
+            "FID_PERIOD_DIV_CODE": "D",
+            "FID_ORG_ADJ_PRC": "0",
+        }
+        tr_id = "FHKST03010100"
+        async with self.session.get(
+            url, headers=self._headers(tr_id), params=params
+        ) as resp:
+            data = await resp.json()
+
+        candles = []
+        for row in data.get("output2", []):
+            date_str = row.get("stck_bsop_date", "")
+            close    = int(row.get("stck_clpr", 0) or 0)
+            if not date_str or close <= 0:
+                continue
+            candles.append({
+                "date":        date_str,
+                "open":        int(row.get("stck_oprc", 0) or 0),
+                "high":        int(row.get("stck_hgpr", 0) or 0),
+                "low":         int(row.get("stck_lwpr", 0) or 0),
+                "close":       close,
+                "volume":      int(row.get("acml_vol", 0) or 0),
+                "change_rate": float(row.get("prdy_ctrt", 0) or 0),
+            })
+        return candles

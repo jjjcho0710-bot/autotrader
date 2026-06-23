@@ -1,17 +1,16 @@
 """
-과거 OHLCV 데이터 일괄 적재 - pykrx 없이 KRX 직접 HTTP 호출
+과거 OHLCV 데이터 일괄 적재 - KIS API 사용
+pykrx/외부URL 불필요, Railway 내부에서 동작
 """
 import asyncio
 import logging
 import sys
 import os
-import json
 from datetime import datetime
-from urllib.request import urlopen, Request
-from urllib.parse import urlencode
 
 sys.path.insert(0, "/app")
 from common.database import db
+from common.config import config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,57 +23,8 @@ START_DATE = os.getenv("FETCH_START", "20260601")
 END_DATE   = os.getenv("FETCH_END",   datetime.now().strftime("%Y%m%d"))
 
 
-def fetch_ohlcv_krx(symbol: str, start: str, end: str) -> list:
-    """KRX 정보데이터시스템 직접 호출 (pykrx 없이)"""
-    url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-    params = {
-        "bld": "dbms/MDC/STAT/standard/MDCSTAT01701",
-        "locale": "ko_KR",
-        "isuCd": symbol,
-        "isuCd2": "",
-        "strtDd": start,
-        "endDd": end,
-        "adjStkPrc_ind": "1",
-        "adjStkPrc": "2",
-        "outputFileType": "JSON",
-        "pagePath": "/contents/MDC/STAT/standard/MDCSTAT01701",
-        "kindOfDate": "D",
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "http://data.krx.co.kr/",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-    req = Request(url, data=urlencode(params).encode(), headers=headers, method="POST")
-    with urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-
-    candles = []
-    for row in data.get("output", []):
-        try:
-            date_str = row.get("TRD_DD", "").replace("/", "").replace("-", "").strip()
-            if len(date_str) != 8:
-                continue
-            close = int(str(row.get("TDD_CLSPRC", "0")).replace(",", "") or 0)
-            if close <= 0:
-                continue
-            candles.append({
-                "date":   date_str,
-                "open":   int(str(row.get("TDD_OPNPRC",  "0")).replace(",", "") or 0),
-                "high":   int(str(row.get("TDD_HGPRC",   "0")).replace(",", "") or 0),
-                "low":    int(str(row.get("TDD_LWPRC",   "0")).replace(",", "") or 0),
-                "close":  close,
-                "volume": int(str(row.get("ACC_TRDVOL",  "0")).replace(",", "") or 0),
-                "change_rate": float(str(row.get("FLUC_RT", "0")).replace(",", "") or 0),
-            })
-        except Exception:
-            continue
-    return candles
-
-
-async def fetch_and_save(symbol: str, start: str, end: str) -> int:
-    loop = asyncio.get_event_loop()
-    candles = await loop.run_in_executor(None, fetch_ohlcv_krx, symbol, start, end)
+async def fetch_and_save(trader, symbol: str) -> int:
+    candles = await trader.get_daily_ohlcv(symbol, START_DATE, END_DATE)
 
     if not candles:
         logger.warning(f"[{symbol}] 데이터 없음")
@@ -102,7 +52,16 @@ async def fetch_and_save(symbol: str, start: str, end: str) -> int:
 
 
 async def main():
+    import aiohttp
     await db.connect()
+
+    # KIS 토큰 발급
+    from stock_trader.kis_trader import KISTrader
+    session = aiohttp.ClientSession()
+    trader = KISTrader()
+    trader.session = session
+    await trader._get_token()
+    logger.info("✅ KIS 토큰 발급 완료")
 
     symbols = await db.get_watchlist_symbols()
     if not symbols:
@@ -121,22 +80,25 @@ async def main():
     total, failed = 0, []
     for i, symbol in enumerate(symbols, 1):
         try:
-            count = await fetch_and_save(symbol, START_DATE, END_DATE)
+            count = await fetch_and_save(trader, symbol)
             total += count
         except Exception as e:
             logger.error(f"❌ [{symbol}] 실패: {e}")
             failed.append(symbol)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)  # KIS API 레이트 리밋
 
         if i % 5 == 0:
             logger.info(f"진행: {i}/{len(symbols)} ({i/len(symbols)*100:.0f}%) — 저장 {total}개")
 
+    await session.close()
     await db.disconnect()
+
     logger.info("=" * 40)
     logger.info(f"🎉 완료! 총 {total}개 캔들 저장")
     logger.info(f"성공: {len(symbols)-len(failed)}종목 / 실패: {len(failed)}종목")
     if failed:
         logger.info(f"실패: {failed}")
+    logger.info("이제 자동매매 가능! 🚀")
 
 
 if __name__ == "__main__":

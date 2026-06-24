@@ -264,6 +264,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 /* ── 모바일 하단 네비게이션 ── */
 .bottom-nav{display:none;}
 @media (max-width: 768px) {
+  .sidebar{display:none!important;}
+  .main{margin-left:0!important;}
   .bottom-nav{
     display:flex;position:fixed;bottom:0;left:0;right:0;
     background:var(--panel);border-top:1px solid var(--border);

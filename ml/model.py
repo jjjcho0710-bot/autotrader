@@ -66,6 +66,10 @@ class SimpleNaiveBayes:
         if not self.is_trained:
             return {0: 0.5, 1: 0.5}
 
+        # 클래스 0,1 모두 있는지 확인
+        if 0 not in self.class_priors or 1 not in self.class_priors:
+            return {0: 0.5, 1: 0.5}
+
         log_probs = {}
         for cls in self.classes:
             log_prob = math.log(self.class_priors[cls])
@@ -162,14 +166,14 @@ class MLModelManager:
 
     async def predict(self, symbol: str, ohlcv: List[Dict]) -> Dict:
         """현재 시점 매수/매도 예측"""
-        # 모델 로드
-        if symbol not in self.models:
-            model = await self._load_model(symbol)
-            if model is None:
-                return {"success": False, "error": "학습된 모델 없음"}
-            self.models[symbol] = model
-
-        model = self.models[symbol]
+        # 모델 로드 (항상 최신 모델 사용)
+        model = await self._load_model(symbol)
+        if model is None:
+            return {"success": False, "error": "학습된 모델 없음"}
+        # 클래스 유효성 검사
+        if 0 not in model.class_priors or 1 not in model.class_priors:
+            return {"success": False, "error": "모델 클래스 불완전 (재학습 필요)"}
+        self.models[symbol] = model
 
         from ml.features import build_features, get_feature_names
         features = build_features(ohlcv, lookback=60)

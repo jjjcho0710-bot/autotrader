@@ -75,10 +75,11 @@ async def get_kis_token() -> str:
     if _kis_token_cache["token"] and now < _kis_token_cache["expires"]:
         return _kis_token_cache["token"]
 
-    # 2. Redis 캐시 확인
+    # 2. Redis 캐시 확인 (모의투자/실전 구분)
+    redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
     try:
         if redis_client:
-            cached = await redis_client.get("kis:access_token")
+            cached = await redis_client.get(redis_key)
             if cached:
                 token = cached if isinstance(cached, str) else cached.decode('utf-8')
                 _kis_token_cache["token"] = token
@@ -108,7 +109,8 @@ async def get_kis_token() -> str:
                 # Redis에 저장
                 try:
                     if redis_client:
-                        await redis_client.setex("kis:access_token", 82800, token)
+                        save_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
+                        await redis_client.setex(save_key, 82800, token)
                 except Exception:
                     pass
             return token
@@ -2491,10 +2493,10 @@ async def debug_stock_account():
                 "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
                 "custtype": "P",
             }
-            acct = config.KIS_ACCOUNT_NO.split("-")
+            acct = config.KIS_ACCOUNT_NO.replace("-", "")
             params = {
-                "CANO": acct[0],
-                "ACNT_PRDT_CD": acct[1] if len(acct) > 1 else "01",
+                "CANO": acct[:8],
+                "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
                 "AFHR_FLPR_YN": "N", "OFL_YN": "",
                 "INQR_DVSN": "02", "UNPR_DVSN": "01",
                 "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
@@ -2539,10 +2541,10 @@ async def get_stock_positions():
                 "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
                 "custtype": "P",
             }
-            acct = config.KIS_ACCOUNT_NO.split("-")
+            acct = config.KIS_ACCOUNT_NO.replace("-", "")
             params = {
-                "CANO": acct[0],
-                "ACNT_PRDT_CD": acct[1] if len(acct) > 1 else "01",
+                "CANO": acct[:8],
+                "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
                 "AFHR_FLPR_YN": "N", "OFL_YN": "",
                 "INQR_DVSN": "02", "UNPR_DVSN": "01",
                 "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
@@ -2630,10 +2632,10 @@ async def get_stock_balance():
                 "tr_id": "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R",
                 "custtype": "P",
             }
-            acct = config.KIS_ACCOUNT_NO.split("-")
+            acct = config.KIS_ACCOUNT_NO.replace("-", "")
             params = {
-                "CANO": acct[0],
-                "ACNT_PRDT_CD": acct[1] if len(acct) > 1 else "01",
+                "CANO": acct[:8],
+                "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
                 "PDNO": "005930", "ORD_UNPR": "0",
                 "ORD_DVSN": "01", "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N",
             }

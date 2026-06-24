@@ -214,3 +214,64 @@ data_collector/
 - /api/price/{symbol} 정상 동작 확인
 - 삼성전자 310,000원 -12.31% 조회 확인
 - Open-WebUI Tools get_price 함수 등록 완료
+
+---
+
+## 📋 2026-06-25 작업 예정 (민기님이 요청 시)
+
+### 코인 RSI 전략 DB 등록 (crypto-trader Console에서)
+```
+python3 - << 'PYEOF'
+import asyncio, sys, json
+sys.path.insert(0, "/app")
+from common.database import db
+
+async def main():
+    await db.connect()
+    async with db.pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO strategy_config (bot, name, is_active, params)
+            VALUES ('crypto_trader', 'RSI반등', true, $1)
+            ON CONFLICT (bot, name) DO UPDATE SET is_active=true
+        """, json.dumps({"period": 14, "entry": 35, "exit": 65,
+                         "stop_loss": -0.04, "take_profit": 0.06, "buy_amount": 10000}))
+        print("완료!")
+    await db.disconnect()
+
+asyncio.run(main())
+PYEOF
+```
+
+---
+
+## ✅ 2026-06-24 추가 작업
+
+### 자동매매 완전 자율화
+- Jarvis API 제거 → ML 직접 판단 매수 (주식/코인 동일)
+- ML 확률 기반 매수 금액 자율 결정 (90%→잔고30%, 80%→20%, 70%→15%, 60%→10%)
+- RSI반등 + 볼린저밴드 전략 구현 (주식)
+- 실시간 급락/급등 감지 (3초 모니터링)
+  - 주식: -3% / +7% → Jarvis 즉시 판단
+  - 코인: -4% / +8% → 즉시 자동 매도
+- KIS 토큰 만료 자동 재발급 (수동 삭제 불필요)
+- 보유 종목 중복 매수 방지
+
+### 코인
+- 업비트 거래량 TOP 20 자동 스캔 (매일 08:30)
+- 코인 한글명 표시 (비트코인, 이더리움 등)
+- RSI반등 전략 추가 (MACD 신호 부족 보완)
+
+### 대시보드 UI
+- 주식/코인 색상 통일: 상승=빨강, 하락=파랑 (한국 증시 기준)
+- 모바일 반응형 전체 화면
+- 하단 네비게이션 바 (대시보드/주식/코인/전략/Jarvis)
+- 전략 카드 모바일 1열
+- 코스피/코스닥 실시간 표시
+- 예수금/포지션 정상 표시
+
+### PENDING
+- [ ] 코인 RSI 전략 DB 등록
+- [ ] 코인 단타 전략 구현 (1분봉 기반)
+- [ ] 수급/공시 데이터 수집 (16:00 이후)
+- [ ] railclaw 서비스 구축
+- [ ] jarvis-analyst 서비스 개발

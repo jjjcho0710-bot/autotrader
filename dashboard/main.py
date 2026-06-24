@@ -1454,8 +1454,41 @@ async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
         except Exception as e:
             logger.error(f"수동 수집 오류: {e}")
 
+    async def _collect_supply_dart():
+        """수급 + 공시 수집"""
+        try:
+            async with db_pool.acquire() as conn:
+                symbols = [r["symbol"] for r in await conn.fetch(
+                    "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+                )]
+            if not symbols:
+                symbols = config.STOCK_SYMBOLS
+
+            # 수급 데이터 (pykrx)
+            try:
+                from collectors.supply_collector import SupplyCollector
+                supply = SupplyCollector()
+                await supply.collect(symbols)
+                logger.info(f"✅ 수급 수집 완료: {len(symbols)}종목")
+            except Exception as e:
+                logger.error(f"수급 수집 오류: {e}")
+
+            # DART 공시
+            try:
+                from collectors.dart_collector import DARTCollector
+                dart = DARTCollector()
+                from common.telegram import send_stock
+                await dart.collect_and_alert(symbols, telegram_func=send_stock)
+                logger.info(f"✅ 공시 수집 완료: {len(symbols)}종목")
+            except Exception as e:
+                logger.error(f"공시 수집 오류: {e}")
+
+        except Exception as e:
+            logger.error(f"수급/공시 수집 오류: {e}")
+
     background_tasks.add_task(_collect)
-    return {"success": True, "message": "수집 시작! /api/data/sentiment 에서 결과 확인하세요"}
+    background_tasks.add_task(_collect_supply_dart)
+    return {"success": True, "message": "수집 시작! 뉴스감성 + 수급 + 공시 수집 중..."}
 
 
 @app.get("/api/market/checklist")

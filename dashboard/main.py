@@ -2507,8 +2507,8 @@ async def debug_stock_account():
         async with http.ClientSession(connector=_connector) as session:
             headers = {
                 "authorization": f"Bearer {token}",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
                 "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
                 "custtype": "P",
             }
@@ -2555,8 +2555,8 @@ async def get_stock_positions():
         async with http.ClientSession(connector=_connector) as session:
             headers = {
                 "authorization": f"Bearer {token}",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
                 "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
                 "custtype": "P",
             }

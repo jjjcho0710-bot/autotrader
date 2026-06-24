@@ -531,13 +531,37 @@ async function fetchTodayPnl(){
   }catch(e){}
 }
 
+async function fetchMarketIndex(){
+  try {
+    const res = await fetch('/api/market/index');
+    const data = await res.json();
+    if(data.success && data.data){
+      const ki = data.data.KOSPI;
+      const kd = data.data.KOSDAQ;
+      if(ki){
+        document.getElementById('kospi-val').textContent = ki.price.toLocaleString();
+        const kc = document.getElementById('kospi-chg');
+        kc.textContent = (ki.change_rate>=0?'+':'')+ki.change_rate.toFixed(2)+'%';
+        kc.style.color = ki.change_rate>=0?'#059669':'#dc2626';
+      }
+      if(kd){
+        document.getElementById('kosdaq-val').textContent = kd.price.toLocaleString();
+        const kdc = document.getElementById('kosdaq-chg');
+        kdc.textContent = (kd.change_rate>=0?'+':'')+kd.change_rate.toFixed(2)+'%';
+        kdc.style.color = kd.change_rate>=0?'#059669':'#dc2626';
+      }
+    }
+  } catch(e){ console.error('지수 조회 실패',e); }
+}
+
 async function loadAll(){
-  await Promise.all([fetchPositions(),fetchWatchlist(),fetchSupply(),fetchDisclosure(),fetchSentiment(),fetchML(),fetchStrategies(),fetchBotStatus(),fetchTodayPnl()]);
+  await Promise.all([fetchPositions(),fetchWatchlist(),fetchSupply(),fetchDisclosure(),fetchSentiment(),fetchML(),fetchStrategies(),fetchBotStatus(),fetchTodayPnl(),fetchMarketIndex()]);
   document.getElementById('last-update').textContent='업데이트: '+new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
   document.getElementById('market-time').textContent='업데이트: '+new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
 }
 loadAll();
 setInterval(loadAll,30000);
+setInterval(fetchMarketIndex,60000);
 
 // SSE 실시간 이벤트
 function connectSSE() {

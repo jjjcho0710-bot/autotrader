@@ -1055,6 +1055,63 @@ async def get_single_price(symbol: str):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/market/index")
+async def get_market_index():
+    """코스피/코스닥 지수 조회 (KIS API)"""
+    try:
+        import aiohttp as http
+        import ssl
+
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+        connector = http.TCPConnector(ssl=ssl_ctx)
+
+        async with http.ClientSession(connector=connector) as sess:
+            # 토큰 발급
+            res = await sess.post(f"{config.kis_base_url}/oauth2/tokenP", json={
+                "grant_type": "client_credentials",
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
+            })
+            token = (await res.json()).get("access_token", "")
+            if not token:
+                return {"success": False, "error": "토큰 발급 실패"}
+
+            headers = {
+                "authorization": f"Bearer {token}",
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
+                "tr_id": "FHPUP02100000",
+                "custtype": "P",
+            }
+
+            result = {}
+            for code, name in [("0001", "KOSPI"), ("1001", "KOSDAQ")]:
+                params = {
+                    "FID_COND_MRKT_DIV_CODE": "U",
+                    "FID_INPUT_ISCD": code,
+                }
+                r = await sess.get(
+                    f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                    headers=headers, params=params
+                )
+                data = await r.json()
+                output = data.get("output", {})
+                price = float(output.get("bstp_nmix_prpr", 0) or 0)
+                change = float(output.get("bstp_nmix_prdy_ctrt", 0) or 0)
+                if price > 0:
+                    result[name] = {
+                        "price": round(price, 2),
+                        "change_rate": round(change, 2),
+                        "change": float(output.get("bstp_nmix_prdy_vrss", 0) or 0),
+                    }
+
+        return {"success": True, "data": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/prices/stock")
 async def get_stock_prices():
     """주식 실시간 시세 (Redis) — watchlist 기준"""

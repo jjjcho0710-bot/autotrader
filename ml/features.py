@@ -61,7 +61,7 @@ def build_features(ohlcv: List[Dict], lookback: int = 60) -> List[Dict]:
         # 레이블: 5일 후 수익률
         future_price = closes[i + 5]
         label_5d = (future_price - price) / price * 100
-        label_buy = 1 if label_5d > 1.5 else 0  # 1.5% 이상 상승 = 매수 시점
+        label_buy = 1 if label_5d > 0.5 else 0  # 0.5% 이상 상승 = 매수 시점 (임계값 완화)
 
         feat = {
             "ts": ohlcv[i].get("ts", ""),

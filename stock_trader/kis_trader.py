@@ -129,8 +129,11 @@ class KISTrader:
         ) as resp:
             data = await resp.json()
             output = data.get("output", {})
+            cash = (int(output.get("ord_psbl_cash", 0)) or
+                    int(output.get("dnca_tot_amt", 0)) or
+                    int(output.get("nass_amt", 0)))
             return {
-                "cash":  int(output.get("ord_psbl_cash", 0)),
+                "cash":  cash,
                 "total": int(output.get("tot_evlu_amt", 0)),
             }
 

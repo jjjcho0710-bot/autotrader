@@ -431,6 +431,22 @@ class StockTrader:
                 available_cash = await self.trader.get_balance()
                 cash = available_cash.get("cash", 0)
 
+                # 잔고 0이면 Redis에서 직접 조회
+                if cash <= 0:
+                    try:
+                        import json
+                        cached = await cache.client.get("stock:balance")
+                        if cached:
+                            bal = json.loads(cached)
+                            cash = int(bal.get("cash", 0))
+                    except:
+                        pass
+
+                # 그래도 0이면 DB에서 최근 잔고 사용 (기본 1000만원)
+                if cash <= 0:
+                    cash = 10000000
+                    logger.info(f"⚠️ 잔고 조회 실패 → 기본값 {cash:,}원 사용")
+
                 if cash < 100000:
                     logger.info(f"💸 잔고 부족 ({cash:,}원) → 매수 스킵")
                     continue

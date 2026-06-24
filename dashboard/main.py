@@ -89,8 +89,12 @@ async def get_kis_token() -> str:
 
     # 3. 새 토큰 발급
     try:
+        import ssl as _ssl_mod
+        _ssl_ctx = _ssl_mod.create_default_context()
+        _ssl_ctx.check_hostname = False
+        _ssl_ctx.verify_mode = _ssl_mod.CERT_NONE
         base = config.kis_base_url
-        async with _aiohttp.ClientSession() as session:
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_ssl_ctx)) as session:
             res = await session.post(f"{base}/oauth2/tokenP", json={
                 "grant_type": "client_credentials",
                 "appkey": config.KIS_APP_KEY,
@@ -2493,7 +2497,13 @@ async def debug_stock_account():
         token = await get_kis_token()
         if not token:
             return {"success": False, "error": "KIS 토큰 발급 실패"}
-        async with http.ClientSession() as session:
+        import ssl as _ssl
+        _ssl_ctx = _ssl.create_default_context()
+        _ssl_ctx.check_hostname = False
+        _ssl_ctx.verify_mode = _ssl.CERT_NONE
+        _connector = http.TCPConnector(ssl=_ssl_ctx)
+
+        async with http.ClientSession(connector=_connector) as session:
             headers = {
                 "authorization": f"Bearer {token}",
                 "appkey": config.KIS_APP_KEY,
@@ -2535,7 +2545,13 @@ async def get_stock_positions():
         if not token:
             return {"success": False, "error": "KIS 토큰 발급 실패", "data": [], "account": {}}
 
-        async with http.ClientSession() as session:
+        import ssl as _ssl
+        _ssl_ctx = _ssl.create_default_context()
+        _ssl_ctx.check_hostname = False
+        _ssl_ctx.verify_mode = _ssl.CERT_NONE
+        _connector = http.TCPConnector(ssl=_ssl_ctx)
+
+        async with http.ClientSession(connector=_connector) as session:
             headers = {
                 "authorization": f"Bearer {token}",
                 "appkey": config.KIS_APP_KEY,

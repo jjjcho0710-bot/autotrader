@@ -394,16 +394,37 @@ async function fetchWatchlist(){
     }).join('');
     const tbody=document.getElementById('watch-tbody');
     if(!entries.length){tbody.innerHTML='<tr><td colspan="6" class="empty">감시 종목 없음</td></tr>';return;}
+    // ML/뉴스 데이터 로드
+    let mlMap={}, newsMap={};
+    try{
+      const mr=await fetch(`${API}/api/ml/predictions`);
+      const md=await mr.json();
+      (md.data||[]).forEach(p=>mlMap[p.symbol]=p);
+    }catch(e){}
+    try{
+      const nr=await fetch(`${API}/api/data/sentiment`);
+      const nd=await nr.json();
+      (nd.data||[]).forEach(n=>newsMap[n.symbol]=n);
+    }catch(e){}
+
     tbody.innerHTML=entries.map(p=>{
       const rate=parseFloat(p.change_rate||0);
       const cls=rate>=0?'pos':'neg';
+      const ml=mlMap[p.symbol];
+      const news=newsMap[p.symbol];
+      const mlBadge=ml
+        ? `<span class="badge ${ml.signal==='BUY'?'buy':ml.signal==='SELL'?'sell':'wait'}">${ml.signal} ${(ml.buy_prob*100).toFixed(0)}%</span>`
+        : `<span class="badge wait">-</span>`;
+      const newsBadge=news
+        ? `<span class="badge ${news.signal==='BUY'?'buy':news.signal==='SELL'?'sell':'wait'}" title="${news.summary||''}">${news.signal}</span>`
+        : `<span style="color:var(--muted)">-</span>`;
       return `<tr>
         <td><div style="font-weight:700;color:var(--bright)">${p.name||p.symbol}</div><div style="font-size:10px;color:var(--muted);font-weight:500">${p.symbol}</div></td>
         <td style="font-family:var(--mono);font-weight:600;color:var(--bright)">${fmt(p.price||p.close)}</td>
         <td class="${cls}">${fmtR(rate)}</td>
-        <td><span class="badge wait">-</span></td>
+        <td>${mlBadge}</td>
         <td style="color:var(--muted)">-</td>
-        <td style="color:var(--muted)">-</td>
+        <td>${newsBadge}</td>
       </tr>`;
     }).join('');
   }catch(e){}

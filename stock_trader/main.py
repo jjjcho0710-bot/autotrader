@@ -523,8 +523,9 @@ class StockTrader:
                 return False, f"ML 매도 신호 (매수확률 {buy_prob:.0%})"
 
         except Exception as e:
-            logger.warning(f"[{symbol}] ML 필터 오류 → 허용: {e}")
-            return True, "ML 오류 → MA크로스 단독"
+            import traceback
+            logger.error(f"[{symbol}] ML 필터 오류: {e}\n{traceback.format_exc()}")
+            return False, f"ML 오류: {e}"
 
     # ── 알림 ──────────────────────────────────────────────
     async def _signal_jarvis(self, action: str, symbol: str, name: str, price: int, qty: int, strategy: str, reason: str = ""):

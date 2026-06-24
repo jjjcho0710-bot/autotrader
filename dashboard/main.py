@@ -2960,6 +2960,7 @@ async def jarvis_signal(request: Request):
 
         # 3. Jarvis 판단
         jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
+        logger.info(f"🤖 Jarvis 판단 [{symbol}]: {jarvis_reply[:150]}")
         should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
 
         if should_execute:

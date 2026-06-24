@@ -15,6 +15,7 @@ from common.config import config
 from common.database import db, cache
 from upbit_trader import UpbitTrader
 from strategy.macd import MACDStrategy, MACDConfig
+from strategy.rsi import RSIStrategy, RSIConfig
 
 class KSTFormatter(logging.Formatter):
     def converter(self, timestamp):

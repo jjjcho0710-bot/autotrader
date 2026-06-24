@@ -181,6 +181,25 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
   .kpi-val{font-size:20px;}
   .kpi-grid{grid-template-columns:repeat(2,1fr);}
 }
+
+/* ── 모바일 하단 네비게이션 ── */
+.bottom-nav{display:none;}
+@media (max-width: 768px) {
+  .bottom-nav{
+    display:flex;position:fixed;bottom:0;left:0;right:0;
+    background:var(--panel);border-top:1px solid var(--border);
+    height:60px;z-index:1000;
+  }
+  .bottom-nav-item{
+    flex:1;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:2px;cursor:pointer;
+    color:var(--muted);font-size:10px;font-weight:500;
+    transition:color 0.1s;text-decoration:none;
+  }
+  .bottom-nav-item.active{color:var(--stock);}
+  .bottom-nav-item .bn-icon{font-size:20px;line-height:1;}
+  .main{padding-bottom:70px;}
+}
 </style>
 </head>
 <body>
@@ -625,5 +644,12 @@ function showToast(msg, color='var(--green)') {
 }
 connectSSE();
 </script>
+<nav class="bottom-nav">
+  <a class="bottom-nav-item" href="dashboard-C.html"><span class="bn-icon">⊞</span>대시보드</a>
+  <a class="bottom-nav-item active" href="stock.html"><span class="bn-icon">📈</span>주식</a>
+  <a class="bottom-nav-item" href="crypto.html"><span class="bn-icon">₿</span>코인</a>
+  <a class="bottom-nav-item" href="strategy.html"><span class="bn-icon">⚙</span>전략</a>
+  <a class="bottom-nav-item" href="jarvis.html"><span class="bn-icon">🤖</span>Jarvis</a>
+</nav>
 </body>
 </html>

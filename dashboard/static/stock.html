@@ -351,7 +351,7 @@ async function fetchPositions(){
     const acct=res.account||{};
     document.getElementById('total-eval').textContent=fmt(acct.total_eval||0);
     document.getElementById('stock-eval').textContent=fmt(acct.stock_eval||0);
-    document.getElementById('deposit').textContent=fmt(acct.deposit||0);
+    document.getElementById('deposit').textContent=fmt(acct.cash||acct.deposit||0);
     document.getElementById('pos-count').textContent=data.length;
     const body=document.getElementById('positions-body');
     const noPosEl=document.getElementById('no-positions');

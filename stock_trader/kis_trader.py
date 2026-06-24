@@ -20,6 +20,7 @@ class KISTrader:
 
     def __init__(self):
         self.access_token: str = ""
+        self._last_cash: int = 0
         self.session: aiohttp.ClientSession = None
 
     async def start(self):
@@ -131,7 +132,10 @@ class KISTrader:
             output = data.get("output", {})
             cash = (int(output.get("ord_psbl_cash", 0)) or
                     int(output.get("dnca_tot_amt", 0)) or
-                    int(output.get("nass_amt", 0)))
+                    int(output.get("nass_amt", 0)) or
+                    self._last_cash)  # get_positions에서 읽은 잔고 fallback
+            if cash > 0:
+                self._last_cash = cash
             return {
                 "cash":  cash,
                 "total": int(output.get("tot_evlu_amt", 0)),
@@ -154,25 +158,34 @@ class KISTrader:
             "CTX_AREA_NK100": "",
         }
         tr_id = "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R"
-        async with self.session.get(
-            url, headers=self._headers(tr_id), params=params
-        ) as resp:
-            data = await resp.json()
-            positions = []
-            for row in data.get("output1", []):
-                qty = int(row.get("hldg_qty", 0))
-                if qty <= 0:
+        for attempt in range(2):
+            async with self.session.get(
+                url, headers=self._headers(tr_id), params=params
+            ) as resp:
+                data = await resp.json()
+                if attempt == 0 and await self._refresh_token_if_expired(data):
                     continue
-                positions.append({
-                    "symbol":    row.get("pdno"),
-                    "name":      row.get("prdt_name"),
-                    "qty":       qty,
-                    "avg_price": int(row.get("pchs_avg_pric", 0)),
-                    "cur_price": int(row.get("prpr", 0)),
-                    "pnl":       int(row.get("evlu_pfls_amt", 0)),
-                    "pnl_rate":  float(row.get("evlu_pfls_rt", 0)),
-                })
-            return positions
+                positions = []
+                for row in data.get("output1", []):
+                    qty = int(row.get("hldg_qty", 0))
+                    if qty <= 0:
+                        continue
+                    positions.append({
+                        "symbol":    row.get("pdno"),
+                        "name":      row.get("prdt_name"),
+                        "qty":       qty,
+                        "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
+                        "cur_price": int(row.get("prpr", 0)),
+                        "pnl":       int(row.get("evlu_pfls_amt", 0)),
+                        "pnl_rate":  float(row.get("evlu_pfls_rt", 0) or 0),
+                    })
+                # 잔고도 같이 읽기
+                out2 = data.get("output2", [{}])
+                if out2:
+                    s = out2[0]
+                    self._last_cash = int(s.get("dnca_tot_amt", 0) or 0)
+                return positions
+        return []
 
     # ── 매수 주문 ───────────────────────────────────────
     async def _refresh_token_if_expired(self, data: dict) -> bool:

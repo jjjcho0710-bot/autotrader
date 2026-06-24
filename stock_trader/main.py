@@ -449,7 +449,7 @@ class StockTrader:
 
             # ohlcv_rows → ML 입력 포맷 변환
             ohlcv = []
-            for r in reversed(ohlcv_rows):   # 오래된 것부터
+            for r in ohlcv_rows:   # 이미 ASC 정렬 (오래된 것부터)
                 ohlcv.append({
                     "date":   str(r.get("ts", ""))[:10].replace("-", ""),
                     "open":   float(r.get("open", 0)),

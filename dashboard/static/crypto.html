@@ -53,11 +53,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .ph-dot{width:10px;height:10px;border-radius:50%;background:var(--crypto);}
 .ph-title{font-size:14px;font-weight:700;color:var(--bright);}
 .ph-sub{font-size:11px;color:var(--muted);margin-top:2px;font-weight:500;}
-.ph-pnl{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--green);}
+.ph-pnl{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--red);}
 .ph-psub{font-size:11px;color:var(--muted);text-align:right;font-weight:500;}
 
 .market-bar{padding:8px 24px;background:#f9fafb;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;font-size:12px;}
-.pos{color:var(--green);font-weight:600;}
+.pos{color:var(--red);font-weight:600;}
 .neg{color:var(--red);font-weight:600;}
 
 .inner-tabs{display:flex;border-bottom:1px solid var(--border);padding:0 24px;background:var(--panel);}
@@ -73,7 +73,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .kpi{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px;}
 .kpi-label{font-size:11px;font-weight:600;color:var(--muted);margin-bottom:6px;}
 .kpi-val{font-size:22px;font-weight:700;font-family:var(--mono);color:var(--bright);}
-.kpi-val.pos{color:var(--green);}
+.kpi-val.pos{color:var(--red);}
 .kpi-val.neg{color:var(--red);}
 .kpi-sub{font-size:11px;color:var(--muted);margin-top:4px;font-weight:500;}
 
@@ -123,6 +123,26 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .sensing-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
 
 .empty{text-align:center;padding:28px;color:var(--muted);font-size:12px;font-weight:500;}
+
+/* ── 모바일 반응형 ── */
+@media (max-width: 768px) {
+  .sidebar{display:none;}
+  .main{margin-left:0!important;padding:12px;}
+  .page-header{flex-direction:column;align-items:flex-start;gap:8px;}
+  .kpi-grid{grid-template-columns:repeat(2,1fr);}
+  .grid-2{grid-template-columns:1fr;}
+  .pos-table th:nth-child(3),.pos-table td:nth-child(3),
+  .pos-table th:nth-child(4),.pos-table td:nth-child(4){display:none;}
+  .tab-bar{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .card{padding:14px;}
+  .ph-row{flex-direction:column;gap:4px;}
+  .market-row{font-size:11px;flex-wrap:wrap;gap:8px;}
+}
+@media (max-width: 480px) {
+  .kpi-grid{grid-template-columns:repeat(2,1fr);}
+  .kpi-val{font-size:20px;}
+  .pos-table th:nth-child(5),.pos-table td:nth-child(5){display:none;}
+}
 </style>
 </head>
 <body>

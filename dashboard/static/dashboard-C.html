@@ -122,6 +122,23 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .trade-pnl.neg{color:var(--red);}
 
 .empty{text-align:center;padding:28px;color:var(--muted);font-size:12px;font-weight:500;}
+
+/* ── 모바일 반응형 ── */
+@media (max-width: 768px) {
+  .sidebar{display:none;}
+  .main{margin-left:0!important;padding:12px;}
+  .page-header{flex-direction:column;align-items:flex-start;gap:8px;}
+  .kpi-grid{grid-template-columns:repeat(2,1fr);}
+  .grid-2{grid-template-columns:1fr;}
+  .pos-table th:nth-child(3),.pos-table td:nth-child(3),
+  .pos-table th:nth-child(4),.pos-table td:nth-child(4){display:none;}
+  .tab-bar{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .card{padding:14px;}
+}
+@media (max-width: 480px) {
+  .kpi-val{font-size:20px;}
+  .kpi-grid{grid-template-columns:repeat(2,1fr);}
+}
 </style>
 </head>
 <body>

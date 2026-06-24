@@ -55,7 +55,7 @@ body{display:flex;flex-direction:column;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 
 /* 탭 */
-.tab-row{background:var(--panel);display:flex;border-bottom:2px solid var(--border);overflow-x:auto;white-space:nowrap;position:sticky;top:52px;z-index:99;}
+.tab-row{background:var(--panel);display:flex;border-bottom:2px solid var(--border);overflow-x:auto;white-space:nowrap;flex-shrink:0;}
 .tab-btn{padding:10px 16px;font-size:13px;font-weight:500;color:var(--muted);
   cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;
   margin-bottom:-2px;white-space:nowrap;flex-shrink:0;}
@@ -131,7 +131,7 @@ body{display:flex;flex-direction:column;}
 .empty{text-align:center;padding:40px;color:var(--muted);font-size:14px;}
 
 /* 하단 네비 */
-.bottom-nav{background:var(--header);border-top:1px solid var(--border);display:flex;height:56px;position:fixed;bottom:0;left:0;right:0;padding-bottom:env(safe-area-inset-bottom);z-index:100;}
+.bottom-nav{background:var(--header);border-top:1px solid var(--border);display:flex;height:56px;flex-shrink:0;padding-bottom:env(safe-area-inset-bottom);}
 .bn-item{flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:3px;text-decoration:none;
   color:var(--muted);font-size:10px;font-weight:500;}
@@ -214,14 +214,14 @@ body{display:flex;flex-direction:column;}
 </div>
 
 <!-- 보유자산 탭 -->
-<div id="tab-position">
+<div id="tab-position" style="flex:1;overflow-y:auto;">
   <div class="section">
     <div id="pos-list"><div class="empty">보유 종목 없음</div></div>
   </div>
 </div>
 
 <!-- 감시 종목 탭 -->
-<div id="tab-watchlist" class="hidden">
+<div id="tab-watchlist" class="hidden" style="flex:1;overflow-y:auto;">
   <div class="watch-col-header">
     <span>종목</span>
     <span style="text-align:right">현재가</span>
@@ -232,21 +232,21 @@ body{display:flex;flex-direction:column;}
 </div>
 
 <!-- Jarvis 신호 탭 -->
-<div id="tab-signal" class="hidden">
+<div id="tab-signal" class="hidden" style="flex:1;overflow-y:auto;">
   <div class="section" id="signal-list">
     <div class="empty">신호 없음</div>
   </div>
 </div>
 
 <!-- 수급/공시 탭 -->
-<div id="tab-supply" class="hidden">
+<div id="tab-supply" class="hidden" style="flex:1;overflow-y:auto;">
   <div class="section">
     <div id="supply-list"><div class="empty">수급 데이터 없음<br><small style="color:var(--muted)">16:00 이후 수집됩니다</small></div></div>
   </div>
 </div>
 
 <!-- 거래내역 탭 -->
-<div id="tab-trades" class="hidden">
+<div id="tab-trades" class="hidden" style="flex:1;overflow-y:auto;">
   <div class="section" id="trade-list">
     <div class="empty">거래 내역 없음</div>
   </div>
@@ -282,10 +282,14 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 function showTab(tab,btn){
   ['position','watchlist','signal','supply','trades'].forEach(t=>{
-    document.getElementById('tab-'+t).classList.add('hidden');
+    const el=document.getElementById('tab-'+t);
+    el.classList.add('hidden');
+    el.style.flex='';
   });
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
-  document.getElementById('tab-'+tab).classList.remove('hidden');
+  const active=document.getElementById('tab-'+tab);
+  active.classList.remove('hidden');
+  active.style.flex='1';
   if(btn)btn.classList.add('active');
 }
 

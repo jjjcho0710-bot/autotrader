@@ -184,3 +184,33 @@ data_collector/
 - DART_API_KEY: 0fa66d7197e1147047df7ff103b4c0e0b1142fd4
 - GEMINI_API_KEY
 - UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY
+
+---
+
+## ✅ 2026-06-24 완료 작업
+
+### 주식 화면 정상화
+- 모의투자 앱키 별도 발급 후 설정 (KIS_APP_KEY_PAPER, KIS_APP_SECRET_PAPER)
+- KIS 토큰 모의투자/실전 Redis 키 분리 (kis:paper_token / kis:real_token / kis:access_token)
+- 실전 키(KIS_APP_KEY)와 모의투자 키(KIS_APP_KEY_PAPER) 역할 분리
+  - 코스피/코스닥 지수 → 실전 키로 조회
+  - 잔고/포지션/매매 → 모의투자 키(kis_app_key 자동선택)로 조회
+- 예수금 필드명 수정 (deposit → cash)
+- 코스피 8,439 / 예수금 1,000만원 / 총평가 1,000만원 정상 표시 확인
+
+### 코스피/코스닥 지수
+- /api/market/index 실전 API로 조회
+- SSL 설정 추가
+- 토큰 Redis 캐시 (1분 제한 방지)
+- 1분마다 자동 갱신
+
+### data-collector FastAPI 서버
+- port 8000 FastAPI 추가
+- /api/collect/supply 수급+공시 수동 트리거
+- /api/collect/ohlcv OHLCV 트리거
+- requirements에 fastapi, uvicorn 추가
+
+### 실시간 시세 조회
+- /api/price/{symbol} 정상 동작 확인
+- 삼성전자 310,000원 -12.31% 조회 확인
+- Open-WebUI Tools get_price 함수 등록 완료

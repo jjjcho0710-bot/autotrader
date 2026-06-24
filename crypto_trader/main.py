@@ -40,6 +40,76 @@ class CryptoTrader:
         self.daily_trades = []       # 오늘 매매 기록 (결산용)
         self.report_sent_date = None # 결산 보고 중복 방지
 
+    # 업비트 코인 한글명 매핑
+    COIN_NAMES = {
+        "KRW-BTC": "비트코인", "KRW-ETH": "이더리움", "KRW-SOL": "솔라나",
+        "KRW-XRP": "리플", "KRW-ADA": "에이다", "KRW-DOGE": "도지코인",
+        "KRW-AVAX": "아발란체", "KRW-DOT": "폴카닷", "KRW-MATIC": "폴리곤",
+        "KRW-LINK": "체인링크", "KRW-UNI": "유니스왑", "KRW-ATOM": "코스모스",
+        "KRW-LTC": "라이트코인", "KRW-BCH": "비트코인캐시", "KRW-ETC": "이더리움클래식",
+        "KRW-SAND": "샌드박스", "KRW-MANA": "디센트럴랜드", "KRW-SHIB": "시바이누",
+        "KRW-APT": "앱토스", "KRW-ARB": "아비트럼", "KRW-OP": "옵티미즘",
+        "KRW-SUI": "수이", "KRW-TRX": "트론", "KRW-NEAR": "니어프로토콜",
+        "KRW-FIL": "파일코인", "KRW-AAVE": "에이브", "KRW-GRT": "그래프",
+        "KRW-AXS": "엑시인피니티", "KRW-ALGO": "알고랜드", "KRW-VET": "비체인",
+    }
+
+    async def _update_top_pairs(self):
+        """업비트 거래량 TOP 20 코인 자동 업데이트"""
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as s:
+                # 전체 KRW 마켓 조회
+                r = await s.get("https://api.upbit.com/v1/market/all?isDetails=false")
+                markets = await r.json()
+                krw_pairs = [m["market"] for m in markets if m["market"].startswith("KRW-")]
+
+                # 현재가 + 거래량 조회 (100개씩)
+                tickers = []
+                for i in range(0, len(krw_pairs), 100):
+                    chunk = krw_pairs[i:i+100]
+                    r = await s.get(
+                        "https://api.upbit.com/v1/ticker",
+                        params={"markets": ",".join(chunk)}
+                    )
+                    tickers.extend(await r.json())
+                    await asyncio.sleep(0.1)
+
+            # USDT/스테이블코인 제외 + 거래대금 기준 TOP 20
+            exclude = {"KRW-USDT", "KRW-USDC", "KRW-DAI", "KRW-BUSD"}
+            sorted_tickers = sorted(
+                [t for t in tickers if t["market"] not in exclude],
+                key=lambda x: float(x.get("acc_trade_price_24h", 0)),
+                reverse=True
+            )[:20]
+
+            top_pairs = [t["market"] for t in sorted_tickers]
+            config.CRYPTO_PAIRS = top_pairs
+
+            # 한글명 포함 로그
+            names = [self.COIN_NAMES.get(p, p) for p in top_pairs]
+            logger.info(f"📊 거래량 TOP 20 업데이트: {', '.join(names)}")
+
+            # Redis에 저장
+            import json
+            await cache.client.setex("crypto:top_pairs", 86400, json.dumps(top_pairs))
+
+        except Exception as e:
+            logger.error(f"TOP 20 업데이트 실패: {e}")
+
+    async def _daily_scan_loop(self):
+        """매일 08:30 거래량 TOP 20 업데이트"""
+        while self.running:
+            now = datetime.now(KST)
+            # 처음 실행 시 바로 한번
+            await self._update_top_pairs()
+            # 다음 08:30까지 대기
+            next_run = now.replace(hour=8, minute=30, second=0, microsecond=0)
+            if now >= next_run:
+                next_run = next_run + timedelta(days=1)
+            wait_sec = (next_run - now).total_seconds()
+            await asyncio.sleep(wait_sec)
+
     async def start(self):
         self.running = True
         await db.connect()
@@ -54,6 +124,7 @@ class CryptoTrader:
         asyncio.create_task(self._price_loop())
         asyncio.create_task(self._daily_report_loop())
         asyncio.create_task(self._price_monitor())  # 급락/급등 실시간 감지
+        asyncio.create_task(self._daily_scan_loop())  # 거래량 TOP 20 자동 업데이트
         await self._loop()
 
     async def load_strategies(self):

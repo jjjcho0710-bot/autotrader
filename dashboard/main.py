@@ -1200,23 +1200,28 @@ async def get_stock_prices():
         return {"success": False, "error": str(e)}
 
 
+COIN_NAMES = {'KRW-BTC': '비트코인', 'KRW-ETH': '이더리움', 'KRW-SOL': '솔라나', 'KRW-XRP': '리플', 'KRW-ADA': '에이다', 'KRW-DOGE': '도지코인', 'KRW-AVAX': '아발란체', 'KRW-DOT': '폴카닷', 'KRW-MATIC': '폴리곤', 'KRW-LINK': '체인링크', 'KRW-SUI': '수이', 'KRW-TRX': '트론', 'KRW-SHIB': '시바이누', 'KRW-ARB': '아비트럼', 'KRW-OP': '옵티미즘', 'KRW-NEAR': '니어', 'KRW-APT': '앱토스', 'KRW-FIL': '파일코인', 'KRW-SAND': '샌드박스', 'KRW-AXS': '엑시인피니티'}
+
 @app.get("/api/prices/crypto")
 async def get_crypto_prices():
-    """코인 실시간 시세 (Redis)"""
+    """코인 실시간 시세 (Redis) + 한글명"""
     try:
-        # crypto-trader가 저장한 시세 캐시
+        import json as _json
         val = await redis_client.get("crypto:prices")
         if val:
-            import json
-            return {"success": True, "data": json.loads(val)}
+            data = _json.loads(val)
+        else:
+            data = {}
+            for pair in config.CRYPTO_PAIRS:
+                v = await redis_client.get(f"crypto:price:{pair}")
+                if v:
+                    data[pair] = _json.loads(v)
 
-        # fallback: 개별 키 조회
-        prices = {}
-        for pair in config.CRYPTO_PAIRS:
-            v = await redis_client.get(f"crypto:price:{pair}")
-            if v:
-                prices[pair] = json.loads(v)
-        return {"success": True, "data": prices}
+        # 한글명 추가
+        for pair in data:
+            data[pair]["name"] = COIN_NAMES.get(pair, pair.replace("KRW-", ""))
+
+        return {"success": True, "data": data}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

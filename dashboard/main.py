@@ -97,8 +97,8 @@ async def get_kis_token() -> str:
         async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_ssl_ctx)) as session:
             res = await session.post(f"{base}/oauth2/tokenP", json={
                 "grant_type": "client_credentials",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
             }, timeout=_aiohttp.ClientTimeout(total=10))
             data = await res.json()
             token = data.get("access_token", "")

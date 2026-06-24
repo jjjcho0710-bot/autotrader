@@ -55,8 +55,7 @@ body{display:flex;flex-direction:column;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 
 /* 탭 */
-.tab-row{background:var(--panel);display:flex;
-  border-bottom:2px solid var(--border);overflow-x:auto;white-space:nowrap;}
+.tab-row{background:var(--panel);display:flex;border-bottom:2px solid var(--border);overflow-x:auto;white-space:nowrap;position:sticky;top:52px;z-index:99;}
 .tab-btn{padding:10px 16px;font-size:13px;font-weight:500;color:var(--muted);
   cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;
   margin-bottom:-2px;white-space:nowrap;flex-shrink:0;}

@@ -933,11 +933,23 @@ async def predict_signal(symbol: str):
 
 @app.get("/api/ml/predictions")
 async def get_all_predictions():
-    """모든 종목 최신 ML 예측"""
+    """모든 종목 최신 ML 예측 (종목명 포함)"""
     try:
         from ml.model import MLModelManager
         manager = MLModelManager(db_pool)
         predictions = await manager.get_all_predictions()
+
+        # watchlist에서 종목명 매핑
+        try:
+            async with db_pool.acquire() as conn:
+                wl = await conn.fetch("SELECT symbol, name FROM watchlist WHERE is_active=TRUE")
+            name_map = {r["symbol"]: r["name"] for r in wl}
+            for p in predictions:
+                if not p.get("name"):
+                    p["name"] = name_map.get(p["symbol"], p["symbol"])
+        except Exception:
+            pass
+
         return {"success": True, "data": predictions}
     except Exception as e:
         return {"success": False, "error": str(e)}

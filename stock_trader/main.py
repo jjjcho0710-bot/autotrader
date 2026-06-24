@@ -466,15 +466,22 @@ class StockTrader:
                 qty = max(1, buy_amount // cur_price)
                 actual_amount = qty * cur_price
 
-                logger.info(f"💡 [{symbol}] Jarvis 금액결정: {actual_amount:,}원 "
+                logger.info(f"💡 [{symbol}] ML 자동매수: {actual_amount:,}원 "
                             f"(ML:{buy_prob:.0%} 신호강도:{strength} 잔고:{cash:,}원)")
 
-                await self._signal_jarvis(
-                    action="buy", symbol=symbol, name=symbol,
-                    price=cur_price, qty=qty,
-                    strategy=triggered_strategy,
-                    reason=f"{triggered_strategy} + ML {buy_prob:.0%} ({strength}) + {ml_reason}"
-                )
+                # ML 판단으로 직접 매수 (Jarvis API 호출 없음)
+                result = await self.trader.buy(symbol, cur_price, qty)
+                if result.get("success"):
+                    await db.insert_trade(
+                        bot="stock_trader", asset_type="stock",
+                        symbol=symbol, side="BUY",
+                        price=cur_price, quantity=qty,
+                        amount=actual_amount,
+                        strategy=triggered_strategy,
+                    )
+                    logger.info(f"✅ 매수 완료 [{symbol}] {cur_price:,}원 × {qty}주 = {actual_amount:,}원")
+                else:
+                    logger.error(f"❌ 매수 실패 [{symbol}]: {result.get('error')}")
 
         # 상태 업데이트
         await cache.set_bot_status("stock_trader", {

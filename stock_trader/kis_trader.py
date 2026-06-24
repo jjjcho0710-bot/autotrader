@@ -89,6 +89,19 @@ class KISTrader:
 
     # ── 현재가 조회 ─────────────────────────────────────
     async def get_current_price(self, symbol: str) -> int:
+        # Redis 캐시에서 먼저 조회 (data-collector가 1분마다 업데이트)
+        try:
+            from common.database import cache
+            import json
+            cached = await cache.client.get(f"stock:price:{symbol}")
+            if cached:
+                data = json.loads(cached)
+                price = int(data.get("price", 0))
+                if price > 0:
+                    return price
+        except Exception:
+            pass
+        # Redis 없으면 KIS API 직접 조회
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         async with self.session.get(

@@ -13,6 +13,8 @@ from common.config import config
 from common.database import db, cache
 from kis_trader import KISTrader
 from strategy.ma_cross import MACrossStrategy, MACrossConfig
+from strategy.rsi import RSIStrategy, RSIConfig
+from strategy.bollinger import BollingerStrategy, BollingerConfig
 
 import time as _time
 
@@ -65,11 +67,15 @@ class StockTrader:
             logger.error(f"전략 로드 실패: {e}")
 
     def get_active_strategy(self):
-        """활성화된 첫 번째 전략 반환"""
+        """활성화된 첫 번째 전략 반환 (하위호환)"""
         for name, s in self.strategies.items():
             if s["is_active"]:
                 return name, s["params"]
         return None, {}
+
+    def get_all_active_strategies(self):
+        """활성화된 모든 전략 반환"""
+        return [(name, s["params"]) for name, s in self.strategies.items() if s["is_active"]]
 
     def build_strategy(self, name, params):
         """전략 객체 생성"""
@@ -82,7 +88,23 @@ class StockTrader:
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
             ))
-        # 추후 RSI, 볼린저 등 추가
+        if name == "RSI반등":
+            return RSIStrategy(RSIConfig(
+                period        = int(params.get("period", 14)),
+                entry         = float(params.get("entry", 30)),
+                exit          = float(params.get("exit", 60)),
+                stop_loss     = float(params.get("stop_loss", -0.03)),
+                buy_amount    = int(params.get("buy_amount", 500000)),
+                max_positions = int(params.get("max_positions", 5)),
+            ))
+        if name == "볼린저밴드":
+            return BollingerStrategy(BollingerConfig(
+                period        = int(params.get("period", 20)),
+                std_dev       = float(params.get("std", 2.0)),
+                stop_loss     = float(params.get("stop_loss", -0.03)),
+                buy_amount    = int(params.get("buy_amount", 500000)),
+                max_positions = int(params.get("max_positions", 5)),
+            ))
         return None
 
     # ── Redis 전략 변경 구독 ─────────────────────────────
@@ -255,17 +277,14 @@ class StockTrader:
 
     # ── 매매 사이클 ───────────────────────────────────────
     async def _run_cycle(self):
-        # 활성 전략 확인
-        strat_name, params = self.get_active_strategy()
-        if not strat_name:
+        # 활성화된 모든 전략 실행
+        active_strategies = self.get_all_active_strategies()
+        if not active_strategies:
             logger.info("⏸️ 활성화된 전략 없음 — 대기")
             return
 
-        strategy = self.build_strategy(strat_name, params)
-        if not strategy:
-            logger.warning(f"⚠️ 전략 객체 생성 실패: {strat_name}")
-            return
-
+        # 첫 번째 전략 기준으로 max_positions 설정
+        strat_name, params = active_strategies[0]
         max_positions = int(params.get("max_positions", 5))
 
         # ① 보유 포지션 손절/익절 체크
@@ -331,9 +350,26 @@ class StockTrader:
                 continue
 
             prices = [r["close"] for r in rows]  # 이미 ASC 정렬
-            signal_type = strategy.generate_signal(symbol, prices)
+
+            # 모든 활성 전략에서 신호 체크
+            signal_type = "HOLD"
+            triggered_strategy = ""
+            for s_name, s_params in active_strategies:
+                s_obj = self.build_strategy(s_name, s_params)
+                if not s_obj:
+                    continue
+                sig = s_obj.generate_signal(symbol, prices)
+                if sig == "BUY":
+                    signal_type = "BUY"
+                    triggered_strategy = s_name
+                    break
+                elif sig == "SELL" and symbol in self.positions:
+                    signal_type = "SELL"
+                    triggered_strategy = s_name
+                    break
 
             if signal_type == "BUY":
+                strat_name = triggered_strategy
                 cur_price = await self.trader.get_current_price(symbol)
                 if cur_price <= 0:
                     continue

@@ -421,12 +421,39 @@ class StockTrader:
                     logger.debug(f"뉴스 조회 실패: {e}")
                 # ─────────────────────────────────────────────
 
-                qty = strategy.calc_buy_qty(cur_price)
+                # Jarvis가 ML 확률 기반으로 매수 금액 자율 결정
+                ml_result = await self._get_ml_result(symbol, rows)
+                buy_prob = ml_result.get("buy_prob", 0.65)
+                available_cash = await self.trader.get_balance()
+                cash = available_cash.get("cash", 0)
+
+                if cash < 100000:
+                    logger.info(f"💸 잔고 부족 ({cash:,}원) → 매수 스킵")
+                    continue
+
+                # ML 확률 기반 금액 결정
+                if buy_prob >= 0.90:
+                    ratio, strength = 0.30, "강함"
+                elif buy_prob >= 0.80:
+                    ratio, strength = 0.20, "보통"
+                elif buy_prob >= 0.70:
+                    ratio, strength = 0.15, "약함"
+                else:
+                    ratio, strength = 0.10, "최소"
+
+                buy_amount = min(int(cash * ratio), cash)
+                buy_amount = max(buy_amount, 100000)  # 최소 10만원
+                qty = max(1, buy_amount // cur_price)
+                actual_amount = qty * cur_price
+
+                logger.info(f"💡 [{symbol}] Jarvis 금액결정: {actual_amount:,}원 "
+                            f"(ML:{buy_prob:.0%} 신호강도:{strength} 잔고:{cash:,}원)")
+
                 await self._signal_jarvis(
                     action="buy", symbol=symbol, name=symbol,
                     price=cur_price, qty=qty,
-                    strategy=strat_name,
-                    reason=f"MA크로스 골든크로스 + {ml_reason}"
+                    strategy=triggered_strategy,
+                    reason=f"{triggered_strategy} + ML {buy_prob:.0%} ({strength}) + {ml_reason}"
                 )
 
         # 상태 업데이트
@@ -438,6 +465,20 @@ class StockTrader:
         })
 
     # ── ML 예측 필터 ──────────────────────────────────────
+    async def _get_ml_result(self, symbol: str, ohlcv_rows: list) -> dict:
+        """ML 예측 결과 반환 (확률 포함)"""
+        try:
+            from ml.model import MLModelManager
+            ml = MLModelManager(db_pool=db.pool)
+            ohlcv = [{"date": str(r.get("ts",""))[:10].replace("-",""),
+                      "open": float(r.get("open",0)), "high": float(r.get("high",0)),
+                      "low": float(r.get("low",0)), "close": float(r.get("close",0)),
+                      "volume": float(r.get("volume",0))} for r in ohlcv_rows]
+            result = await ml.predict(symbol, ohlcv)
+            return result if result.get("success") else {"buy_prob": 0.65}
+        except:
+            return {"buy_prob": 0.65}
+
     async def _check_ml_signal(self, symbol: str, ohlcv_rows: list) -> tuple[bool, str]:
         """
         ML 예측으로 매수 신호 검증

@@ -2607,7 +2607,7 @@ async def get_stock_positions():
                     "symbol":    row.get("pdno"),
                     "name":      row.get("prdt_name"),
                     "qty":       qty,
-                    "avg_price": int(row.get("pchs_avg_pric", 0)),
+                    "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
                     "cur_price": int(row.get("prpr", 0)),
                     "pnl":       int(row.get("evlu_pfls_amt", 0)),
                     "pnl_rate":  float(row.get("evlu_pfls_rt", 0)),

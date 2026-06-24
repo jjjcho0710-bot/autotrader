@@ -503,9 +503,9 @@ class StockTrader:
             result = await ml.predict(symbol, ohlcv)
 
             if not result.get("success"):
-                # 모델 없으면 → 학습 데이터 부족, MA크로스만으로 진행
-                logger.info(f"[{symbol}] ML 모델 없음 → MA크로스 단독 신호 허용")
-                return True, "ML 모델 미학습 (MA크로스 단독)"
+                # 피처 생성 실패 or 모델 없음 → 신호 허용
+                logger.info(f"[{symbol}] ML 예측 불가 → 전략 신호 단독 허용")
+                return True, "ML 예측 불가 (전략 단독)"
 
             signal    = result.get("signal", "HOLD")
             buy_prob  = result.get("buy_prob", 0.5)

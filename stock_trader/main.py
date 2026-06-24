@@ -149,10 +149,11 @@ class StockTrader:
 
         self.running = True
 
-        # 매매 루프 + 전략 구독 동시 실행
+        # 매매 루프 + 전략 구독 + 실시간 모니터 동시 실행
         await asyncio.gather(
             self._loop(),
             self.subscribe_strategy_updates(),
+            self._price_monitor(),
         )
 
     # ── 메인 루프 ─────────────────────────────────────────
@@ -276,6 +277,94 @@ class StockTrader:
             logger.warning(f"Jarvis 메모리 저장 실패: {e}")
 
     # ── 매매 사이클 ───────────────────────────────────────
+    async def _price_monitor(self):
+        """3초마다 보유 포지션 급락/급등 감지 → Jarvis 즉시 판단"""
+        alert_cooldown = {}  # 종목별 마지막 알림 시간 (중복 방지)
+
+        while self.running:
+            try:
+                if self.positions:
+                    for symbol, pos in list(self.positions.items()):
+                        avg_price = pos.get("avg_price", 0)
+                        if avg_price <= 0:
+                            continue
+
+                        # Redis에서 실시간 시세 읽기
+                        try:
+                            cached = await cache.client.get(f"stock:price:{symbol}")
+                            if not cached:
+                                continue
+                            import json as _json
+                            price_data = _json.loads(cached)
+                            cur_price = int(price_data.get("price", 0))
+                        except:
+                            continue
+
+                        if cur_price <= 0:
+                            continue
+
+                        pnl_rate = (cur_price - avg_price) / avg_price * 100
+
+                        # 쿨다운 체크 (같은 종목 5분 이내 중복 알림 방지)
+                        now_ts = datetime.now().timestamp()
+                        last_alert = alert_cooldown.get(symbol, 0)
+                        if now_ts - last_alert < 300:
+                            continue
+
+                        # 급락 -3% 또는 급등 +7% 감지
+                        if pnl_rate <= -3.0 or pnl_rate >= 7.0:
+                            alert_cooldown[symbol] = now_ts
+                            direction = "급락" if pnl_rate < 0 else "급등"
+                            logger.info(f"⚡ [{symbol}] {direction} 감지: {pnl_rate:+.1f}% → Jarvis 즉시 판단")
+
+                            # Jarvis에게 매도 여부 판단 요청
+                            await self._jarvis_exit_check(
+                                symbol=symbol,
+                                cur_price=cur_price,
+                                avg_price=avg_price,
+                                pnl_rate=pnl_rate,
+                                qty=pos.get("qty", 0),
+                            )
+
+            except Exception as e:
+                logger.debug(f"가격 모니터 오류: {e}")
+
+            await asyncio.sleep(3)
+
+    async def _jarvis_exit_check(self, symbol: str, cur_price: int,
+                                  avg_price: int, pnl_rate: float, qty: int):
+        """Jarvis에게 매도 여부 판단 요청"""
+        try:
+            import aiohttp as http, os
+            dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+
+            direction = "급락" if pnl_rate < 0 else "급등"
+            async with http.ClientSession() as session:
+                resp = await session.post(
+                    f"{dashboard_url}/api/jarvis/signal",
+                    json={
+                        "bot": "stock_trader",
+                        "action": "sell",
+                        "symbol": symbol,
+                        "name": symbol,
+                        "price": cur_price,
+                        "qty": qty,
+                        "strategy": "실시간모니터",
+                        "reason": f"{direction} {pnl_rate:+.1f}% (평균단가: {avg_price:,}원)",
+                    },
+                    timeout=http.ClientTimeout(total=30)
+                )
+                result = await resp.json()
+                if result.get("executed"):
+                    logger.info(f"✅ Jarvis 매도 결정 [{symbol}] {pnl_rate:+.1f}%")
+                    # positions에서 제거
+                    self.positions.pop(symbol, None)
+                else:
+                    logger.info(f"⏸️ Jarvis HOLD [{symbol}] {pnl_rate:+.1f}%")
+        except Exception as e:
+            logger.error(f"Jarvis 매도 판단 실패 [{symbol}]: {e}")
+
+
     async def _run_cycle(self):
         # 활성화된 모든 전략 실행
         active_strategies = self.get_all_active_strategies()

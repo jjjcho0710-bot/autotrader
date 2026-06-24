@@ -53,6 +53,7 @@ class CryptoTrader:
         asyncio.create_task(self._subscribe_strategy_changes())
         asyncio.create_task(self._price_loop())
         asyncio.create_task(self._daily_report_loop())
+        asyncio.create_task(self._price_monitor())  # 급락/급등 실시간 감지
         await self._loop()
 
     async def load_strategies(self):
@@ -191,6 +192,82 @@ class CryptoTrader:
             logger.info("✅ 일일 결산 보고 완료")
         except Exception as e:
             logger.error(f"일일 결산 보고 실패: {e}")
+
+    async def _price_monitor(self):
+        """3초마다 보유 코인 급락/급등 감지 → 즉시 대응"""
+        alert_cooldown = {}
+
+        while self.running:
+            try:
+                if self.positions:
+                    # Redis에서 코인 시세 읽기
+                    try:
+                        import json as _json
+                        cached = await cache.client.get("crypto:prices")
+                        prices_data = _json.loads(cached) if cached else {}
+                    except:
+                        prices_data = {}
+
+                    for pair, pos in list(self.positions.items()):
+                        avg_price = float(pos.get("avg_price", 0))
+                        if avg_price <= 0:
+                            continue
+
+                        price_info = prices_data.get(pair, {})
+                        cur_price = float(price_info.get("price", 0))
+                        if cur_price <= 0:
+                            continue
+
+                        pnl_rate = (cur_price - avg_price) / avg_price * 100
+
+                        now_ts = datetime.now(KST).timestamp()
+                        last_alert = alert_cooldown.get(pair, 0)
+                        if now_ts - last_alert < 300:
+                            continue
+
+                        # 급락 -4% 또는 급등 +8% 감지
+                        if pnl_rate <= -4.0 or pnl_rate >= 8.0:
+                            alert_cooldown[pair] = now_ts
+                            direction = "급락" if pnl_rate < 0 else "급등"
+                            logger.info(f"⚡ [{pair}] {direction} 감지: {pnl_rate:+.1f}%")
+
+                            qty = float(pos.get("qty", 0))
+                            if qty <= 0:
+                                continue
+
+                            # 급락 시 즉시 매도, 급등 시 익절
+                            if pnl_rate <= -4.0:
+                                result = await self.trader.sell_market(pair, qty)
+                                if result.get("success"):
+                                    pnl = (cur_price - avg_price) * qty
+                                    await db.insert_trade(
+                                        bot="crypto_trader", asset_type="crypto",
+                                        symbol=pair, side="SELL",
+                                        price=cur_price, quantity=qty,
+                                        amount=cur_price * qty,
+                                        strategy="급락손절", pnl=pnl,
+                                    )
+                                    logger.info(f"🛑 급락 손절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
+                                    self.positions.pop(pair, None)
+                            elif pnl_rate >= 8.0:
+                                result = await self.trader.sell_market(pair, qty)
+                                if result.get("success"):
+                                    pnl = (cur_price - avg_price) * qty
+                                    await db.insert_trade(
+                                        bot="crypto_trader", asset_type="crypto",
+                                        symbol=pair, side="SELL",
+                                        price=cur_price, quantity=qty,
+                                        amount=cur_price * qty,
+                                        strategy="급등익절", pnl=pnl,
+                                    )
+                                    logger.info(f"🎯 급등 익절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
+                                    self.positions.pop(pair, None)
+
+            except Exception as e:
+                logger.debug(f"코인 가격 모니터 오류: {e}")
+
+            await asyncio.sleep(3)
+
 
     async def _run_cycle(self):
         strat_name, params = self.get_active_strategy()

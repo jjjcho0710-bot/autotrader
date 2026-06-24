@@ -2939,14 +2939,6 @@ async def jarvis_signal(request: Request):
         # 1. DB 컨텍스트 수집
         ctx = await get_portfolio_context()
 
-        # 모의투자 잔고 직접 조회
-        paper_cash = 10000000  # 기본값
-        try:
-            stock_pos = await get_stock_positions()
-            paper_cash = stock_pos.get("account", {}).get("cash", 10000000) or 10000000
-        except:
-            pass
-
         # 2. Jarvis에게 분석 요청 (DB 데이터 포함)
         analysis_prompt = f"""[매매 신호 발생]
 종목: {name}({symbol})
@@ -2957,12 +2949,13 @@ async def jarvis_signal(request: Request):
 매수금액: {price * (qty if isinstance(qty, (int,float)) else 0):,.0f}원
 신호 이유: {reason}
 
-[계좌 현황]
-모의투자 잔고: {paper_cash:,}원
+[현재 포트폴리오 현황]
 {ctx}
 
 위 데이터를 기반으로 이 {action_kr} 신호를 실행해야 할지 판단해줘.
-모의투자 잔고가 매수금액보다 충분하면 EXECUTE해줘.
+- 잔고가 충분한지
+- 현재 포지션과 중복되지 않는지
+- 시장 흐름이 신호와 일치하는지
 반드시 EXECUTE 또는 SKIP 으로 시작해서 이유를 한 줄로 설명해줘."""
 
         # 3. Jarvis 판단

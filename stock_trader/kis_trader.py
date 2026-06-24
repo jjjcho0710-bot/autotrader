@@ -175,33 +175,51 @@ class KISTrader:
             return positions
 
     # ── 매수 주문 ───────────────────────────────────────
+    async def _refresh_token_if_expired(self, data: dict) -> bool:
+        """토큰 만료 확인 후 자동 재발급, 재발급 성공 시 True"""
+        msg = data.get("msg1", "")
+        if data.get("rt_cd") == "1" and ("만료" in msg or "token" in msg.lower() or "EGW00" in data.get("msg_cd", "")):
+            logger.warning("🔄 KIS 토큰 만료 → 자동 재발급")
+            try:
+                await cache.client.delete("kis:access_token")
+            except:
+                pass
+            self.access_token = ""
+            await self._get_token()
+            return True
+        return False
+
     async def buy(self, symbol: str, price: int, qty: int) -> dict:
-        """지정가 매수"""
+        """지정가 매수 (토큰 만료 시 자동 재시도)"""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0802U" if config.KIS_IS_PAPER else "TTTC0802U"
         payload = {
             "CANO": self._cano,
             "ACNT_PRDT_CD": self._acnt_prdt_cd,
             "PDNO": symbol,
-            "ORD_DVSN": "00",         # 지정가
+            "ORD_DVSN": "00",
             "ORD_QTY": str(qty),
             "ORD_UNPR": str(price),
         }
-        async with self.session.post(
-            url, headers=self._headers(tr_id), json=payload
-        ) as resp:
-            data = await resp.json()
-            rt_cd = data.get("rt_cd")
-            if rt_cd == "0":
-                logger.info(f"✅ 매수 체결: {symbol} {price:,}원 × {qty}주")
-                return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
-            else:
+        for attempt in range(2):  # 최대 2회 시도
+            async with self.session.post(
+                url, headers=self._headers(tr_id), json=payload
+            ) as resp:
+                data = await resp.json()
+                rt_cd = data.get("rt_cd")
+                if rt_cd == "0":
+                    logger.info(f"✅ 매수 체결: {symbol} {price:,}원 × {qty}주")
+                    return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
+                # 토큰 만료 → 재발급 후 재시도
+                if attempt == 0 and await self._refresh_token_if_expired(data):
+                    continue
                 logger.error(f"❌ 매수 실패: {symbol} — {data.get('msg1')}")
                 return {"success": False, "error": data.get("msg1")}
+        return {"success": False, "error": "매수 실패"}
 
     # ── 매도 주문 ───────────────────────────────────────
     async def sell(self, symbol: str, price: int, qty: int) -> dict:
-        """지정가 매도"""
+        """지정가 매도 (토큰 만료 시 자동 재시도)"""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0801U" if config.KIS_IS_PAPER else "TTTC0801U"
         payload = {

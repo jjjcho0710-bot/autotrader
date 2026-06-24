@@ -514,6 +514,7 @@ class StockTrader:
             buy_prob  = result.get("buy_prob", 0.5)
             confidence = result.get("confidence", 0)
 
+            logger.info(f"[{symbol}] ML 결과: signal={signal} buy_prob={buy_prob:.0%}")
             if signal == "BUY" and buy_prob >= 0.60:
                 return True, f"ML 매수확률 {buy_prob:.0%} (신뢰도 {confidence:.0f}%)"
             elif signal == "HOLD":

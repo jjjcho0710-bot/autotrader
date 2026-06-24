@@ -1439,7 +1439,7 @@ async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
             openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
             jarvis_model = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
 
-            # 뉴스 감성 분석
+            # 뉴스 감성 분석 (Jarvis 웹 검색 기반 - 실제 뉴스)
             for symbol in symbols[:10]:  # 10종목만
                 try:
                     async with db_pool.acquire() as conn:
@@ -1448,10 +1448,10 @@ async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
                         )
                     name = name_row["name"] if name_row else symbol
 
-                    prompt = f"""다음 주식 뉴스를 분석해서 JSON만 출력해줘. 다른 말은 하지 마.
-종목: {name}({symbol})
-요청: {name} 주식 최신 뉴스 감성 분석
-출력형식: {{"score": 1, "signal": "BUY", "summary": "긍정적"}}"""
+                    prompt = f"""웹 검색으로 {name}({symbol}) 주식의 오늘 최신 뉴스를 찾아서 감성 분석해줘.
+실제 뉴스 제목과 내용을 기반으로 분석하고, JSON만 출력해줘. 다른 말은 하지 마.
+출력형식: {{"score": 1, "signal": "BUY", "summary": "실제 뉴스 기반 요약 (뉴스 제목 포함)"}}
+score는 -2~+2, signal은 BUY/SELL/NEUTRAL"""
 
                     async with aiohttp.ClientSession() as session:
                         async with session.post(
@@ -1483,6 +1483,17 @@ async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
                                 SET sentiment_score=$3, signal=$4, summary=$5
                             """, symbol, datetime.now().date(), score, signal, summary)
                         logger.info(f"📰 {name}: {signal} ({score:+d}) - {summary}")
+
+                        # Jarvis 메모리에 뉴스 분석 결과 저장 (학습용)
+                        from datetime import timezone, timedelta
+                        KST = timezone(timedelta(hours=9))
+                        now_str = datetime.now(KST).strftime("%Y-%m-%d")
+                        memory_content = (
+                            f"[뉴스분석 {now_str}] {name}({symbol}): {signal} "
+                            f"감성점수 {score:+d} - {summary}"
+                        )
+                        session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
+                        await _save_chat_history(session_id, "system", memory_content)
 
                 except Exception as e:
                     logger.error(f"뉴스 수집 실패 [{symbol}]: {e}")

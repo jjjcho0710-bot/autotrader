@@ -453,6 +453,9 @@ class CryptoTrader:
                     logger.info(f"✅ 매수 완료 [{pair}] {actual_amount:,.0f}원 (ML확률:{ml_prob:.0%})")
 
         # Redis 캐시 업데이트
+        # KRW 잔고 Redis 저장 (dashboard에서 읽음)
+        await cache.client.setex("crypto:krw_balance", 120, str(krw_balance))
+
         await cache.set_bot_status("crypto_trader", {
             "status":      "running",
             "last_cycle":  datetime.now(KST).isoformat(),

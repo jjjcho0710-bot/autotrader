@@ -2645,19 +2645,39 @@ async def get_stock_positions():
 
 @app.get("/api/positions/crypto")
 async def get_crypto_positions():
-    """업비트 코인 보유 포지션 - Redis 캐시에서 조회"""
+    """업비트 코인 보유 포지션 + 계좌 요약"""
     try:
-        # crypto-trader가 저장한 포지션 캐시 조회
+        import json as _json
+
+        # 포지션 캐시
+        positions = []
         cached = await redis_client.get("crypto:positions")
         if cached:
-            import json
-            positions = json.loads(cached)
-            return {"success": True, "data": positions}
+            positions = _json.loads(cached)
 
-        # 캐시 없으면 빈 데이터
-        return {"success": True, "data": [], "message": "포지션 데이터 없음 (crypto-trader 실행 중인지 확인)"}
+        # KRW 잔고
+        krw_balance = 0.0
+        krw_cached = await redis_client.get("crypto:krw_balance")
+        if krw_cached:
+            krw_balance = float(krw_cached)
+
+        # 코인 평가금액 + 손익 계산
+        coin_eval = sum(float(p.get("cur_price",0)) * float(p.get("qty",0)) for p in positions)
+        buy_amount = sum(float(p.get("avg_price",0)) * float(p.get("qty",0)) for p in positions)
+        pnl = coin_eval - buy_amount
+        pnl_rate = (pnl / buy_amount * 100) if buy_amount > 0 else 0.0
+
+        account = {
+            "krw_balance": krw_balance,
+            "coin_eval":   round(coin_eval, 2),
+            "total_assets": round(krw_balance + coin_eval, 2),
+            "pnl":         round(pnl, 2),
+            "pnl_rate":    round(pnl_rate, 2),
+        }
+
+        return {"success": True, "data": positions, "account": account}
     except Exception as e:
-        return {"success": False, "error": str(e), "data": []}
+        return {"success": False, "error": str(e), "data": [], "account": {}}
 
 
 @app.get("/api/balance/stock")

@@ -373,6 +373,7 @@ class StockTrader:
 
             if signal_type == "BUY":
                 strat_name = triggered_strategy
+                logger.info(f"📈 [{symbol}] {triggered_strategy} 매수 신호 → ML 필터 검사")
                 cur_price = await self.trader.get_current_price(symbol)
                 if cur_price <= 0:
                     continue

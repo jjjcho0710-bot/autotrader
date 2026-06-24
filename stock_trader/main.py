@@ -283,6 +283,8 @@ class StockTrader:
             logger.info("⏸️ 활성화된 전략 없음 — 대기")
             return
 
+        logger.info(f"📋 활성 전략: {[s[0] for s in active_strategies]}")
+
         # 첫 번째 전략 기준으로 max_positions 설정
         strat_name, params = active_strategies[0]
         max_positions = int(params.get("max_positions", 5))
@@ -349,7 +351,7 @@ class StockTrader:
             if len(rows) < 21:
                 continue
 
-            prices = [r["close"] for r in rows]  # 이미 ASC 정렬
+            prices = [float(r["close"]) for r in rows]  # 이미 ASC 정렬
 
             # 모든 활성 전략에서 신호 체크
             signal_type = "HOLD"
@@ -357,6 +359,7 @@ class StockTrader:
             for s_name, s_params in active_strategies:
                 s_obj = self.build_strategy(s_name, s_params)
                 if not s_obj:
+                    logger.debug(f"[{symbol}] {s_name} 전략 객체 생성 실패")
                     continue
                 sig = s_obj.generate_signal(symbol, prices)
                 if sig == "BUY":

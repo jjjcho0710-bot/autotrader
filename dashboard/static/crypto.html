@@ -5,283 +5,167 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>AutoTrader — 코인</title>
 <style>
-/* ── 테마 변수 ── */
-:root[data-theme="dark"] {
-  --bg: #0d1421; --panel: #1a2332; --card: #1e2d40;
-  --border: #2a3a4e; --text: #e8edf3; --muted: #8b95a1;
-  --up: #f75467; --dn: #4386f9; --accent: #1763b6;
-  --header: #111827; --input: #243447; --badge: #243447;
-}
-:root[data-theme="light"] {
-  --bg: #f4f6f9; --panel: #ffffff; --card: #ffffff;
-  --border: #e2e8f0; --text: #1a2332; --muted: #8b95a1;
-  --up: #e02020; --dn: #1763b6; --accent: #1763b6;
-  --header: #ffffff; --input: #f4f6f9; --badge: #f0f4ff;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; background: var(--bg); color: var(--text);
-  font-family: -apple-system, 'Pretendard', sans-serif; font-size: 14px; }
-body { display: flex; flex-direction: column; }
+:root[data-theme="dark"]{--bg:#0d1421;--panel:#1a2332;--card:#1e2d40;--border:#2a3a4e;--text:#e8edf3;--muted:#8b95a1;--up:#f75467;--dn:#4386f9;--accent:#1763b6;--header:#111827;--green:#22c55e;--input:#243447;--badge:#243447;}
+:root[data-theme="light"]{--bg:#f4f6f9;--panel:#ffffff;--card:#ffffff;--border:#e2e8f0;--text:#1a2332;--muted:#8b95a1;--up:#e02020;--dn:#1763b6;--accent:#1763b6;--header:#ffffff;--green:#16a34a;--input:#f4f6f9;--badge:#f0f4ff;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{background:var(--bg);color:var(--text);font-family:-apple-system,'Pretendard',sans-serif;font-size:14px;}
+body{display:flex;flex-direction:column;min-height:100vh;padding-bottom:70px;}
 
-/* ── 헤더 ── */
-.header {
-  background: var(--header); border-bottom: 1px solid var(--border);
-  height: 52px; display: flex; align-items: center;
-  justify-content: space-between; padding: 0 16px; position: sticky; top: 0; z-index: 100;
-}
-.header-title { font-size: 17px; font-weight: 700; color: var(--text); }
-.header-actions { display: flex; gap: 12px; align-items: center; }
-.theme-btn { background: none; border: none; cursor: pointer; font-size: 18px; }
+.header{background:var(--header);border-bottom:1px solid var(--border);height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;position:sticky;top:0;z-index:100;}
+.header-title{font-size:17px;font-weight:700;}
+.theme-btn{background:none;border:none;cursor:pointer;font-size:18px;}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;margin-right:4px;animation:blink 1.5s infinite;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 
-/* ── 검색바 ── */
-.search-bar {
-  background: var(--header); padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.search-input {
-  width: 100%; background: var(--input); border: none; border-radius: 8px;
-  padding: 8px 12px 8px 32px; color: var(--text); font-size: 14px;
-  outline: none; position: relative;
-}
-.search-wrap { position: relative; }
-.search-wrap::before { content: '🔍'; position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 13px; }
+/* 계좌 요약 */
+.account-bar{background:var(--panel);padding:14px 16px;border-bottom:1px solid var(--border);}
+.account-main{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;}
+.account-label{font-size:11px;color:var(--muted);margin-bottom:4px;}
+.account-val{font-size:22px;font-weight:800;font-family:'SF Mono',monospace;}
+.account-sub{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.sub-item{display:flex;flex-direction:column;gap:2px;}
+.sub-label{font-size:10px;color:var(--muted);}
+.sub-val{font-size:13px;font-weight:700;}
 
-/* ── 요약 바 ── */
-.summary-bar {
-  background: var(--panel); padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  display: flex; justify-content: space-between; font-size: 12px;
-}
-.sum-item { display: flex; flex-direction: column; gap: 2px; }
-.sum-label { color: var(--muted); }
-.sum-val { font-weight: 700; font-size: 14px; }
+/* 탭 */
+.tab-row{background:var(--panel);display:flex;border-bottom:2px solid var(--border);overflow-x:auto;white-space:nowrap;position:sticky;top:52px;z-index:99;}
+.tab-btn{padding:10px 18px;font-size:13px;font-weight:500;color:var(--muted);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;margin-bottom:-2px;white-space:nowrap;flex-shrink:0;}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:700;}
 
-/* ── 탭 ── */
-.tab-row {
-  background: var(--panel); padding: 0 16px;
-  border-bottom: 2px solid var(--border);
-  display: flex; gap: 0; overflow-x: auto; white-space: nowrap;
-}
-.tab-btn {
-  padding: 10px 16px; font-size: 13px; font-weight: 500;
-  color: var(--muted); cursor: pointer; border: none; background: none;
-  border-bottom: 2px solid transparent; margin-bottom: -2px;
-  white-space: nowrap; flex-shrink: 0;
-}
-.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
+/* 섹션 */
+.section{padding:12px;}
 
-/* ── 마켓 탭 필터 ── */
-.market-filter {
-  background: var(--panel); padding: 10px 16px;
-  display: flex; gap: 8px; border-bottom: 1px solid var(--border);
-}
-.mf-btn {
-  padding: 5px 14px; border-radius: 6px; font-size: 13px; font-weight: 600;
-  border: 1px solid var(--border); background: none; color: var(--muted); cursor: pointer;
-}
-.mf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* 보유 카드 */
+.pos-card{background:var(--card);border-radius:12px;padding:16px;border:1px solid var(--border);margin-bottom:10px;}
+.pos-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+.pos-coin-info{display:flex;flex-direction:column;gap:3px;}
+.pos-coin-name{font-size:16px;font-weight:800;}
+.pos-coin-sym{font-size:11px;color:var(--muted);}
+.pos-rate-big{font-size:20px;font-weight:800;}
+.pos-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.pos-gi{display:flex;flex-direction:column;gap:3px;}
+.pos-gi-label{font-size:10px;color:var(--muted);font-weight:600;}
+.pos-gi-val{font-size:14px;font-weight:700;font-family:'SF Mono',monospace;}
 
-/* ── 컬럼 헤더 ── */
-.col-header {
-  display: grid; grid-template-columns: 1fr 90px 70px 80px;
-  padding: 8px 16px; font-size: 11px; color: var(--muted);
-  border-bottom: 1px solid var(--border); background: var(--panel);
-}
+/* 감시 종목 */
+.watch-col{display:grid;grid-template-columns:1fr 90px 65px;padding:8px 16px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--panel);}
+.watch-row{display:grid;grid-template-columns:1fr 90px 65px;padding:13px 16px;border-bottom:1px solid var(--border);background:var(--panel);align-items:center;}
+.watch-row:active{background:var(--card);}
+.coin-name{font-size:13px;font-weight:700;}
+.coin-sym{font-size:10px;color:var(--muted);}
+.watch-price{text-align:right;font-size:13px;font-weight:700;font-family:'SF Mono',monospace;}
+.watch-rate{text-align:right;font-size:12px;font-weight:700;}
 
-/* ── 코인 리스트 ── */
-.coin-list { flex: 1; overflow-y: auto; }
-.coin-row {
-  display: grid; grid-template-columns: 1fr 90px 70px 80px;
-  padding: 12px 16px; border-bottom: 1px solid var(--border);
-  align-items: center; cursor: pointer; background: var(--panel);
-}
-.coin-row:active { background: var(--card); }
-.coin-info { display: flex; flex-direction: column; gap: 2px; }
-.coin-name { font-size: 14px; font-weight: 600; color: var(--text); }
-.coin-symbol { font-size: 11px; color: var(--muted); }
-.coin-price { text-align: right; font-size: 14px; font-weight: 600; font-family: 'SF Mono', monospace; }
-.coin-change { text-align: right; display: flex; flex-direction: column; gap: 1px; }
-.coin-rate { font-size: 13px; font-weight: 700; }
-.coin-diff { font-size: 11px; }
-.coin-volume { text-align: right; font-size: 12px; color: var(--muted); }
-.up { color: var(--up); }
-.dn { color: var(--dn); }
+/* 신호 카드 */
+.signal-card{background:var(--card);border-radius:12px;padding:14px;border:1px solid var(--border);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;}
+.sig-left{display:flex;flex-direction:column;gap:4px;}
+.sig-coin{font-size:14px;font-weight:700;}
+.sig-sub{font-size:11px;color:var(--muted);}
+.sig-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
+.sig-badge{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:800;}
+.badge-buy{background:rgba(247,84,103,0.15);color:var(--up);}
+.badge-sell{background:rgba(67,134,249,0.15);color:var(--dn);}
+.badge-hold{background:var(--badge);color:var(--muted);}
+.sig-prob{font-size:13px;font-weight:700;}
 
-/* ── 보유 포지션 탭 ── */
-.pos-section { padding: 16px; }
-.pos-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.pos-title { font-size: 16px; font-weight: 700; }
-.kpi-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-.kpi-card { background: var(--card); border-radius: 10px; padding: 14px; border: 1px solid var(--border); }
-.kpi-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-.kpi-val { font-size: 20px; font-weight: 800; font-family: 'SF Mono', monospace; }
-.pos-card {
-  background: var(--card); border-radius: 10px; padding: 14px;
-  border: 1px solid var(--border); margin-bottom: 10px;
-}
-.pos-card-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
-.pos-coin-name { font-size: 15px; font-weight: 700; }
-.pos-pnl { font-size: 15px; font-weight: 700; }
-.pos-details { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.pos-detail-item { display: flex; flex-direction: column; gap: 2px; }
-.pos-detail-label { font-size: 11px; color: var(--muted); }
-.pos-detail-val { font-size: 13px; font-weight: 600; }
+/* 거래 이력 */
+.trade-item{background:var(--card);border-radius:12px;padding:14px;border:1px solid var(--border);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;}
+.trade-left{display:flex;flex-direction:column;gap:4px;}
+.trade-coin{font-size:14px;font-weight:700;}
+.trade-time{font-size:11px;color:var(--muted);}
+.trade-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;}
+.trade-amount{font-size:14px;font-weight:700;}
+.trade-pnl{font-size:12px;font-weight:700;}
+.side-badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;}
+.side-buy{background:rgba(247,84,103,0.15);color:var(--up);}
+.side-sell{background:rgba(67,134,249,0.15);color:var(--dn);}
 
-/* ── Jarvis 신호 탭 ── */
-.signal-list { padding: 12px; }
-.signal-card {
-  background: var(--card); border-radius: 10px; padding: 14px;
-  border: 1px solid var(--border); margin-bottom: 10px;
-  display: flex; justify-content: space-between; align-items: center;
-}
-.signal-left { display: flex; flex-direction: column; gap: 4px; }
-.signal-coin { font-size: 14px; font-weight: 700; }
-.signal-strategy { font-size: 11px; color: var(--muted); }
-.signal-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.signal-badge {
-  padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 700;
-}
-.badge-buy { background: rgba(247,84,103,0.15); color: var(--up); }
-.badge-sell { background: rgba(67,134,249,0.15); color: var(--dn); }
-.badge-hold { background: var(--badge); color: var(--muted); }
-.signal-prob { font-size: 13px; font-weight: 700; }
+.up{color:var(--up);}
+.dn{color:var(--dn);}
+.hidden{display:none!important;}
+.empty{text-align:center;padding:40px 20px;color:var(--muted);font-size:14px;line-height:1.8;}
 
-/* ── 거래 이력 탭 ── */
-.trade-list { padding: 12px; }
-.trade-item {
-  background: var(--card); border-radius: 10px; padding: 14px;
-  border: 1px solid var(--border); margin-bottom: 8px;
-  display: flex; justify-content: space-between; align-items: center;
-}
-.trade-left { display: flex; flex-direction: column; gap: 3px; }
-.trade-coin { font-size: 14px; font-weight: 700; }
-.trade-time { font-size: 11px; color: var(--muted); }
-.trade-right { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
-.trade-amount { font-size: 14px; font-weight: 700; }
-.trade-side {
-  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
-}
-.side-buy { background: rgba(247,84,103,0.15); color: var(--up); }
-.side-sell { background: rgba(67,134,249,0.15); color: var(--dn); }
-
-/* ── 하단 네비 ── */
-.bottom-nav {
-  background: var(--header); border-top: 1px solid var(--border);
-  display: flex; height: 56px; padding-bottom: env(safe-area-inset-bottom);
-}
-.bn-item {
-  flex: 1; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 3px; text-decoration: none;
-  color: var(--muted); font-size: 10px; font-weight: 500;
-}
-.bn-item.active { color: var(--accent); }
-.bn-icon { font-size: 22px; line-height: 1; }
-
-/* ── 공통 ── */
-.empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
-.hidden { display: none !important; }
+.bottom-nav{background:var(--header);border-top:1px solid var(--border);display:flex;height:56px;position:fixed;bottom:0;left:0;right:0;padding-bottom:env(safe-area-inset-bottom);}
+.bn-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;text-decoration:none;color:var(--muted);font-size:10px;font-weight:500;}
+.bn-item.active{color:var(--accent);}
+.bn-icon{font-size:22px;line-height:1;}
 </style>
 </head>
 <body>
 
-<!-- 헤더 -->
 <div class="header">
   <div style="width:44px"></div>
-  <div class="header-title">코인</div>
-  <div class="header-actions">
-    <button class="theme-btn" onclick="toggleTheme()" id="theme-icon">🌙</button>
-  </div>
+  <div class="header-title"><span class="live-dot"></span>코인</div>
+  <button class="theme-btn" onclick="toggleTheme()" id="theme-icon">🌙</button>
 </div>
 
-<!-- 검색바 -->
-<div class="search-bar">
-  <div class="search-wrap">
-    <input class="search-input" type="text" placeholder="코인명/심볼 검색" id="search-input" oninput="filterCoins()">
+<!-- 계좌 요약 -->
+<div class="account-bar">
+  <div class="account-main">
+    <div>
+      <div class="account-label">총 보유자산</div>
+      <div class="account-val" id="total-assets">-</div>
+    </div>
+    <div style="text-align:right">
+      <div class="account-label">평가손익</div>
+      <div class="account-val" id="total-pnl" style="font-size:18px">-</div>
+    </div>
   </div>
-</div>
-
-<!-- 요약 바 -->
-<div class="summary-bar">
-  <div class="sum-item">
-    <span class="sum-label">보유 KRW</span>
-    <span class="sum-val" id="krw-balance">-</span>
-  </div>
-  <div class="sum-item" style="text-align:center">
-    <span class="sum-label">총 보유자산</span>
-    <span class="sum-val" id="total-assets">-</span>
-  </div>
-  <div class="sum-item" style="text-align:right">
-    <span class="sum-label">평가손익</span>
-    <span class="sum-val" id="total-pnl">-</span>
+  <div class="account-sub">
+    <div class="sub-item">
+      <span class="sub-label">보유 KRW</span>
+      <span class="sub-val" id="krw-bal">-</span>
+    </div>
+    <div class="sub-item">
+      <span class="sub-label">코인 평가</span>
+      <span class="sub-val" id="coin-eval">-</span>
+    </div>
+    <div class="sub-item">
+      <span class="sub-label">수익률</span>
+      <span class="sub-val" id="pnl-rate">-</span>
+    </div>
   </div>
 </div>
 
 <!-- 탭 -->
 <div class="tab-row">
-  <button class="tab-btn active" onclick="showTab('market',this)">거래소</button>
-  <button class="tab-btn" onclick="showTab('position',this)">보유자산</button>
+  <button class="tab-btn active" onclick="showTab('position',this)">보유자산</button>
+  <button class="tab-btn" onclick="showTab('watchlist',this)">감시 종목</button>
   <button class="tab-btn" onclick="showTab('signal',this)">Jarvis 신호</button>
   <button class="tab-btn" onclick="showTab('trades',this)">거래내역</button>
 </div>
 
-<!-- 거래소 탭 -->
-<div id="tab-market">
-  <div class="market-filter">
-    <button class="mf-btn active" onclick="filterMarket('KRW',this)">KRW</button>
-    <button class="mf-btn" onclick="filterMarket('UP',this)">상승</button>
-    <button class="mf-btn" onclick="filterMarket('DN',this)">하락</button>
+<!-- 보유자산 -->
+<div id="tab-position">
+  <div class="section" id="pos-list">
+    <div class="empty">보유 코인 없음</div>
   </div>
-  <div class="col-header">
-    <span>코인명</span>
+</div>
+
+<!-- 감시 종목 -->
+<div id="tab-watchlist" class="hidden">
+  <div class="watch-col">
+    <span>코인</span>
     <span style="text-align:right">현재가</span>
     <span style="text-align:right">전일대비</span>
-    <span style="text-align:right">거래대금</span>
   </div>
-  <div class="coin-list" id="coin-list">
-    <div class="empty">시세 로딩 중...</div>
-  </div>
+  <div id="watch-list"></div>
 </div>
 
-<!-- 보유자산 탭 -->
-<div id="tab-position" class="hidden">
-  <div class="pos-section">
-    <div class="kpi-row">
-      <div class="kpi-card">
-        <div class="kpi-label">보유 KRW</div>
-        <div class="kpi-val" id="pos-krw">-</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">코인 평가</div>
-        <div class="kpi-val" id="pos-coin-eval">-</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">평가손익</div>
-        <div class="kpi-val" id="pos-pnl">-</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-label">수익률</div>
-        <div class="kpi-val" id="pos-rate">-</div>
-      </div>
-    </div>
-    <div id="pos-list"><div class="empty">보유 코인 없음</div></div>
-  </div>
-</div>
-
-<!-- Jarvis 신호 탭 -->
+<!-- Jarvis 신호 -->
 <div id="tab-signal" class="hidden">
-  <div class="signal-list" id="signal-list">
+  <div class="section" id="signal-list">
     <div class="empty">신호 없음</div>
   </div>
 </div>
 
-<!-- 거래내역 탭 -->
+<!-- 거래내역 -->
 <div id="tab-trades" class="hidden">
-  <div class="trade-list" id="trade-list">
+  <div class="section" id="trade-list">
     <div class="empty">거래 내역 없음</div>
   </div>
 </div>
 
-<!-- 하단 네비 -->
 <nav class="bottom-nav">
   <a href="dashboard-C.html" class="bn-item"><span class="bn-icon">⊞</span>대시보드</a>
   <a href="stock.html" class="bn-item"><span class="bn-icon">📈</span>주식</a>
@@ -291,215 +175,151 @@ body { display: flex; flex-direction: column; }
 </nav>
 
 <script>
-const API = '';
-const COIN_NAMES = {
-  'KRW-BTC':'비트코인','KRW-ETH':'이더리움','KRW-SOL':'솔라나','KRW-XRP':'리플',
-  'KRW-ADA':'에이다','KRW-DOGE':'도지코인','KRW-AVAX':'아발란체','KRW-DOT':'폴카닷',
-  'KRW-LINK':'체인링크','KRW-MATIC':'폴리곤','KRW-SUI':'수이','KRW-TRX':'트론',
-  'KRW-SHIB':'시바이누','KRW-ARB':'아비트럼','KRW-OP':'옵티미즘','KRW-NEAR':'니어',
-  'KRW-APT':'앱토스','KRW-FIL':'파일코인','KRW-SAND':'샌드박스','KRW-AXS':'엑시',
-};
+const API='';
+const COIN_NAMES={'KRW-BTC':'비트코인','KRW-ETH':'이더리움','KRW-SOL':'솔라나','KRW-XRP':'리플','KRW-ADA':'에이다','KRW-DOGE':'도지코인','KRW-AVAX':'아발란체','KRW-DOT':'폴카닷','KRW-LINK':'체인링크','KRW-SUI':'수이','KRW-TRX':'트론','KRW-SHIB':'시바이누','KRW-ARB':'아비트럼','KRW-OP':'옵티미즘','KRW-NEAR':'니어','KRW-APT':'앱토스','KRW-SAND':'샌드박스'};
 
-let allCoins = [];
-let marketFilter = 'KRW';
+function fmt(n){return Number(n||0).toLocaleString();}
+function fmtR(r){return (r>=0?'+':'')+parseFloat(r||0).toFixed(2)+'%';}
 
-function fmt(n) { return Number(n||0).toLocaleString(); }
-function fmtV(n) { 
-  n = Number(n||0);
-  if(n >= 1e8) return (n/1e8).toFixed(0)+'억';
-  if(n >= 1e4) return (n/1e4).toFixed(0)+'만';
-  return fmt(n);
+function toggleTheme(){
+  const h=document.documentElement;const dark=h.getAttribute('data-theme')==='dark';
+  h.setAttribute('data-theme',dark?'light':'dark');
+  document.getElementById('theme-icon').textContent=dark?'☀️':'🌙';
+  localStorage.setItem('theme',dark?'light':'dark');
 }
+const th=localStorage.getItem('theme')||'dark';
+document.documentElement.setAttribute('data-theme',th);
+document.addEventListener('DOMContentLoaded',()=>{document.getElementById('theme-icon').textContent=th==='dark'?'🌙':'☀️';});
 
-// 테마
-function toggleTheme() {
-  const html = document.documentElement;
-  const isDark = html.getAttribute('data-theme') === 'dark';
-  html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-  document.getElementById('theme-icon').textContent = isDark ? '☀️' : '🌙';
-  localStorage.setItem('theme', isDark ? 'light' : 'dark');
-}
-// 저장된 테마 적용
-const savedTheme = localStorage.getItem('theme') || 'dark';
-document.documentElement.setAttribute('data-theme', savedTheme);
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('theme-icon').textContent = savedTheme === 'dark' ? '🌙' : '☀️';
-});
-
-// 탭 전환
-function showTab(tab, btn) {
-  ['market','position','signal','trades'].forEach(t => {
-    document.getElementById('tab-'+t).classList.add('hidden');
-  });
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+function showTab(tab,btn){
+  ['position','watchlist','signal','trades'].forEach(t=>document.getElementById('tab-'+t).classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('tab-'+tab).classList.remove('hidden');
-  if(btn) btn.classList.add('active');
+  if(btn)btn.classList.add('active');
 }
 
-// 마켓 필터
-function filterMarket(type, btn) {
-  marketFilter = type;
-  document.querySelectorAll('.mf-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  renderCoins();
-}
+async function loadPositions(){
+  try{
+    const r=await fetch(`${API}/api/positions/crypto`);
+    const d=await r.json();
+    const acc=d.account||{};
+    const krw=acc.krw_balance||0;
+    const coinEval=acc.coin_eval||0;
+    const pnl=acc.pnl||0;
+    const rate=acc.pnl_rate||0;
 
-// 검색 필터
-function filterCoins() {
-  renderCoins();
-}
+    document.getElementById('total-assets').textContent=fmt(Math.round(krw+coinEval))+'원';
+    const tpEl=document.getElementById('total-pnl');
+    tpEl.textContent=(pnl>=0?'+':'')+fmt(Math.round(pnl))+'원';
+    tpEl.className='account-val '+(pnl>=0?'up':'dn');
+    document.getElementById('krw-bal').textContent=fmt(Math.round(krw))+'원';
+    document.getElementById('coin-eval').textContent=fmt(Math.round(coinEval))+'원';
+    const prEl=document.getElementById('pnl-rate');
+    prEl.textContent=fmtR(rate);
+    prEl.className='sub-val '+(rate>=0?'up':'dn');
 
-function renderCoins() {
-  const q = document.getElementById('search-input').value.toLowerCase();
-  let coins = allCoins;
-  if(q) coins = coins.filter(c => 
-    (c.name||'').toLowerCase().includes(q) || 
-    (c.symbol||'').toLowerCase().includes(q)
-  );
-  if(marketFilter === 'UP') coins = coins.filter(c => parseFloat(c.change_rate||0) > 0);
-  if(marketFilter === 'DN') coins = coins.filter(c => parseFloat(c.change_rate||0) < 0);
-
-  const list = document.getElementById('coin-list');
-  if(!coins.length) { list.innerHTML = '<div class="empty">코인 없음</div>'; return; }
-
-  list.innerHTML = coins.map(c => {
-    const rate = parseFloat(c.change_rate||0);
-    const cls = rate >= 0 ? 'up' : 'dn';
-    const sign = rate >= 0 ? '+' : '';
-    const vol = parseFloat(c.volume||0) * parseFloat(c.price||0);
-    return `<div class="coin-row">
-      <div class="coin-info">
-        <span class="coin-name">${c.name||c.symbol}</span>
-        <span class="coin-symbol">${(c.symbol||'').replace('KRW-','')}/KRW</span>
-      </div>
-      <div class="coin-price ${cls}">${fmt(c.price)}</div>
-      <div class="coin-change">
-        <span class="coin-rate ${cls}">${sign}${rate.toFixed(2)}%</span>
-      </div>
-      <div class="coin-volume">${fmtV(vol)}백만</div>
-    </div>`;
-  }).join('');
-}
-
-async function loadPrices() {
-  try {
-    const r = await fetch(`${API}/api/prices/crypto`);
-    const d = await r.json();
-    if(d.success) {
-      allCoins = Object.entries(d.data).map(([sym, v]) => ({
-        symbol: sym,
-        name: v.name || COIN_NAMES[sym] || sym.replace('KRW-',''),
-        price: v.price, change_rate: v.change_rate, volume: v.volume||0,
-      })).sort((a,b) => b.volume*b.price - a.volume*a.price);
-      renderCoins();
-    }
-  } catch(e) {}
-}
-
-async function loadPositions() {
-  try {
-    const r = await fetch(`${API}/api/positions/crypto`);
-    const d = await r.json();
-    const acc = d.account || {};
-    const krw = acc.krw_balance || 0;
-    const eval_ = acc.coin_eval || 0;
-    const pnl = acc.pnl || 0;
-    const rate = acc.pnl_rate || 0;
-
-    document.getElementById('krw-balance').textContent = fmt(krw)+'원';
-    document.getElementById('total-assets').textContent = fmt(krw + eval_)+'원';
-    document.getElementById('total-pnl').textContent = (pnl>=0?'+':'')+fmt(Math.round(pnl))+'원';
-    document.getElementById('total-pnl').className = 'sum-val ' + (pnl>=0?'up':'dn');
-
-    document.getElementById('pos-krw').textContent = fmt(krw)+'원';
-    document.getElementById('pos-coin-eval').textContent = fmt(eval_)+'원';
-    document.getElementById('pos-pnl').textContent = (pnl>=0?'+':'')+fmt(Math.round(pnl))+'원';
-    document.getElementById('pos-pnl').className = 'kpi-val '+(pnl>=0?'up':'dn');
-    document.getElementById('pos-rate').textContent = (rate>=0?'+':'')+rate.toFixed(2)+'%';
-    document.getElementById('pos-rate').className = 'kpi-val '+(rate>=0?'up':'dn');
-
-    const positions = d.data || [];
-    const list = document.getElementById('pos-list');
-    if(!positions.length) { list.innerHTML = '<div class="empty">보유 코인 없음</div>'; return; }
-    list.innerHTML = positions.map(p => {
-      const pr = parseFloat(p.pnl_rate||0);
-      const cls = pr>=0?'up':'dn';
+    const positions=d.data||[];
+    const list=document.getElementById('pos-list');
+    if(!positions.length){list.innerHTML='<div class="empty">보유 코인 없음<br><small>신호 발생 시 자동 매수됩니다</small></div>';return;}
+    list.innerHTML=positions.map(p=>{
+      const pr=parseFloat(p.pnl_rate||0);
+      const cls=pr>=0?'up':'dn';
+      const name=p.name||COIN_NAMES[p.symbol]||p.symbol;
       return `<div class="pos-card">
-        <div class="pos-card-header">
-          <div>
-            <div class="pos-coin-name">${p.name||p.symbol}</div>
-            <div style="font-size:11px;color:var(--muted)">${p.symbol}</div>
+        <div class="pos-top">
+          <div class="pos-coin-info">
+            <div class="pos-coin-name">${name}</div>
+            <div class="pos-coin-sym">${p.symbol}</div>
           </div>
-          <div class="pos-pnl ${cls}">${pr>=0?'+':''}${pr.toFixed(2)}%</div>
+          <div class="pos-rate-big ${cls}">${fmtR(pr)}</div>
         </div>
-        <div class="pos-details">
-          <div class="pos-detail-item"><span class="pos-detail-label">보유수량</span><span class="pos-detail-val">${parseFloat(p.qty||0).toFixed(4)}</span></div>
-          <div class="pos-detail-item"><span class="pos-detail-label">매수평균가</span><span class="pos-detail-val">${fmt(p.avg_price)}</span></div>
-          <div class="pos-detail-item"><span class="pos-detail-label">현재가</span><span class="pos-detail-val ${cls}">${fmt(p.cur_price)}</span></div>
-          <div class="pos-detail-item"><span class="pos-detail-label">평가손익</span><span class="pos-detail-val ${cls}">${pr>=0?'+':''}${fmt(Math.round(p.pnl||0))}원</span></div>
+        <div class="pos-grid">
+          <div class="pos-gi"><span class="pos-gi-label">보유수량</span><span class="pos-gi-val">${parseFloat(p.qty||0).toFixed(4)}</span></div>
+          <div class="pos-gi"><span class="pos-gi-label">평균단가</span><span class="pos-gi-val">${fmt(p.avg_price)}</span></div>
+          <div class="pos-gi"><span class="pos-gi-label">현재가</span><span class="pos-gi-val ${cls}">${fmt(p.cur_price)}</span></div>
+          <div class="pos-gi"><span class="pos-gi-label">평가손익</span><span class="pos-gi-val ${cls}">${pr>=0?'+':''}${fmt(Math.round(p.pnl||0))}원</span></div>
         </div>
       </div>`;
     }).join('');
-  } catch(e) {}
+  }catch(e){}
 }
 
-async function loadSignals() {
-  try {
-    const r = await fetch(`${API}/api/ml/predictions?asset=crypto`);
-    const d = await r.json();
-    const list = document.getElementById('signal-list');
-    const data = d.data || [];
-    if(!data.length) { list.innerHTML = '<div class="empty">신호 없음</div>'; return; }
-    list.innerHTML = data.map(s => {
-      const cls = s.signal==='BUY'?'badge-buy':s.signal==='SELL'?'badge-sell':'badge-hold';
-      const name = COIN_NAMES[s.symbol] || s.symbol;
+async function loadWatchlist(){
+  try{
+    const r=await fetch(`${API}/api/prices/crypto`);
+    const d=await r.json();
+    const list=document.getElementById('watch-list');
+    const coins=Object.values(d.data||{});
+    if(!coins.length){list.innerHTML='<div class="empty">데이터 없음</div>';return;}
+    list.innerHTML=coins.map(c=>{
+      const rate=parseFloat(c.change_rate||0);
+      const cls=rate>=0?'up':'dn';
+      const name=c.name||COIN_NAMES[c.symbol]||c.symbol;
+      return `<div class="watch-row">
+        <div><div class="coin-name">${name}</div><div class="coin-sym">${(c.symbol||'').replace('KRW-','')}/KRW</div></div>
+        <div class="watch-price ${cls}">${fmt(c.price)}</div>
+        <div class="watch-rate ${cls}">${fmtR(rate)}</div>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
+
+async function loadSignals(){
+  try{
+    const r=await fetch(`${API}/api/ml/predictions?asset=crypto`);
+    const d=await r.json();
+    const list=document.getElementById('signal-list');
+    const data=d.data||[];
+    if(!data.length){list.innerHTML='<div class="empty">신호 없음</div>';return;}
+    list.innerHTML=data.map(s=>{
+      const cls=s.signal==='BUY'?'badge-buy':s.signal==='SELL'?'badge-sell':'badge-hold';
+      const name=COIN_NAMES[s.symbol]||s.symbol;
       return `<div class="signal-card">
-        <div class="signal-left">
-          <div class="signal-coin">${name}</div>
-          <div class="signal-strategy">${s.symbol} · ML 예측</div>
+        <div class="sig-left">
+          <div class="sig-coin">${name}</div>
+          <div class="sig-sub">${s.symbol} · ML 예측</div>
         </div>
-        <div class="signal-right">
-          <span class="signal-badge ${cls}">${s.signal}</span>
-          <span class="signal-prob">${((s.buy_prob||0)*100).toFixed(0)}%</span>
+        <div class="sig-right">
+          <span class="sig-badge ${cls}">${s.signal}</span>
+          <span class="sig-prob">${((s.buy_prob||0)*100).toFixed(0)}%</span>
         </div>
       </div>`;
     }).join('');
-  } catch(e) {}
+  }catch(e){}
 }
 
-async function loadTrades() {
-  try {
-    const r = await fetch(`${API}/api/trades?bot=crypto_trader&limit=30`);
-    const d = await r.json();
-    const list = document.getElementById('trade-list');
-    const data = d.data || [];
-    if(!data.length) { list.innerHTML = '<div class="empty">거래 내역 없음</div>'; return; }
-    list.innerHTML = data.map(t => {
-      const isBuy = t.side==='BUY';
-      const name = COIN_NAMES[t.symbol] || t.symbol;
-      const time = new Date(t.ts||t.created_at).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
-      const pnl = parseFloat(t.pnl||0);
+async function loadTrades(){
+  try{
+    const r=await fetch(`${API}/api/trades?bot=crypto_trader&limit=30`);
+    const d=await r.json();
+    const list=document.getElementById('trade-list');
+    const data=d.data||[];
+    if(!data.length){list.innerHTML='<div class="empty">거래 내역 없음</div>';return;}
+    list.innerHTML=data.map(t=>{
+      const isBuy=t.side==='BUY';
+      const name=COIN_NAMES[t.symbol]||t.symbol;
+      const time=new Date(t.ts||t.created_at).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+      const pnl=parseFloat(t.pnl||0);
       return `<div class="trade-item">
         <div class="trade-left">
-          <div class="trade-coin">${name} <span class="trade-side ${isBuy?'side-buy':'side-sell'}">${t.side}</span></div>
+          <div class="trade-coin">${name} <span class="side-badge ${isBuy?'side-buy':'side-sell'}">${t.side}</span></div>
           <div class="trade-time">${time} · ${t.strategy||''}</div>
         </div>
         <div class="trade-right">
           <div class="trade-amount">${fmt(Math.round(t.amount||0))}원</div>
-          ${pnl?`<div class="${pnl>=0?'up':'dn'}" style="font-size:12px">${pnl>=0?'+':''}${fmt(Math.round(pnl))}원</div>`:''}
+          ${pnl?`<div class="trade-pnl ${pnl>=0?'up':'dn'}">${pnl>=0?'+':''}${fmt(Math.round(pnl))}원</div>`:''}
         </div>
       </div>`;
     }).join('');
-  } catch(e) {}
+  }catch(e){}
 }
 
-async function loadAll() {
-  await Promise.all([loadPrices(), loadPositions(), loadSignals(), loadTrades()]);
+async function loadAll(){
+  await Promise.all([loadPositions(),loadWatchlist(),loadSignals(),loadTrades()]);
 }
-
 loadAll();
-setInterval(loadPrices, 5000);
-setInterval(loadPositions, 10000);
+setInterval(loadPositions,10000);
+setInterval(loadWatchlist,5000);
 </script>
 </body>
 </html>

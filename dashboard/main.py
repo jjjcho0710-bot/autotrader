@@ -1073,12 +1073,17 @@ async def get_market_index():
         ssl_ctx.verify_mode = ssl.CERT_NONE
         connector = http.TCPConnector(ssl=ssl_ctx)
 
+        # 지수 조회는 실전 API만 가능 (모의투자 불가)
+        real_url = "https://openapi.koreainvestment.com:9443"
+        real_key = config.KIS_APP_KEY
+        real_secret = config.KIS_APP_SECRET
+
         async with http.ClientSession(connector=connector) as sess:
-            # 토큰 발급
-            res = await sess.post(f"{config.kis_base_url}/oauth2/tokenP", json={
+            # 실전 토큰 발급
+            res = await sess.post(f"{real_url}/oauth2/tokenP", json={
                 "grant_type": "client_credentials",
-                "appkey": config.kis_app_key,
-                "appsecret": config.kis_app_secret,
+                "appkey": real_key,
+                "appsecret": real_secret,
             })
             token = (await res.json()).get("access_token", "")
             if not token:
@@ -1086,8 +1091,8 @@ async def get_market_index():
 
             headers = {
                 "authorization": f"Bearer {token}",
-                "appkey": config.kis_app_key,
-                "appsecret": config.kis_app_secret,
+                "appkey": real_key,
+                "appsecret": real_secret,
                 "tr_id": "FHPUP02100000",
                 "custtype": "P",
             }
@@ -1099,7 +1104,7 @@ async def get_market_index():
                     "FID_INPUT_ISCD": code,
                 }
                 r = await sess.get(
-                    f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                    f"{real_url}/uapi/domestic-stock/v1/quotations/inquire-index-price",
                     headers=headers, params=params
                 )
                 data = await r.json()
@@ -2574,15 +2579,17 @@ async def get_stock_positions():
             out2 = data.get("output2", [{}])
             summary = out2[0] if out2 else {}
             # 예수금: 필드명 후보 순서대로 시도
-            cash_val = (
-                int(summary.get("dnca_tot_amt", 0)) or
-                int(summary.get("ord_psbl_cash", 0)) or
-                int(summary.get("cma_evlu_amt", 0)) or
-                int(summary.get("thdt_buyable_qty", 0))
-            )
+            # dnca_tot_amt=예수금총액, nass_amt=순자산, tot_evlu_amt=총평가
+            cash_val = int(summary.get("dnca_tot_amt", 0) or 0)
+            total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
+            # 총평가 = 주식평가 + 예수금 → 예수금만 따로
+            stock_eval = int(summary.get("scts_evlu_amt", 0) or 0)
+            if cash_val == 0 and total_eval > 0:
+                cash_val = total_eval - stock_eval
+
             account = {
-                "total_eval":   int(summary.get("tot_evlu_amt", 0)),
-                "stock_eval":   int(summary.get("scts_evlu_amt", 0)),
+                "total_eval":   total_eval,
+                "stock_eval":   stock_eval,
                 "cash":         cash_val,
                 "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),
                 "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),

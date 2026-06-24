@@ -297,11 +297,17 @@ class StockTrader:
             logger.warning(f"포지션 조회 실패: {e}")
             self.positions = {}
 
+        # 손절/익절용 전략 객체 (첫 번째 활성 전략 사용)
+        default_strategy = self.build_strategy(strat_name, params)
+
         for symbol, pos in self.positions.items():
             cur_price = pos["cur_price"]
             avg_price = pos["avg_price"]
 
-            if strategy.check_stop_loss(avg_price, cur_price):
+            if not default_strategy or cur_price <= 0 or avg_price <= 0:
+                continue
+
+            if default_strategy.check_stop_loss(avg_price, cur_price):
                 result = await self.trader.sell(symbol, cur_price, pos["qty"])
                 if result["success"]:
                     pnl = (cur_price - avg_price) * pos["qty"]
@@ -315,7 +321,7 @@ class StockTrader:
                     await self._notify(f"🛑 손절 [{symbol}] {cur_price:,}원 × {pos['qty']}주 / PnL: {pnl:+,}원")
                 continue
 
-            if strategy.check_take_profit(avg_price, cur_price):
+            if default_strategy.check_take_profit(avg_price, cur_price):
                 result = await self.trader.sell(symbol, cur_price, pos["qty"])
                 if result["success"]:
                     pnl = (cur_price - avg_price) * pos["qty"]

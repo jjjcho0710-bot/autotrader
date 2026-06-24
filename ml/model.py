@@ -102,12 +102,12 @@ class SimpleNaiveBayes:
         }
 
     def from_dict(self, d: Dict):
-        """모델 역직렬화"""
-        self.classes = d["classes"]
-        self.class_priors = d["class_priors"]
-        self.feature_stats = d["feature_stats"]
+        """모델 역직렬화 — JSON 키를 정수로 변환"""
+        self.classes       = [int(c) for c in d["classes"]]
+        self.class_priors  = {int(k): v for k, v in d["class_priors"].items()}
+        self.feature_stats = {int(k): v for k, v in d["feature_stats"].items()}
         self.feature_names = d["feature_names"]
-        self.is_trained = d["is_trained"]
+        self.is_trained    = d["is_trained"]
         return self
 
 

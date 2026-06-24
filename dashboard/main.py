@@ -1079,13 +1079,27 @@ async def get_market_index():
         real_secret = config.KIS_APP_SECRET
 
         async with http.ClientSession(connector=connector) as sess:
-            # 실전 토큰 발급
-            res = await sess.post(f"{real_url}/oauth2/tokenP", json={
-                "grant_type": "client_credentials",
-                "appkey": real_key,
-                "appsecret": real_secret,
-            })
-            token = (await res.json()).get("access_token", "")
+            # 실전 토큰 Redis 캐시 우선
+            token = ""
+            try:
+                cached = await redis_client.get("kis:real_token")
+                if cached:
+                    token = cached if isinstance(cached, str) else cached.decode()
+            except:
+                pass
+
+            if not token:
+                res = await sess.post(f"{real_url}/oauth2/tokenP", json={
+                    "grant_type": "client_credentials",
+                    "appkey": real_key,
+                    "appsecret": real_secret,
+                })
+                token = (await res.json()).get("access_token", "")
+                if token:
+                    try:
+                        await redis_client.setex("kis:real_token", 82800, token)
+                    except:
+                        pass
             if not token:
                 return {"success": False, "error": "토큰 발급 실패"}
 

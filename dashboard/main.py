@@ -2619,9 +2619,9 @@ async def get_stock_positions():
             # dnca_tot_amt=예수금총액, nass_amt=순자산, tot_evlu_amt=총평가
             cash_val = int(summary.get("dnca_tot_amt", 0) or 0)
             total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
-            # 총평가 = 주식평가 + 예수금 → 예수금만 따로
-            stock_eval = int(summary.get("scts_evlu_amt", 0) or 0)
-            if cash_val == 0 and total_eval > 0:
+            stock_eval = int(summary.get("evlu_amt_smtl_amt", 0) or 0)  # 평가금액합계
+            cash_val   = int(summary.get("dnca_tot_amt", 0) or 0)       # 예수금총액
+            if cash_val == 0:
                 cash_val = total_eval - stock_eval
 
             account = {

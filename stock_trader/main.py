@@ -344,31 +344,45 @@ class StockTrader:
                     logger.info(f"⛔ [{symbol}] ML 필터 차단: {ml_reason}")
                     continue
 
-                # ── 수급 필터 ─────────────────────────────────
+                # ── 수급 필터 (DB 직접 조회) ──────────────────
+                supply_reason = "수급 데이터 없음"
                 try:
-                    from data_collector.collectors.supply_collector import SupplyCollector
-                    supply = SupplyCollector()
-                    supply_data = await supply.get_supply_score(symbol)
-                    supply_score = supply_data.get("score", 0)
-                    supply_reason = supply_data.get("reason", "")
-                    if supply_score <= -2:
-                        logger.info(f"⛔ [{symbol}] 수급 필터 차단: {supply_reason}")
-                        continue
-                except Exception:
-                    supply_reason = "수급 데이터 없음"
+                    async with db.pool.acquire() as conn:
+                        sup = await conn.fetchrow("""
+                            SELECT foreign_net, institute_net
+                            FROM stock_supply
+                            WHERE symbol=$1
+                            ORDER BY date DESC LIMIT 1
+                        """, symbol)
+                    if sup:
+                        fn = int(sup["foreign_net"] or 0)
+                        inst = int(sup["institute_net"] or 0)
+                        supply_score = (1 if fn > 0 else -1 if fn < 0 else 0) +                                        (1 if inst > 0 else -1 if inst < 0 else 0)
+                        supply_reason = f"외국인{fn:+,} 기관{inst:+,}"
+                        if supply_score <= -2:
+                            logger.info(f"⛔ [{symbol}] 수급 필터 차단: {supply_reason}")
+                            continue
+                except Exception as e:
+                    logger.debug(f"수급 조회 실패: {e}")
 
-                # ── 뉴스 감성 필터 ───────────────────────────
+                # ── 뉴스 감성 필터 (DB 직접 조회) ────────────
+                news_reason = "뉴스 데이터 없음"
                 try:
-                    from data_collector.collectors.news_collector import NewsCollector
-                    news = NewsCollector()
-                    news_data = await news.get_sentiment_score(symbol)
-                    news_score = news_data.get("score", 0)
-                    news_reason = news_data.get("reason", "")
-                    if news_score <= -2:
-                        logger.info(f"⛔ [{symbol}] 뉴스 감성 차단: {news_reason}")
-                        continue
-                except Exception:
-                    news_reason = "뉴스 데이터 없음"
+                    async with db.pool.acquire() as conn:
+                        news = await conn.fetchrow("""
+                            SELECT sentiment_score, signal, summary
+                            FROM stock_news_sentiment
+                            WHERE symbol=$1
+                            ORDER BY date DESC LIMIT 1
+                        """, symbol)
+                    if news:
+                        news_score = int(news["sentiment_score"] or 0)
+                        news_reason = news["summary"] or news["signal"]
+                        if news_score <= -2:
+                            logger.info(f"⛔ [{symbol}] 뉴스 감성 차단: {news_reason}")
+                            continue
+                except Exception as e:
+                    logger.debug(f"뉴스 조회 실패: {e}")
                 # ─────────────────────────────────────────────
 
                 qty = strategy.calc_buy_qty(cur_price)

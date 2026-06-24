@@ -345,7 +345,7 @@ class StockTrader:
             if symbol in self.positions:
                 continue
 
-            rows = await db.get_recent_ohlcv(symbol, limit=60, asset="stock", daily=True)
+            rows = await db.get_recent_ohlcv(symbol, limit=100, asset="stock", daily=True)
             if len(rows) < 21:
                 continue
 
@@ -503,9 +503,8 @@ class StockTrader:
             result = await ml.predict(symbol, ohlcv)
 
             if not result.get("success"):
-                # 피처 생성 실패 or 모델 없음 → 신호 허용
-                logger.info(f"[{symbol}] ML 예측 불가 → 전략 신호 단독 허용")
-                return True, "ML 예측 불가 (전략 단독)"
+                logger.info(f"[{symbol}] ML 모델 없음 → MA크로스 단독 신호 허용")
+                return True, "ML 모델 미학습 (MA크로스 단독)"
 
             signal    = result.get("signal", "HOLD")
             buy_prob  = result.get("buy_prob", 0.5)

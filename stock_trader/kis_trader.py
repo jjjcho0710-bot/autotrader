@@ -46,8 +46,8 @@ class KISTrader:
         url = f"{self.BASE_URL}/oauth2/tokenP"
         payload = {
             "grant_type": "client_credentials",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
+            "appkey": config.kis_app_key,
+            "appsecret": config.kis_app_secret,
         }
         async with self.session.post(url, json=payload) as resp:
             data = await resp.json()
@@ -76,8 +76,8 @@ class KISTrader:
         return {
             "Content-Type": "application/json",
             "authorization": f"Bearer {self.access_token}",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
+            "appkey": config.kis_app_key,
+            "appsecret": config.kis_app_secret,
             "tr_id": tr_id,
             "custtype": "P",
         }

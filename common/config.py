@@ -22,6 +22,25 @@ class Config:
     KIS_ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "")   # 계좌번호
     KIS_IS_PAPER: bool = os.getenv("KIS_IS_PAPER", "true").lower() == "true"  # 모의투자
 
+    # 모의투자 전용 키 (stock-trader용)
+    # 설정 시 KIS_APP_KEY/SECRET 대신 사용
+    KIS_APP_KEY_PAPER: str = os.getenv("KIS_APP_KEY_PAPER", "")
+    KIS_APP_SECRET_PAPER: str = os.getenv("KIS_APP_SECRET_PAPER", "")
+
+    @property
+    def kis_app_key(self) -> str:
+        """모의투자 키 우선, 없으면 실전 키"""
+        if self.KIS_IS_PAPER and self.KIS_APP_KEY_PAPER:
+            return self.KIS_APP_KEY_PAPER
+        return self.KIS_APP_KEY
+
+    @property
+    def kis_app_secret(self) -> str:
+        """모의투자 시크릿 우선, 없으면 실전 시크릿"""
+        if self.KIS_IS_PAPER and self.KIS_APP_SECRET_PAPER:
+            return self.KIS_APP_SECRET_PAPER
+        return self.KIS_APP_SECRET
+
     # ── 업비트 ──
     UPBIT_ACCESS_KEY: str = os.getenv("UPBIT_ACCESS_KEY", "")
     UPBIT_SECRET_KEY: str = os.getenv("UPBIT_SECRET_KEY", "")

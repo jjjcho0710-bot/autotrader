@@ -4,3 +4,5 @@ redis==5.0.4
 python-dotenv==1.0.1
 pykrx==1.0.47
 setuptools
+fastapi==0.111.0
+uvicorn==0.30.1

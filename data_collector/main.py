@@ -39,6 +39,34 @@ class DataCollector:
         self.daily = DailyCollector()
         self.last_daily_collect = None
 
+    async def collect_supply_dart(self):
+        """수급 + 공시 수동 수집"""
+        try:
+            symbols = await db.get_watchlist_symbols()
+            if not symbols:
+                symbols = config.STOCK_SYMBOLS
+            logger.info(f"📊 수급/공시 수동 수집 시작: {len(symbols)}종목")
+
+            try:
+                from collectors.supply_collector import SupplyCollector
+                supply = SupplyCollector()
+                await supply.collect(symbols)
+                logger.info(f"✅ 수급 수집 완료: {len(symbols)}종목")
+            except Exception as e:
+                logger.error(f"수급 수집 오류: {e}")
+
+            try:
+                from collectors.dart_collector import DARTCollector
+                dart = DARTCollector()
+                from common.telegram import send_stock
+                await dart.collect_and_alert(symbols, telegram_func=send_stock)
+                logger.info(f"✅ 공시 수집 완료: {len(symbols)}종목")
+            except Exception as e:
+                logger.error(f"공시 수집 오류: {e}")
+
+        except Exception as e:
+            logger.error(f"수급/공시 수집 전체 오류: {e}")
+
     async def start(self):
         logger.info("=" * 50)
         logger.info("🚀 AutoTrader data-collector 시작")
@@ -163,11 +191,38 @@ class DataCollector:
         logger.info("✅ 종료 완료")
 
 
+# ── FastAPI 서버 (수동 수집 트리거용) ────────────────────
+import fastapi
+import uvicorn
+
+_collector_instance: DataCollector = None
+api = fastapi.FastAPI()
+
+@api.post("/api/collect/supply")
+async def trigger_supply():
+    """수급 + 공시 수동 수집 트리거"""
+    if _collector_instance:
+        asyncio.create_task(_collector_instance.collect_supply_dart())
+        return {"success": True, "message": "수급/공시 수집 시작"}
+    return {"success": False, "error": "collector 미초기화"}
+
+@api.post("/api/collect/ohlcv")
+async def trigger_ohlcv(request: fastapi.Request):
+    """OHLCV 수집 트리거"""
+    return {"success": True, "message": "OHLCV는 자동 수집 중"}
+
+@api.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
 # ── 진입점 ──────────────────────────────────────────────
 async def main():
+    global _collector_instance
     collector = DataCollector()
+    _collector_instance = collector
 
-    # 시그널 처리 (Railway 컨테이너 종료 시)
+    # 시그널 처리
     loop = asyncio.get_event_loop()
 
     def shutdown():
@@ -177,7 +232,12 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown)
 
-    await collector.start()
+    # FastAPI 서버 + 수집기 동시 실행
+    server = uvicorn.Server(uvicorn.Config(api, host="0.0.0.0", port=8000, log_level="warning"))
+    await asyncio.gather(
+        collector.start(),
+        server.serve(),
+    )
 
 
 if __name__ == "__main__":

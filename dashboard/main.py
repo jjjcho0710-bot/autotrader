@@ -1459,36 +1459,16 @@ async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
             logger.error(f"수동 수집 오류: {e}")
 
     async def _collect_supply_dart():
-        """수급 + 공시 수집"""
+        """data-collector에 수급/공시 수집 트리거"""
         try:
-            async with db_pool.acquire() as conn:
-                symbols = [r["symbol"] for r in await conn.fetch(
-                    "SELECT symbol FROM watchlist WHERE is_active=TRUE"
-                )]
-            if not symbols:
-                symbols = config.STOCK_SYMBOLS
-
-            # 수급 데이터 (pykrx)
-            try:
-                from collectors.supply_collector import SupplyCollector
-                supply = SupplyCollector()
-                await supply.collect(symbols)
-                logger.info(f"✅ 수급 수집 완료: {len(symbols)}종목")
-            except Exception as e:
-                logger.error(f"수급 수집 오류: {e}")
-
-            # DART 공시
-            try:
-                from collectors.dart_collector import DARTCollector
-                dart = DARTCollector()
-                from common.telegram import send_stock
-                await dart.collect_and_alert(symbols, telegram_func=send_stock)
-                logger.info(f"✅ 공시 수집 완료: {len(symbols)}종목")
-            except Exception as e:
-                logger.error(f"공시 수집 오류: {e}")
-
+            import aiohttp
+            collector_url = os.getenv("COLLECTOR_URL", "http://autotrader.railway.internal:8000")
+            async with aiohttp.ClientSession() as s:
+                await s.post(f"{collector_url}/api/collect/supply",
+                             timeout=aiohttp.ClientTimeout(total=10))
+            logger.info("✅ data-collector 수급/공시 수집 트리거 완료")
         except Exception as e:
-            logger.error(f"수급/공시 수집 오류: {e}")
+            logger.warning(f"data-collector 수집 트리거 실패: {e}")
 
     background_tasks.add_task(_collect)
     background_tasks.add_task(_collect_supply_dart)

@@ -181,8 +181,11 @@ class StockTrader:
             try:
                 await self._run_cycle()
             except Exception as e:
+                err_str = str(e)
                 logger.error(f"❌ 사이클 오류: {e}")
-                await self._notify_error(str(e))
+                # Server disconnected는 텔레그램 알림 제외 (자주 발생)
+                if "Server disconnected" not in err_str and "ServerDisconnected" not in err_str:
+                    await self._notify_error(err_str)
 
             await asyncio.sleep(config.COLLECT_INTERVAL_SEC)
 

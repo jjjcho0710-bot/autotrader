@@ -202,6 +202,12 @@ class KISTrader:
             return True
         return False
 
+    async def _ensure_session(self):
+        """세션 끊김 시 자동 재시작"""
+        if self.session is None or self.session.closed:
+            logger.warning("🔄 KIS 세션 재시작")
+            await self.start()
+
     async def buy(self, symbol: str, price: int, qty: int) -> dict:
         """지정가 매수 (토큰 만료 시 자동 재시도)"""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"

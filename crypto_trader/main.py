@@ -153,7 +153,7 @@ class CryptoTrader:
     MAJOR_PAIRS = [
         "KRW-BTC","KRW-ETH","KRW-XRP","KRW-SOL","KRW-ADA",
         "KRW-DOGE","KRW-AVAX","KRW-LINK","KRW-DOT","KRW-SUI",
-        "KRW-TRX","KRW-NEAR","KRW-MATIC","KRW-ARB","KRW-SHIB",
+        "KRW-TRX","KRW-NEAR","KRW-ARB","KRW-SHIB",
         "KRW-APT","KRW-SAND","KRW-ATOM","KRW-FIL","KRW-AXS"
     ]
 

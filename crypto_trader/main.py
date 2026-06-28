@@ -78,8 +78,14 @@ class CryptoTrader:
 
             # USDT/스테이블코인 제외 + 거래대금 기준 TOP 20
             exclude = {"KRW-USDT", "KRW-USDC", "KRW-DAI", "KRW-BUSD"}
+            # 최소 거래대금 500억 이상 + 상위 20개
+            filtered = [
+                t for t in tickers
+                if t["market"] not in exclude
+                and float(t.get("acc_trade_price_24h", 0)) >= 50_000_000_000
+            ]
             sorted_tickers = sorted(
-                [t for t in tickers if t["market"] not in exclude],
+                filtered,
                 key=lambda x: float(x.get("acc_trade_price_24h", 0)),
                 reverse=True
             )[:20]
@@ -422,7 +428,7 @@ class CryptoTrader:
         for pair in config.CRYPTO_PAIRS:
             if pair in self.positions:
                 continue
-            if krw_balance < buy_amount:
+            if krw_balance < max(buy_amount * 0.5, 5000):
                 logger.info(f"💸 KRW 잔고 부족 ({krw_balance:,.0f}원)")
                 break
 

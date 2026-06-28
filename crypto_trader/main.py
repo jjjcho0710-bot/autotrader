@@ -125,7 +125,7 @@ class CryptoTrader:
         await self._init_default_strategies()
         await self.load_strategies()
 
-        # 메이저 코인 기본값 설정 (이상한 코인 방지)
+        # 메이저 코인 기본값 설정
         import json as _json
         existing = await cache.client.get("crypto:top_pairs")
         if not existing:
@@ -136,6 +136,9 @@ class CryptoTrader:
             loaded = _json.loads(existing)
             config.CRYPTO_PAIRS = loaded
             logger.info(f"✅ 저장된 코인 {len(loaded)}개 로드")
+
+        # 시작 시 OHLCV 데이터 자동 수집
+        asyncio.create_task(self._init_ohlcv())
         logger.info("=" * 50)
         logger.info("🚀 AutoTrader crypto-trader 시작")
         logger.info("=" * 50)
@@ -558,6 +561,52 @@ class CryptoTrader:
         except Exception as e:
             logger.warning(f"[{pair}] ML 오류 → 허용: {e}")
             return True, 0.65
+
+    async def _init_ohlcv(self):
+        """시작 시 OHLCV 데이터 없는 코인 자동 수집"""
+        try:
+            import aiohttp as _aio
+            pairs_to_collect = []
+            for pair in config.CRYPTO_PAIRS:
+                async with db.pool.acquire() as conn:
+                    cnt = await conn.fetchval(
+                        "SELECT COUNT(*) FROM crypto_ohlcv WHERE symbol=$1", pair
+                    )
+                if cnt < 40:
+                    pairs_to_collect.append(pair)
+
+            if not pairs_to_collect:
+                logger.info("✅ 모든 코인 OHLCV 데이터 있음")
+                return
+
+            logger.info(f"📊 OHLCV 자동 수집: {len(pairs_to_collect)}개 코인")
+            async with _aio.ClientSession() as s:
+                for pair in pairs_to_collect:
+                    try:
+                        r = await s.get(
+                            "https://api.upbit.com/v1/candles/minutes/1",
+                            params={"market": pair, "count": 200},
+                            timeout=_aio.ClientTimeout(total=10)
+                        )
+                        candles = await r.json()
+                        if isinstance(candles, list) and candles:
+                            rows = [(pair, c["candle_date_time_kst"],
+                                     c["opening_price"], c["high_price"],
+                                     c["low_price"], c["trade_price"],
+                                     c["candle_acc_trade_volume"]) for c in candles]
+                            async with db.pool.acquire() as conn:
+                                await conn.executemany("""
+                                    INSERT INTO crypto_ohlcv(symbol,ts,open,high,low,close,volume)
+                                    VALUES($1,$2,$3,$4,$5,$6,$7)
+                                    ON CONFLICT(symbol,ts) DO NOTHING
+                                """, rows)
+                            logger.info(f"✅ {pair}: {len(rows)}개 수집")
+                        await asyncio.sleep(0.2)
+                    except Exception as e:
+                        logger.error(f"❌ {pair} 수집 실패: {e}")
+            logger.info("🎉 OHLCV 초기 수집 완료")
+        except Exception as e:
+            logger.error(f"OHLCV 초기 수집 오류: {e}")
 
     async def _ask_jarvis(self, pair: str, signal: str, ml_prob: float,
                            amount: float, cur_price: float, krw_balance: float) -> bool:

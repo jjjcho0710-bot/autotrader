@@ -67,7 +67,13 @@ class UpbitCollector:
     # ── 전체 수집 루프 ──────────────────────────────────
     async def collect_all(self):
         """설정된 전체 페어 수집 → DB 저장 + Redis 캐시"""
-        pairs = config.CRYPTO_PAIRS
+        # Redis에서 TOP 20 코인 목록 읽기 (crypto-trader가 설정)
+        try:
+            import json as _json
+            cached = await cache.client.get("crypto:top_pairs")
+            pairs = _json.loads(cached) if cached else config.CRYPTO_PAIRS
+        except:
+            pairs = config.CRYPTO_PAIRS
         logger.info(f"₿ 코인 수집 시작 — {len(pairs)}페어")
 
         # 현재가 한번에 조회

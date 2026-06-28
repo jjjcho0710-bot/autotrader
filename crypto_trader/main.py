@@ -710,14 +710,20 @@ KRW 잔고: {krw_balance:,.0f}원
         if krw_balance < 5000:
             return 0
 
-        # 잔고에 따른 최대 종목수 & 기본 비중
-        if krw_balance >= 1_000_000:
+        # 전체 자산(KRW + 보유 코인 평가) 기준으로 최대 종목수 결정
+        coin_eval = sum(
+            float(p.get("cur_price", 0)) * float(p.get("qty", 0))
+            for p in self.positions.values()
+        )
+        total_assets = krw_balance + coin_eval
+
+        if total_assets >= 1_000_000:
             max_pos, base_ratio = 5, 0.20
-        elif krw_balance >= 500_000:
+        elif total_assets >= 500_000:
             max_pos, base_ratio = 4, 0.25
-        elif krw_balance >= 200_000:
+        elif total_assets >= 200_000:
             max_pos, base_ratio = 3, 0.33
-        elif krw_balance >= 50_000:
+        elif total_assets >= 50_000:
             max_pos, base_ratio = 2, 0.45
         else:
             max_pos, base_ratio = 1, 0.80

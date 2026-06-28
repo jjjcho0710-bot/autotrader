@@ -116,6 +116,7 @@ class CryptoTrader:
         await db.connect()
         await cache.connect()
         await self.trader.start()
+        await self._init_default_strategies()
         await self.load_strategies()
         logger.info("=" * 50)
         logger.info("🚀 AutoTrader crypto-trader 시작")
@@ -127,6 +128,22 @@ class CryptoTrader:
         asyncio.create_task(self._price_monitor())  # 급락/급등 실시간 감지
         asyncio.create_task(self._daily_scan_loop())  # 거래량 TOP 20 자동 업데이트
         await self._loop()
+
+    async def _init_default_strategies(self):
+        """기본 전략이 없으면 자동 등록"""
+        import json as _json
+        defaults = [
+            ("MACD", True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.07,"take_profit":0.10,"buy_amount":10000}),
+            ("RSI반등", True, {"period":14,"entry":35,"exit":65,"stop_loss":-0.07,"take_profit":0.10,"buy_amount":10000}),
+        ]
+        async with db.pool.acquire() as conn:
+            for name, active, params in defaults:
+                await conn.execute("""
+                    INSERT INTO strategy_config (bot, name, is_active, params)
+                    VALUES ('crypto_trader', $1, $2, $3)
+                    ON CONFLICT (bot, name) DO NOTHING
+                """, name, active, _json.dumps(params))
+        logger.info("✅ 코인 기본 전략 확인 완료")
 
     async def load_strategies(self):
         try:

@@ -7,10 +7,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RSIConfig:
     period: int = 14
-    entry: float = 35.0   # 매수 기준 (이하)
+    entry: float = 30.0   # 매수 기준 (이하) - 진짜 바닥
     exit: float = 65.0    # 매도 기준 (이상)
-    stop_loss: float = -0.04
-    take_profit: float = 0.06
+    stop_loss: float = -0.02
+    take_profit: float = 0.005  # +0.5% 익절
     buy_amount_krw: float = 10000
 
 class RSIStrategy:

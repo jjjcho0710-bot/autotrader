@@ -158,8 +158,8 @@ class CryptoTrader:
         """기본 전략이 없으면 자동 등록"""
         import json as _json
         defaults = [
-            ("MACD", True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.02,"take_profit":0.003,"buy_amount":10000}),
-            ("RSI반등", True, {"period":14,"entry":35,"exit":65,"stop_loss":-0.02,"take_profit":0.003,"buy_amount":10000}),
+            ("MACD", True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.02,"take_profit":0.005,"buy_amount":10000}),
+            ("RSI반등", True, {"period":14,"entry":30,"exit":65,"stop_loss":-0.02,"take_profit":0.005,"buy_amount":10000}),
         ]
         async with db.pool.acquire() as conn:
             for name, active, params in defaults:

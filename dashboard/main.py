@@ -1344,6 +1344,146 @@ async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
 
 
+@app.get("/api/health/full")
+async def full_health_check():
+    """전체 시스템 상태 점검"""
+    import json as _json
+    from datetime import timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    now = datetime.now(KST)
+    result = {"timestamp": now.isoformat(), "checks": {}}
+
+    # 1. DB
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        result["checks"]["database"] = {"status": "ok"}
+    except Exception as e:
+        result["checks"]["database"] = {"status": "error", "error": str(e)}
+
+    # 2. Redis
+    try:
+        await redis_client.ping()
+        result["checks"]["redis"] = {"status": "ok"}
+    except Exception as e:
+        result["checks"]["redis"] = {"status": "error", "error": str(e)}
+
+    # 3. stock-trader
+    try:
+        stk = await redis_client.get("bot:stock_trader:status")
+        if stk:
+            stk_data = _json.loads(stk)
+            last = stk_data.get("last_cycle", "")
+            diff = 9999
+            if last:
+                try:
+                    last_dt = datetime.fromisoformat(last)
+                    diff = (now - last_dt.astimezone(KST)).total_seconds()
+                except: pass
+            status = "ok" if diff < 120 else "warning" if diff < 300 else "error"
+            result["checks"]["stock_trader"] = {
+                "status": status, "seconds_ago": int(diff),
+                "positions": stk_data.get("positions", 0),
+                "strategy": stk_data.get("strategy", "-"),
+            }
+        else:
+            result["checks"]["stock_trader"] = {"status": "error", "error": "응답없음"}
+    except Exception as e:
+        result["checks"]["stock_trader"] = {"status": "error", "error": str(e)}
+
+    # 4. crypto-trader
+    try:
+        cry = await redis_client.get("bot:crypto_trader:status")
+        if cry:
+            cry_data = _json.loads(cry)
+            last = cry_data.get("last_cycle", "")
+            diff = 9999
+            if last:
+                try:
+                    last_dt = datetime.fromisoformat(last)
+                    diff = (now - last_dt.astimezone(KST)).total_seconds()
+                except: pass
+            status = "ok" if diff < 120 else "warning" if diff < 300 else "error"
+            result["checks"]["crypto_trader"] = {
+                "status": status, "seconds_ago": int(diff),
+                "positions": cry_data.get("positions", 0),
+                "krw_balance": round(cry_data.get("krw_balance", 0)),
+            }
+        else:
+            result["checks"]["crypto_trader"] = {"status": "error", "error": "응답없음"}
+    except Exception as e:
+        result["checks"]["crypto_trader"] = {"status": "error", "error": str(e)}
+
+    # 5. 주식 계좌
+    try:
+        pos_data = await get_stock_positions()
+        acct = pos_data.get("account", {})
+        result["checks"]["stock_account"] = {
+            "status": "ok",
+            "total_eval": acct.get("total_eval", 0),
+            "cash": acct.get("cash", 0),
+            "pnl": acct.get("pnl", 0),
+            "pnl_rate": acct.get("pnl_rate", 0),
+            "positions": len(pos_data.get("data", [])),
+        }
+    except Exception as e:
+        result["checks"]["stock_account"] = {"status": "error", "error": str(e)}
+
+    # 6. 코인 계좌
+    try:
+        krw = await redis_client.get("crypto:krw_balance")
+        pos_raw = await redis_client.get("crypto:positions")
+        positions = _json.loads(pos_raw) if pos_raw else []
+        result["checks"]["crypto_account"] = {
+            "status": "ok",
+            "krw_balance": round(float(krw)) if krw else 0,
+            "positions": len(positions),
+            "coins": [p.get("symbol","") for p in positions],
+        }
+    except Exception as e:
+        result["checks"]["crypto_account"] = {"status": "error", "error": str(e)}
+
+    # 7. 오늘 매매
+    try:
+        async with db_pool.acquire() as conn:
+            trades = await conn.fetch("""
+                SELECT bot, side, symbol, amount, pnl, created_at
+                FROM trade_history
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+                ORDER BY created_at DESC LIMIT 20
+            """)
+        total_pnl = sum(float(t["pnl"] or 0) for t in trades)
+        result["checks"]["today_trades"] = {
+            "status": "ok",
+            "count": len(trades),
+            "total_pnl": round(total_pnl, 2),
+            "recent": [{"bot": t["bot"], "side": t["side"],
+                        "symbol": t["symbol"],
+                        "amount": round(float(t["amount"] or 0)),
+                        "pnl": round(float(t["pnl"] or 0), 2)}
+                       for t in trades[:5]],
+        }
+    except Exception as e:
+        result["checks"]["today_trades"] = {"status": "error", "error": str(e)}
+
+    # 8. KIS 토큰
+    try:
+        paper = await redis_client.get("kis:paper_token")
+        real = await redis_client.get("kis:real_token")
+        result["checks"]["kis_tokens"] = {
+            "status": "ok" if paper else "warning",
+            "paper_token": "있음" if paper else "없음",
+            "real_token": "있음" if real else "없음",
+        }
+    except Exception as e:
+        result["checks"]["kis_tokens"] = {"status": "error", "error": str(e)}
+
+    # 전체 상태
+    statuses = [v.get("status") for v in result["checks"].values()]
+    result["overall"] = "ok" if all(s=="ok" for s in statuses) else                         "error" if any(s=="error" for s in statuses) else "warning"
+    return result
+
+
 @app.get("/api/events")
 async def sse_events(request: Request):
     """SSE - 실시간 이벤트 스트림"""

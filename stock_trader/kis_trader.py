@@ -24,14 +24,16 @@ class KISTrader:
         self.session: aiohttp.ClientSession = None
 
     async def start(self):
+        await self._get_token()
+        logger.info("✅ KISTrader 시작")
+
+    def _new_session(self):
+        """매 요청마다 새 세션 생성 (Server disconnected 방지)"""
         import ssl
         ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
-        connector = aiohttp.TCPConnector(ssl=ssl_ctx)
-        self.session = aiohttp.ClientSession(connector=connector)
-        await self._get_token()
-        logger.info("✅ KISTrader 시작")
+        return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_ctx))
 
     async def stop(self):
         if self.session:
@@ -159,9 +161,10 @@ class KISTrader:
         }
         tr_id = "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R"
         for attempt in range(2):
-            async with self.session.get(
+            async with self._new_session() as sess:
+              async with sess.get(
                 url, headers=self._headers(tr_id), params=params
-            ) as resp:
+              ) as resp:
                 data = await resp.json()
                 if attempt == 0 and await self._refresh_token_if_expired(data):
                     continue
@@ -220,10 +223,11 @@ class KISTrader:
             "ORD_QTY": str(qty),
             "ORD_UNPR": str(price),
         }
-        for attempt in range(2):  # 최대 2회 시도
-            async with self.session.post(
+        for attempt in range(2):
+            async with self._new_session() as sess:
+              async with sess.post(
                 url, headers=self._headers(tr_id), json=payload
-            ) as resp:
+              ) as resp:
                 data = await resp.json()
                 rt_cd = data.get("rt_cd")
                 if rt_cd == "0":

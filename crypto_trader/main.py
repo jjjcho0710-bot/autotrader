@@ -590,7 +590,9 @@ class CryptoTrader:
                         )
                         candles = await r.json()
                         if isinstance(candles, list) and candles:
-                            rows = [(pair, c["candle_date_time_kst"],
+                            from datetime import datetime as _dt
+                            rows = [(pair,
+                                     _dt.fromisoformat(c["candle_date_time_kst"]),
                                      c["opening_price"], c["high_price"],
                                      c["low_price"], c["trade_price"],
                                      c["candle_acc_trade_volume"]) for c in candles]

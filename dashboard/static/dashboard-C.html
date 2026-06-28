@@ -227,6 +227,9 @@ body{display:flex;flex-direction:column;padding-bottom:70px;}
 <div class="section">
   <div class="section-title">데이터 관리</div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button onclick="resetCryptoPairs()" style="background:var(--up);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;flex:1;">
+      🔄 코인 초기화+수집
+    </button>
     <button onclick="collectCryptoOHLCV()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;flex:1;">
       📊 코인 데이터 수집
     </button>
@@ -403,6 +406,21 @@ async function collectCryptoOHLCV(){
   msg.textContent='수집 중...';
   try{
     const r=await fetch(`${API}/api/collect/crypto/ohlcv`,{method:'POST'});
+    const d=await r.json();
+    msg.textContent=d.message||'완료!';
+    msg.style.color='var(--green)';
+  }catch(e){
+    msg.textContent='오류: '+e.message;
+    msg.style.color='var(--up)';
+  }
+}
+
+async function resetCryptoPairs(){
+  const msg=document.getElementById('collect-msg');
+  msg.textContent='메이저 코인으로 초기화 중...';
+  msg.style.color='var(--muted)';
+  try{
+    const r=await fetch(`${API}/api/collect/crypto/reset`,{method:'POST'});
     const d=await r.json();
     msg.textContent=d.message||'완료!';
     msg.style.color='var(--green)';

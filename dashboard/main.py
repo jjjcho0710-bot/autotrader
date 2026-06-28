@@ -1568,6 +1568,55 @@ async def get_sentiment_data():
 
 
 
+
+@app.post("/api/collect/crypto/reset")
+async def reset_crypto_pairs(background_tasks: fastapi.background.BackgroundTasks):
+    """코인 TOP 20을 메이저 코인으로 초기화 + OHLCV 수집"""
+    MAJOR_PAIRS = [
+        "KRW-BTC","KRW-ETH","KRW-XRP","KRW-SOL","KRW-ADA",
+        "KRW-DOGE","KRW-AVAX","KRW-LINK","KRW-DOT","KRW-SUI",
+        "KRW-TRX","KRW-NEAR","KRW-MATIC","KRW-ARB","KRW-SHIB",
+        "KRW-APT","KRW-SAND","KRW-ATOM","KRW-FIL","KRW-AXS"
+    ]
+
+    async def _reset_and_collect():
+        import aiohttp, json as _json
+        # Redis TOP 20 메이저 코인으로 교체
+        await redis_client.setex("crypto:top_pairs", 86400, _json.dumps(MAJOR_PAIRS))
+        logger.info(f"✅ TOP 20 메이저 코인으로 초기화: {len(MAJOR_PAIRS)}개")
+
+        # OHLCV 수집
+        total = 0
+        async with aiohttp.ClientSession() as s:
+            for pair in MAJOR_PAIRS:
+                try:
+                    r = await s.get(
+                        "https://api.upbit.com/v1/candles/minutes/1",
+                        params={"market": pair, "count": 200},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    )
+                    candles = await r.json()
+                    if isinstance(candles, list) and candles:
+                        rows = [(pair, c["candle_date_time_kst"],
+                                 c["opening_price"], c["high_price"],
+                                 c["low_price"], c["trade_price"],
+                                 c["candle_acc_trade_volume"]) for c in candles]
+                        async with db_pool.acquire() as conn:
+                            await conn.executemany("""
+                                INSERT INTO crypto_ohlcv(symbol,ts,open,high,low,close,volume)
+                                VALUES($1,$2,$3,$4,$5,$6,$7)
+                                ON CONFLICT(symbol,ts) DO NOTHING
+                            """, rows)
+                        total += len(rows)
+                        logger.info(f"✅ {pair}: {len(rows)}개")
+                    await asyncio.sleep(0.2)
+                except Exception as e:
+                    logger.error(f"❌ {pair}: {e}")
+        logger.info(f"🎉 완료: {total}개")
+
+    background_tasks.add_task(_reset_and_collect)
+    return {"success": True, "message": f"메이저 코인 {len(MAJOR_PAIRS)}개 초기화 + 데이터 수집 시작!"}
+
 @app.post("/api/collect/crypto/ohlcv")
 async def collect_crypto_ohlcv(background_tasks: fastapi.background.BackgroundTasks):
     """코인 OHLCV 데이터 수집 (TOP 20 코인 200개 캔들)"""

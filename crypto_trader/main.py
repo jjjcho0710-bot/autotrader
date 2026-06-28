@@ -473,25 +473,14 @@ class CryptoTrader:
                     logger.info(f"⛔ [{pair}] ML 필터 차단")
                     continue
 
-                # Jarvis가 잔고/신호강도 보고 매수 금액 결정
-                actual_amount = await self._decide_amount(
-                    pair=pair,
+                # Jarvis가 매수 여부 + 금액 모두 결정
+                actual_amount = await self._ask_jarvis_amount(
+                    pair=pair, signal=signal_type,
+                    ml_prob=ml_prob, cur_price=cur_price,
                     krw_balance=krw_balance,
-                    ml_prob=ml_prob,
-                    base_amount=buy_amount,
                 )
                 if actual_amount < 5000:
-                    logger.info(f"⛔ [{pair}] Jarvis 결정 금액 부족 ({actual_amount:,.0f}원)")
-                    continue
-
-                # Jarvis 최종 판단
-                jarvis_ok = await self._ask_jarvis(
-                    pair=pair, signal=signal_type,
-                    ml_prob=ml_prob, amount=actual_amount,
-                    cur_price=cur_price, krw_balance=krw_balance,
-                )
-                if not jarvis_ok:
-                    logger.info(f"⏭️ Jarvis SKIP [{pair}]")
+                    logger.info(f"⏭️ Jarvis SKIP [{pair}] (금액:{actual_amount:,.0f}원)")
                     continue
 
                 # 매수 실행
@@ -609,6 +598,100 @@ class CryptoTrader:
             logger.info("🎉 OHLCV 초기 수집 완료")
         except Exception as e:
             logger.error(f"OHLCV 초기 수집 오류: {e}")
+
+    async def _ask_jarvis_amount(self, pair: str, signal: str, ml_prob: float,
+                                  cur_price: float, krw_balance: float) -> float:
+        """Jarvis에게 매수 여부 + 금액 결정 요청"""
+        try:
+            import aiohttp, os
+            from common.database import cache as _cache
+            import json as _json
+
+            COIN_NAMES = {
+                "KRW-BTC":"비트코인","KRW-ETH":"이더리움","KRW-XRP":"리플",
+                "KRW-SOL":"솔라나","KRW-ADA":"에이다","KRW-DOGE":"도지코인",
+                "KRW-AVAX":"아발란체","KRW-LINK":"체인링크","KRW-DOT":"폴카닷",
+                "KRW-SUI":"수이","KRW-TRX":"트론","KRW-NEAR":"니어",
+                "KRW-SHIB":"시바이누","KRW-ARB":"아비트럼","KRW-MATIC":"폴리곤",
+            }
+            name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
+
+            # BTC 추세
+            btc_trend = "알 수 없음"
+            try:
+                btc_cached = await _cache.client.get("crypto:prices")
+                if btc_cached:
+                    prices = _json.loads(btc_cached)
+                    btc = prices.get("KRW-BTC", {})
+                    btc_rate = float(btc.get("change_rate", 0))
+                    btc_trend = f"{'상승' if btc_rate > 0 else '하락'} {btc_rate:+.2f}%"
+            except: pass
+
+            # 현재 포트폴리오
+            portfolio = [f"{p}({v.get('qty',0):.4f}개, 수익률{v.get('pnl_rate',0):+.1f}%)"
+                        for p, v in self.positions.items()]
+
+            dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+
+            prompt = f"""코인 매수 판단 요청
+
+종목: {name} ({pair})
+현재가: {cur_price:,.0f}원
+신호: {signal} (ML확률 {ml_prob:.0%})
+가용 KRW: {krw_balance:,.0f}원
+
+시장:
+- BTC: {btc_trend}
+
+보유 포트폴리오: {portfolio if portfolio else '없음'}
+
+이 코인 지금 살만해? 산다면 얼마나 살지 결정해줘.
+- 시장 상황, ML 신호, 포트폴리오 분산 고려해서
+- 숫자만 답해줘 (예: 25000)
+- 안 산다면 0 이라고만 해줘"""
+
+            async with aiohttp.ClientSession() as s:
+                resp = await s.post(
+                    f"{dashboard_url}/api/jarvis/chat",
+                    json={"message": prompt, "session_id": "crypto_signal"},
+                    timeout=aiohttp.ClientTimeout(total=25)
+                )
+                if resp.status == 200:
+                    data = await resp.json()
+                    reply = data.get("reply", "0").strip()
+                    # 숫자 추출
+                    import re
+                    numbers = re.findall(r'\d+', reply.replace(',', ''))
+                    amount = float(numbers[0]) if numbers else 0
+
+                    # 잔고 초과 방지
+                    amount = min(amount, krw_balance * 0.9)
+                    amount = max(amount, 0)
+
+                    logger.info(f"🤖 Jarvis [{name}]: {amount:,.0f}원 결정 (답변: {reply[:40]})")
+
+                    # 메모리 저장
+                    try:
+                        await s.post(
+                            f"{dashboard_url}/api/jarvis/chat",
+                            json={"message": f"[코인판단] {name} {signal} ML:{ml_prob:.0%} BTC:{btc_trend} → {amount:,.0f}원",
+                                  "session_id": "crypto_memory"},
+                            timeout=aiohttp.ClientTimeout(total=10)
+                        )
+                    except: pass
+
+                    return amount
+                return 0
+
+        except Exception as e:
+            logger.warning(f"Jarvis 판단 실패 [{pair}]: {e} → 기본값 사용")
+            # 실패 시 기본 로직
+            if ml_prob >= 0.80:
+                return min(krw_balance * 0.3, krw_balance * 0.9)
+            elif ml_prob >= 0.70:
+                return min(krw_balance * 0.2, krw_balance * 0.9)
+            else:
+                return min(krw_balance * 0.1, krw_balance * 0.9)
 
     async def _ask_jarvis(self, pair: str, signal: str, ml_prob: float,
                            amount: float, cur_price: float, krw_balance: float) -> bool:

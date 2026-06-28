@@ -139,8 +139,8 @@ class CryptoTrader:
         """기본 전략이 없으면 자동 등록"""
         import json as _json
         defaults = [
-            ("MACD", True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.07,"take_profit":0.10,"buy_amount":10000}),
-            ("RSI반등", True, {"period":14,"entry":35,"exit":65,"stop_loss":-0.07,"take_profit":0.10,"buy_amount":10000}),
+            ("MACD", True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.02,"take_profit":0.003,"buy_amount":10000}),
+            ("RSI반등", True, {"period":14,"entry":35,"exit":65,"stop_loss":-0.02,"take_profit":0.003,"buy_amount":10000}),
         ]
         async with db.pool.acquire() as conn:
             for name, active, params in defaults:
@@ -317,11 +317,11 @@ class CryptoTrader:
 
                         now_ts = datetime.now(KST).timestamp()
                         last_alert = alert_cooldown.get(pair, 0)
-                        if now_ts - last_alert < 300:
+                        if now_ts - last_alert < 60:  # 1분 쿨다운
                             continue
 
                         # 급락 -4% 또는 급등 +8% 감지
-                        if pnl_rate <= -7.0 or pnl_rate >= 12.0:
+                        if pnl_rate <= -2.0 or pnl_rate >= 0.3:
                             alert_cooldown[pair] = now_ts
                             direction = "급락" if pnl_rate < 0 else "급등"
                             logger.info(f"⚡ [{pair}] {direction} 감지: {pnl_rate:+.1f}%")
@@ -331,7 +331,7 @@ class CryptoTrader:
                                 continue
 
                             # 급락 시 즉시 매도, 급등 시 익절
-                            if pnl_rate <= -7.0:
+                            if pnl_rate <= -2.0:
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty
@@ -344,7 +344,7 @@ class CryptoTrader:
                                     )
                                     logger.info(f"🛑 급락 손절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
                                     self.positions.pop(pair, None)
-                            elif pnl_rate >= 12.0:
+                            elif pnl_rate >= 0.3:
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty

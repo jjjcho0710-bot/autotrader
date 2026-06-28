@@ -717,10 +717,10 @@ KRW 잔고: {krw_balance:,.0f}원
             max_pos, base_ratio = 4, 0.25
         elif krw_balance >= 200_000:
             max_pos, base_ratio = 3, 0.33
-        elif krw_balance >= 100_000:
-            max_pos, base_ratio = 2, 0.50
+        elif krw_balance >= 50_000:
+            max_pos, base_ratio = 2, 0.45
         else:
-            max_pos, base_ratio = 1, 0.50  # 소액도 50%만 (나머지 예비금)
+            max_pos, base_ratio = 1, 0.80
 
         # 현재 보유 종목수 확인
         current_pos = len(self.positions)

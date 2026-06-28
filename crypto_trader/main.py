@@ -481,7 +481,17 @@ class CryptoTrader:
                     logger.info(f"⛔ [{pair}] Jarvis 결정 금액 부족 ({actual_amount:,.0f}원)")
                     continue
 
-                # 자동 매수 실행
+                # Jarvis 최종 판단
+                jarvis_ok = await self._ask_jarvis(
+                    pair=pair, signal=signal_type,
+                    ml_prob=ml_prob, amount=actual_amount,
+                    cur_price=cur_price, krw_balance=krw_balance,
+                )
+                if not jarvis_ok:
+                    logger.info(f"⏭️ Jarvis SKIP [{pair}]")
+                    continue
+
+                # 매수 실행
                 result = await self.trader.buy_market(pair, actual_amount)
                 if result["success"]:
                     qty = actual_amount / cur_price
@@ -548,6 +558,86 @@ class CryptoTrader:
         except Exception as e:
             logger.warning(f"[{pair}] ML 오류 → 허용: {e}")
             return True, 0.65
+
+    async def _ask_jarvis(self, pair: str, signal: str, ml_prob: float,
+                           amount: float, cur_price: float, krw_balance: float) -> bool:
+        """Jarvis에게 매수 판단 요청 + 결과 메모리 저장"""
+        try:
+            import aiohttp, os
+            from common.database import cache as _cache
+            import json as _json
+
+            COIN_NAMES = {
+                "KRW-BTC":"비트코인","KRW-ETH":"이더리움","KRW-XRP":"리플",
+                "KRW-SOL":"솔라나","KRW-ADA":"에이다","KRW-DOGE":"도지코인",
+                "KRW-AVAX":"아발란체","KRW-LINK":"체인링크","KRW-DOT":"폴카닷",
+                "KRW-SUI":"수이","KRW-TRX":"트론","KRW-NEAR":"니어",
+            }
+            name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
+
+            # BTC 시장 추세 확인
+            btc_trend = "알 수 없음"
+            try:
+                btc_cached = await _cache.client.get("crypto:prices")
+                if btc_cached:
+                    prices = _json.loads(btc_cached)
+                    btc = prices.get("KRW-BTC", {})
+                    btc_rate = float(btc.get("change_rate", 0))
+                    btc_trend = f"{'상승' if btc_rate > 0 else '하락'} {btc_rate:+.2f}%"
+            except: pass
+
+            # 포지션 현황
+            pos_count = len(self.positions)
+            pos_list = list(self.positions.keys())
+
+            dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+
+            prompt = f"""코인 매수 신호 분석 요청
+
+종목: {name} ({pair})
+현재가: {cur_price:,.0f}원
+신호: {signal} (ML확률 {ml_prob:.0%})
+매수금액: {amount:,.0f}원
+KRW 잔고: {krw_balance:,.0f}원
+보유 코인: {pos_count}개 {pos_list}
+
+시장 현황:
+- BTC 추세: {btc_trend}
+
+판단 기준:
+1. BTC 급락 중이면 SKIP (시장 전체 하락)
+2. ML 확률 70% 미만이면 SKIP
+3. 잔고 대비 매수금액이 과하면 SKIP
+4. 이미 같은 코인 보유 중이면 SKIP
+
+반드시 EXECUTE 또는 SKIP 으로만 답해줘. 이유는 한 줄로."""
+
+            async with aiohttp.ClientSession() as s:
+                resp = await s.post(
+                    f"{dashboard_url}/api/jarvis/chat",
+                    json={"message": prompt, "session_id": "crypto_signal"},
+                    timeout=aiohttp.ClientTimeout(total=20)
+                )
+                if resp.status == 200:
+                    data = await resp.json()
+                    reply = data.get("reply", "SKIP")
+                    execute = reply.upper().startswith("EXECUTE") or "실행" in reply[:20]
+
+                    # Jarvis 메모리에 판단 결과 저장 (학습용)
+                    await s.post(
+                        f"{dashboard_url}/api/jarvis/chat",
+                        json={"message": f"[코인매매기록] {name} {signal} ML:{ml_prob:.0%} → {'EXECUTE' if execute else 'SKIP'} | {reply[:80]}",
+                              "session_id": "crypto_memory"},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    )
+
+                    logger.info(f"🤖 Jarvis [{pair}]: {'✅ EXECUTE' if execute else '⏭️ SKIP'} - {reply[:60]}")
+                    return execute
+                return True  # 응답 실패 시 허용
+
+        except Exception as e:
+            logger.warning(f"Jarvis 판단 실패 [{pair}]: {e} → 허용")
+            return True  # 오류 시 허용
 
     async def _decide_amount(self, pair: str, krw_balance: float,
                               ml_prob: float, base_amount: float) -> float:

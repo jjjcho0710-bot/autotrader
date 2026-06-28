@@ -532,44 +532,60 @@ class CryptoTrader:
 
     async def _decide_amount(self, pair: str, krw_balance: float,
                               ml_prob: float, base_amount: float) -> float:
-        """Jarvis가 잔고와 ML 확률 보고 매수 금액 결정
-        
-        ML 확률에 따른 비중:
-          90%+ → 잔고의 40% (강한 신호)
-          80%+ → 잔고의 25%
-          70%+ → 잔고의 15%
-          60%+ → 잔고의 10% (최소)
-        단, base_amount(전략 설정값) 이하로는 안 내려감
-        최대 잔고의 50% 초과 금지
+        """잔고 분산 매수 금액 결정
+
+        잔고에 따라 최대 보유 종목수 자동 결정:
+          100만원+ → 최대 5종목 (종목당 20%)
+          50만원+  → 최대 4종목 (종목당 25%)
+          20만원+  → 최대 3종목 (종목당 33%)
+          10만원+  → 최대 2종목 (종목당 50%)
+          5만원 미만 → 1종목 (전액)
+
+        ML 확률로 비중 가감:
+          90%+ → ×1.0 (강한 신호)
+          80%+ → ×0.8
+          70%+ → ×0.6
+          60%+ → ×0.4 (약한 신호)
         """
         if krw_balance < 5000:
             return 0
 
-        if ml_prob >= 0.90:
-            ratio = 0.40
-            strength = "강함"
-        elif ml_prob >= 0.80:
-            ratio = 0.25
-            strength = "보통"
-        elif ml_prob >= 0.70:
-            ratio = 0.15
-            strength = "약함"
+        # 잔고에 따른 최대 종목수 & 기본 비중
+        if krw_balance >= 1_000_000:
+            max_pos, base_ratio = 5, 0.20
+        elif krw_balance >= 500_000:
+            max_pos, base_ratio = 4, 0.25
+        elif krw_balance >= 200_000:
+            max_pos, base_ratio = 3, 0.33
+        elif krw_balance >= 100_000:
+            max_pos, base_ratio = 2, 0.50
         else:
-            ratio = 0.10
-            strength = "최소"
+            max_pos, base_ratio = 1, 0.90  # 소액은 한 종목에 집중
 
-        amount = krw_balance * ratio
-        # base_amount와 비교해서 더 큰 값 사용 (최소 보장)
-        amount = max(amount, base_amount)
-        # 잔고 50% 초과 금지
-        amount = min(amount, krw_balance * 0.50)
-        # 최소 5,000원
-        amount = max(amount, 5000)
-        # 잔고 초과 방지
-        amount = min(amount, krw_balance)
+        # 현재 보유 종목수 확인
+        current_pos = len(self.positions)
+        if current_pos >= max_pos:
+            logger.info(f"⚠️ [{pair}] 최대 보유종목 초과 ({current_pos}/{max_pos})")
+            return 0
 
-        logger.info(f"💡 [{pair}] Jarvis 금액 결정: {amount:,.0f}원 "
-                    f"(ML:{ml_prob:.0%} 신호강도:{strength} 잔고:{krw_balance:,.0f}원)")
+        # ML 확률로 비중 조정
+        if ml_prob >= 0.90:
+            ml_ratio, strength = 1.0, "강함"
+        elif ml_prob >= 0.80:
+            ml_ratio, strength = 0.8, "보통"
+        elif ml_prob >= 0.70:
+            ml_ratio, strength = 0.6, "약함"
+        else:
+            ml_ratio, strength = 0.4, "최소"
+
+        amount = krw_balance * base_ratio * ml_ratio
+        amount = max(amount, 5000)                      # 최소 5,000원
+        amount = min(amount, krw_balance * base_ratio)  # 기본비중 초과 금지
+        amount = min(amount, krw_balance * 0.95)        # 잔고 95% 초과 금지
+
+        logger.info(f"💡 [{pair}] 분산매수: {amount:,.0f}원 "
+                    f"(잔고:{krw_balance:,.0f}원 비중:{base_ratio:.0%} "
+                    f"ML:{ml_prob:.0%} {strength} {current_pos+1}/{max_pos})")
         return round(amount)
 
     async def _notify_error(self, error: str):

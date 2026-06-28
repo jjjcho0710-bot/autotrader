@@ -674,17 +674,16 @@ class CryptoTrader:
 
             dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
 
-            prompt = f"""[코인 매수 판단]
-종목: {name} ({pair})
-현재가: {cur_price:,.0f}원
+            prompt = f"""[코인 매수 판단] {name}
+
 신호: RSI 과매도 반등 (ML {ml_prob:.0%})
+현재가: {cur_price:,.0f}원
 가용KRW: {krw_balance:,.0f}원
 BTC: {btc_trend}
-보유: {portfolio if portfolio else '없음'}
+보유중: {portfolio if portfolio else '없음'}
 
-매수금액을 원 단위 숫자로만 답해줘.
-살 가치 없으면 숫자 0만.
-예시) 15000
+살만하면 EXECUTE, 아니면 SKIP으로 시작해서 이유 한줄로 답해줘.
+EXECUTE면 추천금액도 함께 (예: EXECUTE 20000원 - 과매도 반등 예상)
 """
 
             async with aiohttp.ClientSession() as s:
@@ -696,25 +695,33 @@ BTC: {btc_trend}
                 if resp.status == 200:
                     data = await resp.json()
                     reply = data.get("reply", "0").strip()
-                    # 숫자 추출
                     import re
-                    numbers = re.findall(r'\d+', reply.replace(',', ''))
-                    amount = float(numbers[0]) if numbers else 0
+                    reply_upper = reply.upper()
 
-                    # 잔고 초과 방지
-                    amount = min(amount, krw_balance * 0.9)
+                    if reply_upper.startswith("SKIP") or "SKIP" in reply_upper[:10]:
+                        logger.info(f"⏭️ Jarvis SKIP [{name}]: {reply[:60]}")
+                        return 0
 
-                    # Jarvis가 0원이면 ML 확률 기반 기본값
-                    if amount < 5000:
-                        if ml_prob >= 0.80:
-                            amount = min(krw_balance * 0.3, krw_balance * 0.9)
-                        elif ml_prob >= 0.70:
-                            amount = min(krw_balance * 0.2, krw_balance * 0.9)
+                    # EXECUTE면 금액 추출
+                    if "EXECUTE" in reply_upper:
+                        numbers = re.findall(r'[\d,]+', reply.replace(',',''))
+                        extracted = [int(n) for n in numbers if len(n) >= 4]
+                        if extracted:
+                            amount = float(min(extracted[0], krw_balance * 0.9))
                         else:
-                            amount = min(krw_balance * 0.1, krw_balance * 0.9)
-                        logger.info(f"🤖 Jarvis [{name}]: 기본값 {amount:,.0f}원 적용 (ML:{ml_prob:.0%})")
+                            # 금액 없으면 ML 기반
+                            if ml_prob >= 0.80:
+                                amount = krw_balance * 0.3
+                            elif ml_prob >= 0.70:
+                                amount = krw_balance * 0.2
+                            else:
+                                amount = krw_balance * 0.15
+                            amount = min(amount, krw_balance * 0.9)
+                        logger.info(f"🤖 Jarvis EXECUTE [{name}]: {amount:,.0f}원 - {reply[:60]}")
                     else:
-                        logger.info(f"🤖 Jarvis [{name}]: {amount:,.0f}원 결정 (답변: {reply[:40]})")
+                        # 애매한 답변 → SKIP
+                        logger.info(f"⏭️ Jarvis 애매 SKIP [{name}]: {reply[:60]}")
+                        return 0
 
                     # 메모리 저장
                     try:

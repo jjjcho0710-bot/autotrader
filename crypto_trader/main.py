@@ -570,7 +570,7 @@ class CryptoTrader:
             for pair in config.CRYPTO_PAIRS:
                 async with db.pool.acquire() as conn:
                     cnt = await conn.fetchval(
-                        "SELECT COUNT(*) FROM crypto_ohlcv WHERE symbol=$1", pair
+                        "SELECT COUNT(*) FROM crypto_ohlcv WHERE pair=$1", pair
                     )
                 if cnt < 40:
                     pairs_to_collect.append(pair)
@@ -596,9 +596,9 @@ class CryptoTrader:
                                      c["candle_acc_trade_volume"]) for c in candles]
                             async with db.pool.acquire() as conn:
                                 await conn.executemany("""
-                                    INSERT INTO crypto_ohlcv(symbol,ts,open,high,low,close,volume)
+                                    INSERT INTO crypto_ohlcv(pair,ts,open,high,low,close,volume)
                                     VALUES($1,$2,$3,$4,$5,$6,$7)
-                                    ON CONFLICT(symbol,ts) DO NOTHING
+                                    ON CONFLICT(pair,ts) DO NOTHING
                                 """, rows)
                             logger.info(f"✅ {pair}: {len(rows)}개 수집")
                         await asyncio.sleep(0.2)

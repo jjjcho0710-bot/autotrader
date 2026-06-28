@@ -674,22 +674,18 @@ class CryptoTrader:
 
             dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
 
-            prompt = f"""코인 매수 판단 요청
-
+            prompt = f"""[코인 매수 판단]
 종목: {name} ({pair})
 현재가: {cur_price:,.0f}원
-신호: {signal} (ML확률 {ml_prob:.0%})
-가용 KRW: {krw_balance:,.0f}원
+신호: RSI 과매도 반등 (ML {ml_prob:.0%})
+가용KRW: {krw_balance:,.0f}원
+BTC: {btc_trend}
+보유: {portfolio if portfolio else '없음'}
 
-시장:
-- BTC: {btc_trend}
-
-보유 포트폴리오: {portfolio if portfolio else '없음'}
-
-이 코인 지금 살만해? 산다면 얼마나 살지 결정해줘.
-- 시장 상황, ML 신호, 포트폴리오 분산 고려해서
-- 숫자만 답해줘 (예: 25000)
-- 안 산다면 0 이라고만 해줘"""
+매수금액을 원 단위 숫자로만 답해줘.
+살 가치 없으면 숫자 0만.
+예시) 15000
+"""
 
             async with aiohttp.ClientSession() as s:
                 resp = await s.post(
@@ -707,9 +703,18 @@ class CryptoTrader:
 
                     # 잔고 초과 방지
                     amount = min(amount, krw_balance * 0.9)
-                    amount = max(amount, 0)
 
-                    logger.info(f"🤖 Jarvis [{name}]: {amount:,.0f}원 결정 (답변: {reply[:40]})")
+                    # Jarvis가 0원이면 ML 확률 기반 기본값
+                    if amount < 5000:
+                        if ml_prob >= 0.80:
+                            amount = min(krw_balance * 0.3, krw_balance * 0.9)
+                        elif ml_prob >= 0.70:
+                            amount = min(krw_balance * 0.2, krw_balance * 0.9)
+                        else:
+                            amount = min(krw_balance * 0.1, krw_balance * 0.9)
+                        logger.info(f"🤖 Jarvis [{name}]: 기본값 {amount:,.0f}원 적용 (ML:{ml_prob:.0%})")
+                    else:
+                        logger.info(f"🤖 Jarvis [{name}]: {amount:,.0f}원 결정 (답변: {reply[:40]})")
 
                     # 메모리 저장
                     try:

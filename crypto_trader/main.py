@@ -298,7 +298,7 @@ class CryptoTrader:
                             continue
 
                         # 급락 -4% 또는 급등 +8% 감지
-                        if pnl_rate <= -4.0 or pnl_rate >= 8.0:
+                        if pnl_rate <= -7.0 or pnl_rate >= 12.0:
                             alert_cooldown[pair] = now_ts
                             direction = "급락" if pnl_rate < 0 else "급등"
                             logger.info(f"⚡ [{pair}] {direction} 감지: {pnl_rate:+.1f}%")
@@ -308,7 +308,7 @@ class CryptoTrader:
                                 continue
 
                             # 급락 시 즉시 매도, 급등 시 익절
-                            if pnl_rate <= -4.0:
+                            if pnl_rate <= -7.0:
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty
@@ -321,7 +321,7 @@ class CryptoTrader:
                                     )
                                     logger.info(f"🛑 급락 손절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
                                     self.positions.pop(pair, None)
-                            elif pnl_rate >= 8.0:
+                            elif pnl_rate >= 12.0:
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty

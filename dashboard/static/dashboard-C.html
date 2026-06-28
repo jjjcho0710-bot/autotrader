@@ -223,6 +223,20 @@ body{display:flex;flex-direction:column;padding-bottom:70px;}
   </div>
 </div>
 
+<!-- 데이터 수집 -->
+<div class="section">
+  <div class="section-title">데이터 관리</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button onclick="collectCryptoOHLCV()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;flex:1;">
+      📊 코인 데이터 수집
+    </button>
+    <button onclick="collectData()" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;flex:1;">
+      📰 뉴스/수급 수집
+    </button>
+  </div>
+  <div id="collect-msg" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
+</div>
+
 <!-- 시스템 헬스 -->
 <div class="section">
   <div class="section-title">시스템 헬스</div>
@@ -383,6 +397,34 @@ async function loadHealth(){
 
 loadHealth();
 setInterval(loadHealth,15000);
+
+async function collectCryptoOHLCV(){
+  const msg=document.getElementById('collect-msg');
+  msg.textContent='수집 중...';
+  try{
+    const r=await fetch(`${API}/api/collect/crypto/ohlcv`,{method:'POST'});
+    const d=await r.json();
+    msg.textContent=d.message||'완료!';
+    msg.style.color='var(--green)';
+  }catch(e){
+    msg.textContent='오류: '+e.message;
+    msg.style.color='var(--up)';
+  }
+}
+
+async function collectData(){
+  const msg=document.getElementById('collect-msg');
+  msg.textContent='수집 중...';
+  try{
+    const r=await fetch(`${API}/api/data/collect`,{method:'POST'});
+    const d=await r.json();
+    msg.textContent=d.message||'완료!';
+    msg.style.color='var(--green)';
+  }catch(e){
+    msg.textContent='오류: '+e.message;
+    msg.style.color='var(--up)';
+  }
+}
 </script>
 </body>
 </html>

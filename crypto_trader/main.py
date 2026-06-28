@@ -108,14 +108,14 @@ class CryptoTrader:
         """매일 08:30 거래량 TOP 20 업데이트"""
         while self.running:
             now = datetime.now(KST)
-            # 처음 실행 시 바로 한번
-            await self._update_top_pairs()
-            # 다음 08:30까지 대기
+            # 다음 08:30까지 대기 (처음엔 스캔 안 함)
             next_run = now.replace(hour=8, minute=30, second=0, microsecond=0)
             if now >= next_run:
                 next_run = next_run + timedelta(days=1)
             wait_sec = (next_run - now).total_seconds()
+            logger.info(f"📅 다음 TOP 20 업데이트: {next_run.strftime('%m/%d %H:%M')}")
             await asyncio.sleep(wait_sec)
+            await self._update_top_pairs()
 
     async def start(self):
         self.running = True
@@ -124,6 +124,18 @@ class CryptoTrader:
         await self.trader.start()
         await self._init_default_strategies()
         await self.load_strategies()
+
+        # 메이저 코인 기본값 설정 (이상한 코인 방지)
+        import json as _json
+        existing = await cache.client.get("crypto:top_pairs")
+        if not existing:
+            await cache.client.setex("crypto:top_pairs", 86400*30, _json.dumps(self.MAJOR_PAIRS))
+            config.CRYPTO_PAIRS = self.MAJOR_PAIRS
+            logger.info(f"✅ 메이저 코인 {len(self.MAJOR_PAIRS)}개 설정")
+        else:
+            loaded = _json.loads(existing)
+            config.CRYPTO_PAIRS = loaded
+            logger.info(f"✅ 저장된 코인 {len(loaded)}개 로드")
         logger.info("=" * 50)
         logger.info("🚀 AutoTrader crypto-trader 시작")
         logger.info("=" * 50)
@@ -134,6 +146,13 @@ class CryptoTrader:
         asyncio.create_task(self._price_monitor())  # 급락/급등 실시간 감지
         asyncio.create_task(self._daily_scan_loop())  # 거래량 TOP 20 자동 업데이트
         await self._loop()
+
+    MAJOR_PAIRS = [
+        "KRW-BTC","KRW-ETH","KRW-XRP","KRW-SOL","KRW-ADA",
+        "KRW-DOGE","KRW-AVAX","KRW-LINK","KRW-DOT","KRW-SUI",
+        "KRW-TRX","KRW-NEAR","KRW-MATIC","KRW-ARB","KRW-SHIB",
+        "KRW-APT","KRW-SAND","KRW-ATOM","KRW-FIL","KRW-AXS"
+    ]
 
     async def _init_default_strategies(self):
         """기본 전략이 없으면 자동 등록"""

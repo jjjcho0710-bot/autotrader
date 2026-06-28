@@ -560,7 +560,7 @@ class CryptoTrader:
         elif krw_balance >= 100_000:
             max_pos, base_ratio = 2, 0.50
         else:
-            max_pos, base_ratio = 1, 0.90  # 소액은 한 종목에 집중
+            max_pos, base_ratio = 1, 0.50  # 소액도 50%만 (나머지 예비금)
 
         # 현재 보유 종목수 확인
         current_pos = len(self.positions)

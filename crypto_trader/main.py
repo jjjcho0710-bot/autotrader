@@ -352,8 +352,9 @@ class CryptoTrader:
                             if qty <= 0:
                                 continue
 
-                            # 급락 시 즉시 매도, 급등 시 익절
+                            # 단타 매도 로직
                             if pnl_rate <= -2.0:
+                                # -2% 손절: 즉시 자동 매도
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty
@@ -362,11 +363,13 @@ class CryptoTrader:
                                         symbol=pair, side="SELL",
                                         price=cur_price, quantity=qty,
                                         amount=cur_price * qty,
-                                        strategy="급락손절", pnl=pnl,
+                                        strategy="손절", pnl=pnl,
                                     )
-                                    logger.info(f"🛑 급락 손절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
+                                    logger.info(f"🛑 손절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
                                     self.positions.pop(pair, None)
-                            elif pnl_rate >= 0.3:
+
+                            elif 0.3 <= pnl_rate < 3.0:
+                                # +0.3~3%: 즉시 익절 (단타)
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty
@@ -375,10 +378,48 @@ class CryptoTrader:
                                         symbol=pair, side="SELL",
                                         price=cur_price, quantity=qty,
                                         amount=cur_price * qty,
-                                        strategy="급등익절", pnl=pnl,
+                                        strategy="단타익절", pnl=pnl,
                                     )
-                                    logger.info(f"🎯 급등 익절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
+                                    logger.info(f"🎯 단타 익절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
                                     self.positions.pop(pair, None)
+
+                            elif pnl_rate >= 3.0:
+                                # +3% 이상: Jarvis에게 더 갈지 물어봄
+                                import aiohttp as _h, os as _os
+                                name = pair.replace("KRW-","")
+                                dashboard_url = _os.getenv("DASHBOARD_URL","https://dashboard-production-65e3.up.railway.app")
+                                try:
+                                    async with _h.ClientSession() as _s:
+                                        resp = await _s.post(
+                                            f"{dashboard_url}/api/jarvis/chat",
+                                            json={"message": f"{name} 현재 {pnl_rate:+.1f}% 수익중. 더 오를것같아? SELL이면 팔고 HOLD면 계속 보유. 한단어만.",
+                                                  "session_id": "crypto_signal"},
+                                            timeout=_h.ClientTimeout(total=10)
+                                        )
+                                        if resp.status == 200:
+                                            reply = (await resp.json()).get("reply","SELL")
+                                            if "HOLD" in reply.upper():
+                                                logger.info(f"🤖 Jarvis HOLD [{pair}] {pnl_rate:+.1f}%")
+                                            else:
+                                                result = await self.trader.sell_market(pair, qty)
+                                                if result.get("success"):
+                                                    pnl = (cur_price - avg_price) * qty
+                                                    await db.insert_trade(
+                                                        bot="crypto_trader", asset_type="crypto",
+                                                        symbol=pair, side="SELL",
+                                                        price=cur_price, quantity=qty,
+                                                        amount=cur_price * qty,
+                                                        strategy="Jarvis익절", pnl=pnl,
+                                                    )
+                                                    logger.info(f"🎯 Jarvis 익절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
+                                                    self.positions.pop(pair, None)
+                                except:
+                                    # Jarvis 실패 시 즉시 익절
+                                    result = await self.trader.sell_market(pair, qty)
+                                    if result.get("success"):
+                                        pnl = (cur_price - avg_price) * qty
+                                        logger.info(f"🎯 익절(Jarvis오류) [{pair}] {pnl_rate:+.1f}%")
+                                        self.positions.pop(pair, None)
 
             except Exception as e:
                 logger.debug(f"코인 가격 모니터 오류: {e}")

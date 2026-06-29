@@ -61,6 +61,27 @@ body{display:flex;flex-direction:column;min-height:100vh;padding-bottom:70px;}
   <button class="theme-btn" onclick="toggleTheme()" id="theme-icon">🌙</button>
 </div>
 
+<!-- 코인 트레이딩 모드 -->
+<div style="padding:12px;">
+  <div style="background:var(--card);border-radius:12px;border:1px solid var(--border);overflow:hidden;">
+    <div style="padding:14px;border-bottom:1px solid var(--border);">
+      <div style="font-size:15px;font-weight:700;margin-bottom:4px;">코인 트레이딩 모드</div>
+      <div style="font-size:12px;color:var(--muted);">단타: 즉시 매수/매도 | 스윙: Jarvis 판단</div>
+    </div>
+    <div style="display:flex;">
+      <div id="btn-scalping" onclick="setMode('scalping')"
+        style="flex:1;padding:16px;text-align:center;cursor:pointer;background:var(--up);color:#fff;font-weight:700;font-size:14px;">
+        ⚡ 단타모드
+      </div>
+      <div id="btn-swing" onclick="setMode('swing')"
+        style="flex:1;padding:16px;text-align:center;cursor:pointer;background:var(--card);color:var(--muted);font-weight:700;font-size:14px;">
+        📈 스윙모드
+      </div>
+    </div>
+    <div id="mode-msg" style="padding:8px 14px;font-size:12px;color:var(--muted);"></div>
+  </div>
+</div>
+
 <div id="strategy-container"></div>
 <div class="toast" id="toast"></div>
 
@@ -164,6 +185,42 @@ async function loadStrategies(){
   }catch(e){console.error(e);}
 }
 
+// 모드 로드
+async function loadMode(){
+  try{
+    const r = await fetch('/api/crypto/trade-mode');
+    const d = await r.json();
+    updateModeUI(d.mode);
+  }catch(e){}
+}
+
+function updateModeUI(mode){
+  const s = document.getElementById('btn-scalping');
+  const sw = document.getElementById('btn-swing');
+  if(mode === 'scalping'){
+    s.style.background='var(--up)'; s.style.color='#fff';
+    sw.style.background='var(--card)'; sw.style.color='var(--muted)';
+    document.getElementById('mode-msg').textContent='⚡ 단타모드: Jarvis 없이 즉시 매수, +0.5% 익절';
+  } else {
+    sw.style.background='var(--accent)'; sw.style.color='#fff';
+    s.style.background='var(--card)'; s.style.color='var(--muted)';
+    document.getElementById('mode-msg').textContent='📈 스윙모드: Jarvis 판단, +3~5% 목표';
+  }
+}
+
+async function setMode(mode){
+  try{
+    const r = await fetch('/api/crypto/trade-mode', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode})
+    });
+    const d = await r.json();
+    updateModeUI(mode);
+    document.getElementById('mode-msg').textContent = d.message;
+  }catch(e){}
+}
+
+loadMode();
 loadStrategies();
 </script>
 </body>

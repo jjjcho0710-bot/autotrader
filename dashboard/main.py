@@ -1339,6 +1339,21 @@ async def get_summary():
         return {"success": False, "error": str(e)}
 
 
+
+@app.get("/api/crypto/trade-mode")
+async def get_trade_mode():
+    mode = await redis_client.get("crypto:trade_mode")
+    return {"mode": mode.decode() if mode else "scalping"}
+
+@app.post("/api/crypto/trade-mode")
+async def set_trade_mode(request: Request):
+    body = await request.json()
+    mode = body.get("mode", "scalping")
+    if mode not in ["scalping", "swing"]:
+        return {"success": False, "error": "모드는 scalping 또는 swing"}
+    await redis_client.set("crypto:trade_mode", mode)
+    return {"success": True, "mode": mode, "message": f"{'단타' if mode=='scalping' else '스윙'} 모드로 전환!"}
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}

@@ -578,15 +578,32 @@ KRW: {krw:,.0f}원"""
                     logger.info(f"⛔ [{pair}] ML 필터 차단")
                     continue
 
-                # Jarvis가 매수 여부 + 금액 모두 결정
-                actual_amount = await self._ask_jarvis_amount(
-                    pair=pair, signal=signal_type,
-                    ml_prob=ml_prob, cur_price=cur_price,
-                    krw_balance=krw_balance,
-                )
-                if actual_amount < 5000:
-                    logger.info(f"⏭️ Jarvis SKIP [{pair}] (금액:{actual_amount:,.0f}원)")
-                    continue
+                # 트레이딩 모드 확인 (Redis)
+                trade_mode = "scalping"
+                try:
+                    mode = await cache.client.get("crypto:trade_mode")
+                    if mode:
+                        trade_mode = mode.decode()
+                except: pass
+
+                if trade_mode == "scalping":
+                    # 단타: 즉시 매수 (Jarvis 없음)
+                    if krw_balance >= 5000:
+                        actual_amount = min(krw_balance * 0.45, krw_balance * 0.95)
+                        actual_amount = max(actual_amount, 5000)
+                        logger.info(f"⚡ 단타 즉시매수 [{pair}] {actual_amount:,.0f}원")
+                    else:
+                        continue
+                else:
+                    # 스윙: Jarvis 판단
+                    actual_amount = await self._ask_jarvis_amount(
+                        pair=pair, signal=signal_type,
+                        ml_prob=ml_prob, cur_price=cur_price,
+                        krw_balance=krw_balance,
+                    )
+                    if actual_amount < 5000:
+                        logger.info(f"⏭️ Jarvis SKIP [{pair}] (금액:{actual_amount:,.0f}원)")
+                        continue
 
                 # 매수 실행
                 result = await self.trader.buy_market(pair, actual_amount)

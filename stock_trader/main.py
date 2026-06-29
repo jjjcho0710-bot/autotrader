@@ -135,7 +135,7 @@ class StockTrader:
 
         # 보유 포지션 로드
         try:
-            positions = await self.trader.get_positions()
+            positions = await self.trader.get_positions() or []
             self.positions = {p["symbol"]: p for p in positions if isinstance(p, dict) and p.get("symbol")}
             logger.info(f"📊 보유 종목: {list(self.positions.keys())}")
         except Exception as e:
@@ -357,8 +357,8 @@ class StockTrader:
                     },
                     timeout=http.ClientTimeout(total=30)
                 )
-                result = await resp.json()
-                if result.get("executed"):
+                result = await resp.json() or {}
+                if result and result.get("executed"):
                     logger.info(f"✅ Jarvis 매도 결정 [{symbol}] {pnl_rate:+.1f}%")
                     # positions에서 제거
                     self.positions.pop(symbol, None)
@@ -383,7 +383,7 @@ class StockTrader:
 
         # ① 보유 포지션 손절/익절 체크
         try:
-            positions = await self.trader.get_positions()
+            positions = await self.trader.get_positions() or []
             self.positions = {p["symbol"]: p for p in positions if isinstance(p, dict) and p.get("symbol")}
         except Exception as e:
             logger.warning(f"포지션 조회 실패: {e}")
@@ -569,7 +569,7 @@ class StockTrader:
 
                 # ML 판단으로 직접 매수 (Jarvis API 호출 없음)
                 result = await self.trader.buy(symbol, cur_price, qty)
-                if result.get("success"):
+                if result and result.get("success"):
                     await db.insert_trade(
                         bot="stock_trader", asset_type="stock",
                         symbol=symbol, side="BUY",

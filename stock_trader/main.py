@@ -154,6 +154,7 @@ class StockTrader:
             self._loop(),
             self.subscribe_strategy_updates(),
             self._price_monitor(),
+            self._six_hour_report(),
         )
 
     # ── 메인 루프 ─────────────────────────────────────────
@@ -675,12 +676,63 @@ class StockTrader:
             logger.error(f"Jarvis 신호 전달 실패: {e}")
 
     async def _notify(self, msg: str):
+        """개별 알림은 로그만 (6시간 리포트로 통합)"""
         logger.info(f"📣 {msg}")
-        try:
-            from common.telegram import send_stock
-            await send_stock(f"[stock-trader]\n{msg}")
-        except Exception as e:
-            logger.warning(f"텔레그램 전송 실패: {e}")
+
+    async def _six_hour_report(self):
+        """6시간마다 주식 매매 요약 리포트"""
+        while self.running:
+            now = datetime.now(KST)
+            next_hour = ((now.hour // 6) + 1) * 6
+            if next_hour >= 24:
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            else:
+                next_run = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
+            await asyncio.sleep((next_run - now).total_seconds())
+
+            try:
+                from common.telegram import send_stock
+                async with db.pool.acquire() as conn:
+                    trades = await conn.fetch("""
+                        SELECT side, symbol, amount, pnl, strategy, created_at
+                        FROM trade_history
+                        WHERE bot='stock_trader'
+                        AND created_at >= NOW() - INTERVAL '6 hours'
+                        ORDER BY created_at DESC
+                    """)
+
+                buys = [t for t in trades if t['side'] == 'BUY']
+                sells = [t for t in trades if t['side'] == 'SELL']
+                total_pnl = sum(float(t['pnl'] or 0) for t in trades)
+
+                pos_list = []
+                for sym, pos in self.positions.items():
+                    rate = float(pos.get('pnl_rate', 0))
+                    pos_list.append(f"{pos.get('name', sym)} {rate:+.1f}%")
+
+                acct = await self.trader.get_balance()
+                cash = acct.get('cash', 0)
+
+                report = f"""📈 주식 6시간 리포트 ({now.strftime('%m/%d %H:%M')})
+
+매수 {len(buys)}건 / 매도 {len(sells)}건
+손익: {total_pnl:+,.0f}원
+
+보유: {', '.join(pos_list) if pos_list else '없음'}
+예수금: {cash:,.0f}원"""
+
+                if trades:
+                    report += "\n\n최근 매매:"
+                    for t in list(trades)[:5]:
+                        pnl = float(t['pnl'] or 0)
+                        report += f"\n{'🔴매수' if t['side']=='BUY' else '🔵매도'} {t['symbol']} {float(t['amount']):,.0f}원"
+                        if pnl:
+                            report += f" ({pnl:+,.0f}원)"
+
+                await send_stock(report)
+                logger.info("📨 6시간 주식 리포트 전송")
+            except Exception as e:
+                logger.error(f"주식 리포트 실패: {e}")
 
     async def _notify_error(self, error: str):
         try:

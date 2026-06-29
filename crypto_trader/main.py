@@ -148,6 +148,7 @@ class CryptoTrader:
         asyncio.create_task(self._daily_report_loop())
         asyncio.create_task(self._price_monitor())  # 급락/급등 실시간 감지
         asyncio.create_task(self._daily_scan_loop())  # 거래량 TOP 20 자동 업데이트
+        asyncio.create_task(self._six_hour_report_loop())  # 6시간 리포트
         await self._loop()
 
     MAJOR_PAIRS = [
@@ -252,6 +253,69 @@ class CryptoTrader:
             except Exception as e:
                 logger.debug(f"시세 업데이트 오류: {e}")
             await asyncio.sleep(3)
+
+    async def _six_hour_report_loop(self):
+        """6시간마다 매매 요약 리포트 전송"""
+        while self.running:
+            now = datetime.now(KST)
+            # 다음 6시간 단위 (0,6,12,18시)
+            next_hour = ((now.hour // 6) + 1) * 6
+            if next_hour >= 24:
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            else:
+                next_run = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
+            wait_sec = (next_run - now).total_seconds()
+            await asyncio.sleep(wait_sec)
+
+            try:
+                from common.telegram import send_crypto
+                import json as _json
+
+                # 지난 6시간 거래 내역
+                async with db.pool.acquire() as conn:
+                    trades = await conn.fetch("""
+                        SELECT side, symbol, amount, pnl, strategy, created_at
+                        FROM trade_history
+                        WHERE bot='crypto_trader'
+                        AND created_at >= NOW() - INTERVAL '6 hours'
+                        ORDER BY created_at DESC
+                    """)
+
+                buys = [t for t in trades if t['side'] == 'BUY']
+                sells = [t for t in trades if t['side'] == 'SELL']
+                total_pnl = sum(float(t['pnl'] or 0) for t in trades)
+
+                # 보유 코인
+                pos_list = []
+                for pair, pos in self.positions.items():
+                    name = self.COIN_NAMES.get(pair, pair.replace('KRW-',''))
+                    rate = float(pos.get('pnl_rate', 0))
+                    pos_list.append(f"{name} {rate:+.1f}%")
+
+                # KRW 잔고
+                krw = await self.trader.get_balance("KRW")
+
+                report = f"""📊 코인 6시간 리포트 ({now.strftime('%m/%d %H:%M')})
+
+매수 {len(buys)}건 / 매도 {len(sells)}건
+손익: {total_pnl:+,.0f}원
+
+보유: {', '.join(pos_list) if pos_list else '없음'}
+KRW: {krw:,.0f}원"""
+
+                if trades:
+                    report += "\n\n최근 매매:"
+                    for t in list(trades)[:5]:
+                        pnl = float(t['pnl'] or 0)
+                        side = '🔴매수' if t['side']=='BUY' else '🔵매도'
+                        report += f"\n{side} {t['symbol'].replace('KRW-','')} {float(t['amount']):,.0f}원"
+                        if pnl:
+                            report += f" ({pnl:+,.0f}원)"
+
+                await send_crypto(report)
+                logger.info("📨 6시간 리포트 전송 완료")
+            except Exception as e:
+                logger.error(f"리포트 전송 실패: {e}")
 
     async def _daily_report_loop(self):
         """자정(00:00 KST) 하루 1번 결산 보고"""

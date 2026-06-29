@@ -676,14 +676,15 @@ class CryptoTrader:
 
             prompt = f"""[코인 매수 판단] {name}
 
-신호: RSI 과매도 반등 (ML {ml_prob:.0%})
+신호: RSI 과매도 반등
 현재가: {cur_price:,.0f}원
 가용KRW: {krw_balance:,.0f}원
-BTC: {btc_trend}
+BTC시장: {btc_trend}
 보유중: {portfolio if portfolio else '없음'}
 
-살만하면 EXECUTE, 아니면 SKIP으로 시작해서 이유 한줄로 답해줘.
-EXECUTE면 추천금액도 함께 (예: EXECUTE 20000원 - 과매도 반등 예상)
+RSI 과매도 구간에서 반등 신호 발생했어.
+BTC 급락장(-3% 이상)이 아니면 매수 추천해줘.
+EXECUTE [금액]원 - [이유] 또는 SKIP - [이유] 형식으로만 답해줘.
 """
 
             async with aiohttp.ClientSession() as s:

@@ -57,7 +57,8 @@ class KISTrader:
             "appkey": config.kis_app_key,
             "appsecret": config.kis_app_secret,
         }
-        async with self.session.post(url, json=payload) as resp:
+        async with self._new_session() as sess:
+          async with sess.post(url, json=payload) as resp:
             data = await resp.json()
             token = data.get("access_token", "")
             if token:
@@ -107,9 +108,10 @@ class KISTrader:
         # Redis 없으면 KIS API 직접 조회
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
-        async with self.session.get(
+        async with self._new_session() as sess:
+          async with sess.get(
             url, headers=self._headers("FHKST01010100"), params=params
-        ) as resp:
+          ) as resp:
             data = await resp.json()
             return int(data.get("output", {}).get("stck_prpr", 0))
 
@@ -127,9 +129,10 @@ class KISTrader:
             "OVRS_ICLD_YN": "N",
         }
         tr_id = "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R"
-        async with self.session.get(
+        async with self._new_session() as sess:
+          async with sess.get(
             url, headers=self._headers(tr_id), params=params
-        ) as resp:
+          ) as resp:
             data = await resp.json()
             output = data.get("output", {})
             cash = (int(output.get("ord_psbl_cash", 0)) or
@@ -253,9 +256,10 @@ class KISTrader:
             "ORD_QTY": str(qty),
             "ORD_UNPR": str(price),
         }
-        async with self.session.post(
+        async with self._new_session() as sess:
+          async with sess.post(
             url, headers=self._headers(tr_id), json=payload
-        ) as resp:
+          ) as resp:
             data = await resp.json()
             rt_cd = data.get("rt_cd")
             if rt_cd == "0":
@@ -282,9 +286,10 @@ class KISTrader:
             "FID_ORG_ADJ_PRC": "0",
         }
         tr_id = "FHKST03010100"
-        async with self.session.get(
+        async with self._new_session() as sess:
+          async with sess.get(
             url, headers=self._headers(tr_id), params=params
-        ) as resp:
+          ) as resp:
             data = await resp.json()
 
         candles = []

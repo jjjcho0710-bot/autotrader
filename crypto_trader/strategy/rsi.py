@@ -35,8 +35,10 @@ class RSIStrategy:
         rsi = self._calc_rsi(prices)
         rsi_prev = self._calc_rsi(prices[:-1])
 
-        if rsi_prev <= self.cfg.entry and rsi > self.cfg.entry:
-            logger.info(f"🟢 코인 RSI 반등 [{pair}] RSI={rsi:.1f}")
+        # 2분 연속 상승 확인 (가짜 반등 방지)
+        rsi_prev2 = self._calc_rsi(prices[:-2]) if len(prices) > self.cfg.period + 3 else rsi_prev
+        if rsi_prev2 <= self.cfg.entry and rsi_prev <= self.cfg.entry and rsi > rsi_prev:
+            logger.info(f"🟢 코인 RSI 반등 [{pair}] RSI={rsi:.1f} (prev={rsi_prev:.1f})")
             return "BUY"
         if rsi >= self.cfg.exit:
             logger.info(f"🔴 코인 RSI 과매수 [{pair}] RSI={rsi:.1f}")

@@ -105,17 +105,9 @@ class CryptoTrader:
             logger.error(f"TOP 20 업데이트 실패: {e}")
 
     async def _daily_scan_loop(self):
-        """매일 08:30 거래량 TOP 20 업데이트"""
-        while self.running:
-            now = datetime.now(KST)
-            # 다음 08:30까지 대기 (처음엔 스캔 안 함)
-            next_run = now.replace(hour=8, minute=30, second=0, microsecond=0)
-            if now >= next_run:
-                next_run = next_run + timedelta(days=1)
-            wait_sec = (next_run - now).total_seconds()
-            logger.info(f"📅 다음 TOP 20 업데이트: {next_run.strftime('%m/%d %H:%M')}")
-            await asyncio.sleep(wait_sec)
-            await self._update_top_pairs()
+        """비활성화: 메이저 코인만 사용 (변동성 큰 잡코인 제외)"""
+        logger.info("📅 TOP 20 자동 스캔 비활성화 - 메이저 코인 고정 사용")
+        return  # 더 이상 스캔하지 않음
 
     async def start(self):
         self.running = True
@@ -125,17 +117,11 @@ class CryptoTrader:
         await self._init_default_strategies()
         await self.load_strategies()
 
-        # 메이저 코인 기본값 설정
+        # 메이저 코인 강제 고정 (SLX, RE 등 잡코인 차단)
         import json as _json
-        existing = await cache.client.get("crypto:top_pairs")
-        if not existing:
-            await cache.client.setex("crypto:top_pairs", 86400*30, _json.dumps(self.MAJOR_PAIRS))
-            config.CRYPTO_PAIRS = self.MAJOR_PAIRS
-            logger.info(f"✅ 메이저 코인 {len(self.MAJOR_PAIRS)}개 설정")
-        else:
-            loaded = _json.loads(existing)
-            config.CRYPTO_PAIRS = loaded
-            logger.info(f"✅ 저장된 코인 {len(loaded)}개 로드")
+        await cache.client.setex("crypto:top_pairs", 86400*30, _json.dumps(self.MAJOR_PAIRS))
+        config.CRYPTO_PAIRS = self.MAJOR_PAIRS
+        logger.info(f"✅ 메이저 코인 {len(self.MAJOR_PAIRS)}개 강제 고정")
 
         # 시작 시 OHLCV 데이터 자동 수집
         asyncio.create_task(self._init_ohlcv())

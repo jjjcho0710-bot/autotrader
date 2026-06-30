@@ -616,7 +616,14 @@ KRW: {krw:,.0f}원"""
                         amount=actual_amount, strategy=strat_name,
                     )
                     krw_balance -= actual_amount
-                    logger.info(f"✅ 매수 완료 [{pair}] {actual_amount:,.0f}원 (ML확률:{ml_prob:.0%})")
+                    # 즉시 포지션 등록 (중복 매수 방지)
+                    self.positions[pair] = {
+                        "pair": pair,
+                        "avg_price": cur_price,
+                        "qty": qty,
+                        "amount": actual_amount,
+                    }
+                    logger.info(f"✅ 매수 완료 [{pair}] {actual_amount:,.0f}원")
 
         # Redis 캐시 업데이트
         # KRW 잔고 Redis 저장 (dashboard에서 읽음)

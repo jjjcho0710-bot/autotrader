@@ -403,8 +403,8 @@ KRW: {krw:,.0f}원"""
                                 continue
 
                             # 단타 매도 로직
-                            if pnl_rate <= -5.0:
-                                # -2% 손절: 즉시 자동 매도
+                            if pnl_rate <= stop_loss:
+                                # 손절: 즉시 자동 매도
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty
@@ -418,8 +418,8 @@ KRW: {krw:,.0f}원"""
                                     logger.info(f"🛑 손절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
                                     self.positions.pop(pair, None)
 
-                            elif 1.0 <= pnl_rate < 3.0:
-                                # +0.3~3%: 즉시 익절 (단타)
+                            elif take_profit <= pnl_rate < 3.0:
+                                # 익절 (단타/야간)
                                 result = await self.trader.sell_market(pair, qty)
                                 if result.get("success"):
                                     pnl = (cur_price - avg_price) * qty
@@ -575,11 +575,25 @@ KRW: {krw:,.0f}원"""
                     if pair in self.positions:
                         continue
 
-                    # 하락장 시간대 매수 차단 (23:00~04:00)
+                    # 시간대별 전략 분기
                     now_hour = datetime.now(KST).hour
-                    if 23 <= now_hour or now_hour < 4:
-                        logger.info(f"🌙 [{pair}] 하락장 시간대 매수 차단 ({now_hour}시)")
-                        continue
+                    is_night = (23 <= now_hour or now_hour < 4)
+
+                    if is_night:
+                        # 야간: RSI 25 이하만 매수, 익절 +2%, 손절 -7%
+                        night_rsi = 35.0
+                        prices_tmp = [float(r.get("close", 0)) for r in rows]
+                        if len(prices_tmp) >= 15:
+                            gains = [max(prices_tmp[i]-prices_tmp[i-1],0) for i in range(-14,0)]
+                            losses = [max(prices_tmp[i-1]-prices_tmp[i],0) for i in range(-14,0)]
+                            ag = sum(gains)/14; al = sum(losses)/14
+                            night_rsi = 100-(100/(1+ag/al)) if al > 0 else 100
+                        if night_rsi > 25:
+                            logger.info(f"🌙 [{pair}] 야간 RSI 기준 미달 ({night_rsi:.1f} > 25)")
+                            continue
+                        # 야간 익절/손절 기준 임시 저장
+                        await cache.client.setex(f"crypto:night_pos:{pair}", 86400, "1")
+                        logger.info(f"🌙 [{pair}] 야간 매수 (RSI{night_rsi:.1f}) → 아침 +2% 익절 목표")
 
                     # RSI 직접 계산해서 신호 강도 결정
                     prices = [float(r.get("close", 0)) for r in rows]

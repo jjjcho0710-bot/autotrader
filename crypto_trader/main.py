@@ -573,13 +573,28 @@ KRW: {krw:,.0f}원"""
                 except: pass
 
                 if trade_mode == "scalping":
-                    # 단타: 즉시 매수 (Jarvis 없음)
-                    if krw_balance >= 5000:
-                        actual_amount = min(krw_balance * 0.45, krw_balance * 0.95)
-                        actual_amount = max(actual_amount, 5000)
-                        logger.info(f"⚡ 단타 즉시매수 [{pair}] {actual_amount:,.0f}원")
-                    else:
+                    # 단타: 중복 매수 완전 차단
+                    if pair in self.positions:
                         continue
+
+                    # 신호 강도별 매수 금액 결정
+                    if ml_prob >= 0.90:
+                        ratio, strength = 0.40, "강함"
+                    elif ml_prob >= 0.75:
+                        ratio, strength = 0.25, "보통"
+                    elif ml_prob >= 0.60:
+                        ratio, strength = 0.15, "약함"
+                    else:
+                        ratio, strength = 0.10, "최소"
+
+                    actual_amount = krw_balance * ratio
+                    actual_amount = max(actual_amount, 5000)
+                    actual_amount = min(actual_amount, krw_balance * 0.95)
+
+                    if actual_amount < 5000:
+                        continue
+
+                    logger.info(f"⚡ 단타 매수 [{pair}] {actual_amount:,.0f}원 (ML:{ml_prob:.0%} {strength})")
                 else:
                     # 스윙: Jarvis 판단
                     actual_amount = await self._ask_jarvis_amount(

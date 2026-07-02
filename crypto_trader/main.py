@@ -53,6 +53,11 @@ DAY_PARAMS   = {"rsi_entry": 35, "take_profit": 0.01, "stop_loss": -0.05}
 NIGHT_PARAMS = {"rsi_entry": 20, "take_profit": 0.03, "stop_loss": -0.05}
 MIN_BUY_KRW  = 150_000   # 최소 매수금액 15만원
 
+# 코인 목록 자동 갱신 설정
+MAX_EXTRA_PAIRS   = 5           # 메이저 외 신규 코인 최대 개수
+MIN_TRADE_VALUE   = 50_000_000_000   # 최소 24h 거래대금 500억
+MIN_LISTING_DAYS  = 180         # 최소 상장 경과일 (6개월)
+
 
 def _is_night(now_kst: datetime) -> bool:
     """22:00~04:00 야간 여부"""
@@ -79,6 +84,8 @@ class CryptoTrader:
         self.positions        = {}
         self.strategies       = {}
         self.report_sent_date = None
+        self.active_pairs     = list(MAJOR_PAIRS)   # 메이저 20개 + 신규(스캔으로 추가)
+        self.extra_pairs      = []                  # 스캔으로 추가된 신규 코인
 
     async def start(self):
         self.running = True
@@ -88,10 +95,11 @@ class CryptoTrader:
         await self._init_default_strategies()
         await self.load_strategies()
 
-        config.CRYPTO_PAIRS = MAJOR_PAIRS
-        await cache.client.setex("crypto:top_pairs", 86400 * 30, json.dumps(MAJOR_PAIRS))
-        names = [p.replace("KRW-","") for p in MAJOR_PAIRS]
-        logger.info("✅ 메이저 코인 %d개 고정: %s", len(MAJOR_PAIRS), names)
+        # 초기 코인 스캔 (메이저 20 + 신규 최대 5)
+        await self._scan_coins()
+        config.CRYPTO_PAIRS = self.active_pairs
+        logger.info("✅ 활성 코인 %d개 (메이저 20 + 신규 %d)",
+                    len(self.active_pairs), len(self.extra_pairs))
 
         asyncio.create_task(self._init_ohlcv())
 
@@ -100,6 +108,7 @@ class CryptoTrader:
         logger.info("=" * 50)
 
         asyncio.create_task(self._subscribe_strategy_changes())
+        asyncio.create_task(self._scan_loop())
         asyncio.create_task(self._price_loop())
         asyncio.create_task(self._price_monitor())
         asyncio.create_task(self._six_hour_report_loop())
@@ -162,7 +171,7 @@ class CryptoTrader:
         while self.running:
             try:
                 prices_data = {}
-                for pair in MAJOR_PAIRS:
+                for pair in self.active_pairs:
                     try:
                         cur = await self.trader.get_current_price(pair)
                         if cur > 0:
@@ -327,7 +336,7 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
-        for pair in MAJOR_PAIRS:
+        for pair in self.active_pairs:
             if pair in self.positions:
                 continue
 
@@ -446,11 +455,101 @@ class CryptoTrader:
             return True
         return True
 
+    async def _scan_coins(self):
+        """
+        업비트 전체 KRW 코인 스캔 → 필터 → active_pairs 갱신
+        메이저 20개는 항상 포함, 조건 통과 신규 코인 최대 MAX_EXTRA_PAIRS개 추가
+        필터: 거래대금 500억 이상 + 상장 6개월 이상
+        """
+        try:
+            import aiohttp as _aio
+            async with _aio.ClientSession() as s:
+                # 1) 전체 KRW 마켓 목록
+                r = await s.get("https://api.upbit.com/v1/market/all",
+                                params={"isDetails": "false"},
+                                timeout=_aio.ClientTimeout(total=10))
+                markets = await r.json()
+                krw_markets = [m["market"] for m in markets if m["market"].startswith("KRW-")]
+
+                # 2) 티커 (24h 거래대금) — 100개씩 나눠 조회
+                tickers = []
+                for i in range(0, len(krw_markets), 100):
+                    chunk = krw_markets[i:i+100]
+                    rt = await s.get("https://api.upbit.com/v1/ticker",
+                                     params={"markets": ",".join(chunk)},
+                                     timeout=_aio.ClientTimeout(total=10))
+                    tickers.extend(await rt.json())
+                    await asyncio.sleep(0.1)
+
+            # 3) 거래대금 내림차순 정렬
+            tickers.sort(key=lambda t: t.get("acc_trade_price_24h", 0), reverse=True)
+
+            STABLE = ["USDT", "USDC", "BUSD", "DAI", "TUSD"]
+            new_extra = []
+            for t in tickers:
+                pair = t["market"]
+                if pair in MAJOR_PAIRS:
+                    continue
+                if any(stbl in pair for stbl in STABLE):
+                    continue
+                # 거래대금 필터 (500억 이상)
+                if t.get("acc_trade_price_24h", 0) < MIN_TRADE_VALUE:
+                    continue
+                # 상장 경과일 필터 (6개월 이상)
+                if not await self._check_listing_age(pair):
+                    continue
+                new_extra.append(pair)
+                if len(new_extra) >= MAX_EXTRA_PAIRS:
+                    break
+
+            self.extra_pairs  = new_extra
+            self.active_pairs = list(MAJOR_PAIRS) + new_extra
+            await cache.client.setex("crypto:top_pairs", 86400, json.dumps(self.active_pairs))
+
+            extra_names = [p.replace("KRW-", "") for p in new_extra]
+            logger.info("🔍 코인 목록 갱신: 메이저 20개 + 신규 %d개 %s",
+                        len(new_extra), extra_names or "없음")
+        except Exception as e:
+            logger.error("코인 스캔 실패: %s → 메이저 20개 유지", e)
+            self.active_pairs = list(MAJOR_PAIRS)
+
+    async def _check_listing_age(self, pair: str) -> bool:
+        """일봉 200개 조회 → 상장 6개월(180일) 이상인지 확인"""
+        try:
+            import aiohttp as _aio
+            async with _aio.ClientSession() as s:
+                r = await s.get("https://api.upbit.com/v1/candles/days",
+                                params={"market": pair, "count": 200},
+                                timeout=_aio.ClientTimeout(total=10))
+                candles = await r.json()
+            if isinstance(candles, list) and len(candles) >= MIN_LISTING_DAYS:
+                return True
+            return False
+        except:
+            return False
+
+    async def _scan_loop(self):
+        """6시간마다 (00, 06, 12, 18시) 코인 목록 자동 갱신"""
+        # 시작 즉시 1회 스캔
+        await self._scan_coins()
+        while self.running:
+            now = datetime.now(KST)
+            next_hour = ((now.hour // 6) + 1) * 6
+            if next_hour >= 24:
+                next_run = now.replace(hour=0, minute=5, second=0, microsecond=0) + timedelta(days=1)
+            else:
+                next_run = now.replace(hour=next_hour, minute=5, second=0, microsecond=0)
+            await asyncio.sleep((next_run - now).total_seconds())
+            try:
+                await self._scan_coins()
+            except Exception as e:
+                logger.error("스캔 루프 오류: %s", e)
+
     async def _init_ohlcv(self):
         try:
             import aiohttp as _aio
             to_collect = []
-            for pair in MAJOR_PAIRS:
+            for pair in self.active_pairs:
                 try:
                     async with db.pool.acquire() as conn:
                         cnt = await conn.fetchval("SELECT COUNT(*) FROM crypto_ohlcv WHERE pair=$1", pair)

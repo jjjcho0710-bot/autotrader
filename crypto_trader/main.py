@@ -575,16 +575,24 @@ KRW: {krw:,.0f}원"""
                     if pair in self.positions:
                         continue
 
-                    # RSI 수치 기반 금액 결정
-                    rsi_val = float(rows[-1].get("rsi", 35)) if rows else 35
+                    # RSI 직접 계산해서 신호 강도 결정
+                    prices = [float(r.get("close", 0)) for r in rows]
+                    rsi_val = 35.0
+                    if len(prices) >= 15:
+                        gains = [max(prices[i]-prices[i-1],0) for i in range(-14,0)]
+                        losses = [max(prices[i-1]-prices[i],0) for i in range(-14,0)]
+                        ag = sum(gains)/14
+                        al = sum(losses)/14
+                        rsi_val = 100-(100/(1+ag/al)) if al > 0 else 100
+
                     if rsi_val <= 20:
-                        ratio, strength = 0.40, "강함(RSI≤20)"
+                        ratio, strength = 0.40, f"강함(RSI{rsi_val:.0f})"
                     elif rsi_val <= 25:
-                        ratio, strength = 0.25, "보통(RSI≤25)"
+                        ratio, strength = 0.25, f"보통(RSI{rsi_val:.0f})"
                     elif rsi_val <= 30:
-                        ratio, strength = 0.15, "약함(RSI≤30)"
+                        ratio, strength = 0.15, f"약함(RSI{rsi_val:.0f})"
                     else:
-                        ratio, strength = 0.10, "최소(RSI≤35)"
+                        ratio, strength = 0.10, f"최소(RSI{rsi_val:.0f})"
 
                     actual_amount = krw_balance * ratio
                     actual_amount = max(actual_amount, 150000)  # 최소 15만원

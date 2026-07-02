@@ -322,8 +322,8 @@ class CryptoTrader:
                     mode_label, rsi_entry, tp*100, sl*100, list(self.positions.keys()) or "없음")
 
         krw_balance = await self.trader.get_balance("KRW")
-        if krw_balance < MIN_BUY_KRW:
-            logger.info("💸 KRW 잔고 부족 (%,.0f원)", krw_balance)
+        if krw_balance < 5_000:
+            logger.info("💸 KRW 잔고 소진 (%,.0f원) → 매수 불가", krw_balance)
             await self._update_status(krw_balance)
             return
 
@@ -366,12 +366,13 @@ class CryptoTrader:
             else:
                 ratio, strength = 0.10, "최소(RSI%.0f)" % rsi_now
 
-            actual_amount = max(krw_balance * ratio, MIN_BUY_KRW)
-            actual_amount = min(actual_amount, krw_balance * 0.95)
-
-            if actual_amount < MIN_BUY_KRW:
-                logger.info("⛔ [%s] 잔고 부족 (%,.0f원)", pair, krw_balance)
-                break
+            # 잔고가 15만원 이하면 잔고 전액 매수 (기회 놓치지 않음)
+            if krw_balance < MIN_BUY_KRW:
+                actual_amount = krw_balance * 0.99   # 수수료 여유분
+                logger.info("⚡ [%s] 잔고 전액 매수 모드 (%,.0f원)", pair, actual_amount)
+            else:
+                actual_amount = max(krw_balance * ratio, MIN_BUY_KRW)
+                actual_amount = min(actual_amount, krw_balance * 0.95)
 
             name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
             logger.info("📈 %s 신호 [%s] RSI:%.1f 금액:%,.0f원 (%s)",

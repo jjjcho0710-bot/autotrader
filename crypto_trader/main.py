@@ -588,10 +588,11 @@ KRW: {krw:,.0f}원"""
                         ratio, strength = 0.10, "최소"
 
                     actual_amount = krw_balance * ratio
-                    actual_amount = max(actual_amount, 5000)
+                    actual_amount = max(actual_amount, 150000)  # 최소 15만원
                     actual_amount = min(actual_amount, krw_balance * 0.95)
 
-                    if actual_amount < 5000:
+                    if actual_amount < 150000:
+                        logger.info(f"⛔ [{pair}] 잔고 부족 (최소 15만원 필요, 현재 {krw_balance:,.0f}원)")
                         continue
 
                     logger.info(f"⚡ 단타 매수 [{pair}] {actual_amount:,.0f}원 (ML:{ml_prob:.0%} {strength})")

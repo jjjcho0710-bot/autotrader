@@ -559,10 +559,8 @@ KRW: {krw:,.0f}원"""
                     continue
 
                 # ML 판단
-                ml_ok, ml_prob = await self._check_ml(pair, rows)
-                if not ml_ok:
-                    logger.info(f"⛔ [{pair}] ML 필터 차단")
-                    continue
+                # ML 제거 - RSI 수치로 신호 강도 판단
+                ml_prob = 0.75  # 기본값 (RSI 신호 발생 = 충분한 조건)
 
                 # 트레이딩 모드 확인 (Redis)
                 trade_mode = "scalping"
@@ -577,15 +575,16 @@ KRW: {krw:,.0f}원"""
                     if pair in self.positions:
                         continue
 
-                    # 신호 강도별 매수 금액 결정
-                    if ml_prob >= 0.90:
-                        ratio, strength = 0.40, "강함"
-                    elif ml_prob >= 0.75:
-                        ratio, strength = 0.25, "보통"
-                    elif ml_prob >= 0.60:
-                        ratio, strength = 0.15, "약함"
+                    # RSI 수치 기반 금액 결정
+                    rsi_val = float(rows[-1].get("rsi", 35)) if rows else 35
+                    if rsi_val <= 20:
+                        ratio, strength = 0.40, "강함(RSI≤20)"
+                    elif rsi_val <= 25:
+                        ratio, strength = 0.25, "보통(RSI≤25)"
+                    elif rsi_val <= 30:
+                        ratio, strength = 0.15, "약함(RSI≤30)"
                     else:
-                        ratio, strength = 0.10, "최소"
+                        ratio, strength = 0.10, "최소(RSI≤35)"
 
                     actual_amount = krw_balance * ratio
                     actual_amount = max(actual_amount, 150000)  # 최소 15만원

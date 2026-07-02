@@ -149,7 +149,7 @@ class CryptoTrader:
         import json as _json
         defaults = [
             ("MACD", True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
-            ("RSI반등", True, {"period":14,"entry":30,"exit":65,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
+            ("RSI반등", True, {"period":14,"entry":35,"exit":65,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
         ]
         async with db.pool.acquire() as conn:
             for name, active, params in defaults:

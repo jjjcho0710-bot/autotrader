@@ -575,6 +575,12 @@ KRW: {krw:,.0f}원"""
                     if pair in self.positions:
                         continue
 
+                    # 하락장 시간대 매수 차단 (23:00~04:00)
+                    now_hour = datetime.now(KST).hour
+                    if 23 <= now_hour or now_hour < 4:
+                        logger.info(f"🌙 [{pair}] 하락장 시간대 매수 차단 ({now_hour}시)")
+                        continue
+
                     # RSI 직접 계산해서 신호 강도 결정
                     prices = [float(r.get("close", 0)) for r in rows]
                     rsi_val = 35.0

@@ -1,12 +1,14 @@
 """
 crypto-trader — AutoTrader
 업비트 코인 자동매매
-ML 모델 판단 → 자동 매수/매도 (텔레그램 알림 없음)
-하루 1번 자정 결산 보고
+낮 (04:00~22:00): RSI 35이하, 익절 +1%, 손절 -5%
+야간 (22:00~04:00): RSI 20이하만, 익절 +3%, 손절 -5%
++3% 이상 수익 시 Jarvis 판단 (HOLD/SELL)
 """
 import asyncio
 import json
 import logging
+import os
 import signal
 import time as _time
 from datetime import datetime, timezone, timedelta
@@ -21,93 +23,62 @@ class KSTFormatter(logging.Formatter):
     def converter(self, timestamp):
         return _time.gmtime(timestamp + 9 * 3600)
 
-_fmt = KSTFormatter(
-    fmt="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+_fmt = KSTFormatter(fmt="%(asctime)s [%(levelname)s] %(name)s — %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 logging.basicConfig(level=logging.INFO)
 logging.root.handlers[0].setFormatter(_fmt)
 logger = logging.getLogger("crypto-trader")
 
 KST = timezone(timedelta(hours=9))
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+
+MAJOR_PAIRS = [
+    "KRW-BTC","KRW-ETH","KRW-XRP","KRW-SOL","KRW-ADA",
+    "KRW-DOGE","KRW-AVAX","KRW-LINK","KRW-DOT","KRW-SUI",
+    "KRW-TRX","KRW-NEAR","KRW-ARB","KRW-SHIB",
+    "KRW-APT","KRW-SAND","KRW-ATOM","KRW-FIL","KRW-AXS","KRW-XLM",
+]
+
+COIN_NAMES = {
+    "KRW-BTC":"비트코인","KRW-ETH":"이더리움","KRW-XRP":"리플",
+    "KRW-SOL":"솔라나","KRW-ADA":"에이다","KRW-DOGE":"도지코인",
+    "KRW-AVAX":"아발란체","KRW-LINK":"체인링크","KRW-DOT":"폴카닷",
+    "KRW-SUI":"수이","KRW-TRX":"트론","KRW-NEAR":"니어프로토콜",
+    "KRW-ARB":"아비트럼","KRW-SHIB":"시바이누","KRW-APT":"앱토스",
+    "KRW-SAND":"샌드박스","KRW-ATOM":"코스모스","KRW-FIL":"파일코인",
+    "KRW-AXS":"엑시인피니티","KRW-XLM":"스텔라루멘",
+}
+
+# 시간대별 전략 파라미터
+DAY_PARAMS   = {"rsi_entry": 35, "take_profit": 0.01, "stop_loss": -0.05}
+NIGHT_PARAMS = {"rsi_entry": 20, "take_profit": 0.03, "stop_loss": -0.05}
+MIN_BUY_KRW  = 150_000   # 최소 매수금액 15만원
+
+
+def _is_night(now_kst: datetime) -> bool:
+    """22:00~04:00 야간 여부"""
+    h = now_kst.hour
+    return h >= 22 or h < 4
+
+
+def _calc_rsi(prices: list, period: int = 14) -> float:
+    if len(prices) < period + 1:
+        return 50.0
+    gains  = [max(prices[i] - prices[i-1], 0) for i in range(-period, 0)]
+    losses = [max(prices[i-1] - prices[i], 0) for i in range(-period, 0)]
+    ag = sum(gains) / period
+    al = sum(losses) / period
+    if al == 0:
+        return 100.0
+    return 100 - (100 / (1 + ag / al))
 
 
 class CryptoTrader:
     def __init__(self):
-        self.running    = False
-        self.trader     = UpbitTrader()
-        self.positions  = {}
-        self.strategies = {}
-        self.daily_trades = []       # 오늘 매매 기록 (결산용)
-        self.report_sent_date = None # 결산 보고 중복 방지
-
-    # 업비트 코인 한글명 매핑
-    COIN_NAMES = {
-        "KRW-BTC": "비트코인", "KRW-ETH": "이더리움", "KRW-SOL": "솔라나",
-        "KRW-XRP": "리플", "KRW-ADA": "에이다", "KRW-DOGE": "도지코인",
-        "KRW-AVAX": "아발란체", "KRW-DOT": "폴카닷", "KRW-MATIC": "폴리곤",
-        "KRW-LINK": "체인링크", "KRW-UNI": "유니스왑", "KRW-ATOM": "코스모스",
-        "KRW-LTC": "라이트코인", "KRW-BCH": "비트코인캐시", "KRW-ETC": "이더리움클래식",
-        "KRW-SAND": "샌드박스", "KRW-MANA": "디센트럴랜드", "KRW-SHIB": "시바이누",
-        "KRW-APT": "앱토스", "KRW-ARB": "아비트럼", "KRW-OP": "옵티미즘",
-        "KRW-SUI": "수이", "KRW-TRX": "트론", "KRW-NEAR": "니어프로토콜",
-        "KRW-FIL": "파일코인", "KRW-AAVE": "에이브", "KRW-GRT": "그래프",
-        "KRW-AXS": "엑시인피니티", "KRW-ALGO": "알고랜드", "KRW-VET": "비체인",
-    }
-
-    async def _update_top_pairs(self):
-        """업비트 거래량 TOP 20 코인 자동 업데이트"""
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as s:
-                # 전체 KRW 마켓 조회
-                r = await s.get("https://api.upbit.com/v1/market/all?isDetails=false")
-                markets = await r.json()
-                krw_pairs = [m["market"] for m in markets if m["market"].startswith("KRW-")]
-
-                # 현재가 + 거래량 조회 (100개씩)
-                tickers = []
-                for i in range(0, len(krw_pairs), 100):
-                    chunk = krw_pairs[i:i+100]
-                    r = await s.get(
-                        "https://api.upbit.com/v1/ticker",
-                        params={"markets": ",".join(chunk)}
-                    )
-                    tickers.extend(await r.json())
-                    await asyncio.sleep(0.1)
-
-            # USDT/스테이블코인 제외 + 거래대금 기준 TOP 20
-            exclude = {"KRW-USDT", "KRW-USDC", "KRW-DAI", "KRW-BUSD"}
-            # 최소 거래대금 500억 이상 + 상위 20개
-            filtered = [
-                t for t in tickers
-                if t["market"] not in exclude
-                and float(t.get("acc_trade_price_24h", 0)) >= 50_000_000_000
-            ]
-            sorted_tickers = sorted(
-                filtered,
-                key=lambda x: float(x.get("acc_trade_price_24h", 0)),
-                reverse=True
-            )[:20]
-
-            top_pairs = [t["market"] for t in sorted_tickers]
-            config.CRYPTO_PAIRS = top_pairs
-
-            # 한글명 포함 로그
-            names = [self.COIN_NAMES.get(p, p) for p in top_pairs]
-            logger.info(f"📊 거래량 TOP 20 업데이트: {', '.join(names)}")
-
-            # Redis에 저장
-            import json
-            await cache.client.setex("crypto:top_pairs", 86400, json.dumps(top_pairs))
-
-        except Exception as e:
-            logger.error(f"TOP 20 업데이트 실패: {e}")
-
-    async def _daily_scan_loop(self):
-        """비활성화: 메이저 코인만 사용 (변동성 큰 잡코인 제외)"""
-        logger.info("📅 TOP 20 자동 스캔 비활성화 - 메이저 코인 고정 사용")
-        return  # 더 이상 스캔하지 않음
+        self.running          = False
+        self.trader           = UpbitTrader()
+        self.positions        = {}
+        self.strategies       = {}
+        self.report_sent_date = None
 
     async def start(self):
         self.running = True
@@ -117,116 +88,85 @@ class CryptoTrader:
         await self._init_default_strategies()
         await self.load_strategies()
 
-        # 메이저 코인 강제 고정 (SLX, RE 등 잡코인 차단)
-        import json as _json
-        await cache.client.setex("crypto:top_pairs", 86400*30, _json.dumps(self.MAJOR_PAIRS))
-        config.CRYPTO_PAIRS = self.MAJOR_PAIRS
-        logger.info(f"✅ 메이저 코인 {len(self.MAJOR_PAIRS)}개 강제 고정")
+        config.CRYPTO_PAIRS = MAJOR_PAIRS
+        await cache.client.setex("crypto:top_pairs", 86400 * 30, json.dumps(MAJOR_PAIRS))
+        names = [p.replace("KRW-","") for p in MAJOR_PAIRS]
+        logger.info("✅ 메이저 코인 %d개 고정: %s", len(MAJOR_PAIRS), names)
 
-        # 시작 시 OHLCV 데이터 자동 수집
         asyncio.create_task(self._init_ohlcv())
+
         logger.info("=" * 50)
         logger.info("🚀 AutoTrader crypto-trader 시작")
         logger.info("=" * 50)
 
         asyncio.create_task(self._subscribe_strategy_changes())
         asyncio.create_task(self._price_loop())
+        asyncio.create_task(self._price_monitor())
+        asyncio.create_task(self._six_hour_report_loop())
         asyncio.create_task(self._daily_report_loop())
-        asyncio.create_task(self._price_monitor())  # 급락/급등 실시간 감지
-        asyncio.create_task(self._daily_scan_loop())  # 거래량 TOP 20 자동 업데이트
-        asyncio.create_task(self._six_hour_report_loop())  # 6시간 리포트
+
         await self._loop()
 
-    MAJOR_PAIRS = [
-        "KRW-BTC","KRW-ETH","KRW-XRP","KRW-SOL","KRW-ADA",
-        "KRW-DOGE","KRW-AVAX","KRW-LINK","KRW-DOT","KRW-SUI",
-        "KRW-TRX","KRW-NEAR","KRW-ARB","KRW-SHIB",
-        "KRW-APT","KRW-SAND","KRW-ATOM","KRW-FIL","KRW-AXS"
-    ]
-
     async def _init_default_strategies(self):
-        """기본 전략이 없으면 자동 등록"""
-        import json as _json
         defaults = [
-            ("MACD", True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
+            ("MACD",   True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
             ("RSI반등", True, {"period":14,"entry":35,"exit":65,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
         ]
         async with db.pool.acquire() as conn:
             for name, active, params in defaults:
-                await conn.execute("""
-                    INSERT INTO strategy_config (bot, name, is_active, params)
-                    VALUES ('crypto_trader', $1, $2, $3)
-                    ON CONFLICT (bot, name) DO NOTHING
-                """, name, active, _json.dumps(params))
+                await conn.execute(
+                    "INSERT INTO strategy_config (bot,name,is_active,params) VALUES ('crypto_trader',$1,$2,$3) ON CONFLICT (bot,name) DO NOTHING",
+                    name, active, json.dumps(params)
+                )
         logger.info("✅ 코인 기본 전략 확인 완료")
 
     async def load_strategies(self):
         try:
             async with db.pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT name, is_active, params FROM strategy_config WHERE bot='crypto_trader'"
-                )
+                rows = await conn.fetch("SELECT name,is_active,params FROM strategy_config WHERE bot='crypto_trader'")
             self.strategies = {}
             for r in rows:
                 params = r["params"]
                 if isinstance(params, str):
                     params = json.loads(params)
-                self.strategies[r["name"]] = {
-                    "is_active": r["is_active"],
-                    "params":    params or {},
-                }
+                self.strategies[r["name"]] = {"is_active": r["is_active"], "params": params or {}}
             active = [n for n, s in self.strategies.items() if s["is_active"]]
-            logger.info(f"📋 전략 로드: {active}")
+            logger.info("📋 전략 로드: %s", active)
         except Exception as e:
-            logger.error(f"전략 로드 실패: {e}")
-
-    def get_active_strategy(self):
-        for name, s in self.strategies.items():
-            if s["is_active"]:
-                return name, s["params"]
-        return None, {}
-
-    def build_strategy(self, name, params):
-        if name == "MACD":
-            cfg = MACDConfig(
-                fast=int(params.get("fast", 12)),
-                slow=int(params.get("slow", 26)),
-                signal=int(params.get("signal", 9)),
-                buy_amount_krw=float(params.get("buy_amount", 10000)),
-            )
-            return MACDStrategy(cfg)
-        return None
+            logger.error("전략 로드 실패: %s", e)
 
     async def _subscribe_strategy_changes(self):
         try:
             pubsub = cache.client.pubsub()
             await pubsub.subscribe("strategy_changes")
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    logger.info("🔄 전략 변경 감지 → 재로드")
+            async for msg in pubsub.listen():
+                if msg["type"] == "message":
+                    logger.info("🔄 전략 변경 → 재로드")
                     await self.load_strategies()
         except Exception as e:
-            logger.warning(f"전략 구독 오류: {e}")
+            logger.warning("전략 구독 오류: %s", e)
 
     async def _loop(self):
         while self.running:
             now = datetime.now(KST)
-            logger.info(f"🔄 코인 매매 사이클 [{now.strftime('%H:%M:%S')}]")
+            night_tag = "🌙야간" if _is_night(now) else "☀️낮"
+            logger.info("🔄 코인 매매 사이클 [%s] %s", now.strftime('%H:%M:%S'), night_tag)
             try:
                 await self._run_cycle()
             except Exception as e:
-                logger.error(f"매매 사이클 오류: {e}")
+                logger.error("매매 사이클 오류: %s", e)
             await asyncio.sleep(60)
 
     async def _price_loop(self):
+        """3초마다 전 코인 시세 갱신 → Redis"""
         while self.running:
             try:
                 prices_data = {}
-                for pair in config.CRYPTO_PAIRS:
+                for pair in MAJOR_PAIRS:
                     try:
                         cur = await self.trader.get_current_price(pair)
                         if cur > 0:
-                            prev_key = f"crypto:prev:{pair}"
+                            prev_key = "crypto:prev:" + pair
                             prev = await cache.client.get(prev_key)
                             prev_price = float(prev) if prev else cur
                             change_rate = ((cur - prev_price) / prev_price * 100) if prev_price > 0 else 0
@@ -237,786 +177,406 @@ class CryptoTrader:
                 if prices_data:
                     await cache.client.setex("crypto:prices", 10, json.dumps(prices_data))
             except Exception as e:
-                logger.debug(f"시세 업데이트 오류: {e}")
+                logger.debug("시세 업데이트 오류: %s", e)
             await asyncio.sleep(3)
-
-    async def _six_hour_report_loop(self):
-        """6시간마다 매매 요약 리포트 전송"""
-        while self.running:
-            now = datetime.now(KST)
-            # 다음 6시간 단위 (0,6,12,18시)
-            next_hour = ((now.hour // 6) + 1) * 6
-            if next_hour >= 24:
-                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            else:
-                next_run = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
-            wait_sec = (next_run - now).total_seconds()
-            await asyncio.sleep(wait_sec)
-
-            try:
-                from common.telegram import send_crypto
-                import json as _json
-
-                # 지난 6시간 거래 내역
-                async with db.pool.acquire() as conn:
-                    trades = await conn.fetch("""
-                        SELECT side, symbol, amount, pnl, strategy, created_at
-                        FROM trade_history
-                        WHERE bot='crypto_trader'
-                        AND created_at >= NOW() - INTERVAL '6 hours'
-                        ORDER BY created_at DESC
-                    """)
-
-                buys = [t for t in trades if t['side'] == 'BUY']
-                sells = [t for t in trades if t['side'] == 'SELL']
-                total_pnl = sum(float(t['pnl'] or 0) for t in trades)
-
-                # 보유 코인
-                pos_list = []
-                for pair, pos in self.positions.items():
-                    name = self.COIN_NAMES.get(pair, pair.replace('KRW-',''))
-                    rate = float(pos.get('pnl_rate', 0))
-                    pos_list.append(f"{name} {rate:+.1f}%")
-
-                # KRW 잔고
-                krw = await self.trader.get_balance("KRW")
-
-                report = f"""📊 코인 6시간 리포트 ({now.strftime('%m/%d %H:%M')})
-
-매수 {len(buys)}건 / 매도 {len(sells)}건
-손익: {total_pnl:+,.0f}원
-
-보유: {', '.join(pos_list) if pos_list else '없음'}
-KRW: {krw:,.0f}원"""
-
-                if trades:
-                    report += "\n\n최근 매매:"
-                    for t in list(trades)[:5]:
-                        pnl = float(t['pnl'] or 0)
-                        side = '🔴매수' if t['side']=='BUY' else '🔵매도'
-                        report += f"\n{side} {t['symbol'].replace('KRW-','')} {float(t['amount']):,.0f}원"
-                        if pnl:
-                            report += f" ({pnl:+,.0f}원)"
-
-                await send_crypto(report)
-                logger.info("📨 6시간 리포트 전송 완료")
-            except Exception as e:
-                logger.error(f"리포트 전송 실패: {e}")
-
-    async def _daily_report_loop(self):
-        """자정(00:00 KST) 하루 1번 결산 보고"""
-        while self.running:
-            now = datetime.now(KST)
-            today = now.date()
-
-            if now.hour == 0 and now.minute == 0 and self.report_sent_date != today:
-                self.report_sent_date = today
-                await self._send_daily_report()
-
-            await asyncio.sleep(60)
-
-    async def _send_daily_report(self):
-        """하루 결산 텔레그램 보고"""
-        try:
-            from common.telegram import send_jarvis
-            now = datetime.now(KST)
-            yesterday = (now - timedelta(days=1)).strftime("%m/%d")
-
-            async with db.pool.acquire() as conn:
-                trades = await conn.fetch("""
-                    SELECT symbol, side, price, quantity, amount, pnl, strategy, created_at
-                    FROM trades
-                    WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = CURRENT_DATE - 1
-                      AND asset_type = 'crypto'
-                    ORDER BY created_at
-                """)
-                krw = await self.trader.get_balance("KRW")
-
-            buy_cnt  = sum(1 for t in trades if t["side"] == "BUY")
-            sell_cnt = sum(1 for t in trades if t["side"] == "SELL")
-            total_pnl = sum(float(t["pnl"] or 0) for t in trades if t["side"] == "SELL")
-            pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-
-            msg = f"📊 코인 일일 결산 [{yesterday}]\n"
-            msg += f"{'='*20}\n"
-            msg += f"매수 {buy_cnt}건 / 매도 {sell_cnt}건\n"
-            if sell_cnt > 0:
-                msg += f"{pnl_emoji} 실현손익: {total_pnl:+,.0f}원\n"
-
-            if trades:
-                msg += "\n거래 내역:\n"
-                for t in trades[:10]:
-                    side_emoji = "🟢" if t["side"] == "BUY" else "🔴"
-                    msg += f"  {side_emoji} {t['symbol']} {t['side']} {float(t['amount']):,.0f}원\n"
-
-            msg += f"\nKRW 잔고: {krw:,.0f}원"
-            msg += f"\n보유 코인: {len(self.positions)}종목"
-
-            if not trades:
-                msg += "\n오늘 거래 없음"
-
-            await send_jarvis(msg)
-            logger.info("✅ 일일 결산 보고 완료")
-        except Exception as e:
-            logger.error(f"일일 결산 보고 실패: {e}")
 
     async def _price_monitor(self):
-        """3초마다 보유 코인 급락/급등 감지 → 즉시 대응"""
-        alert_cooldown = {}
+        """3초마다 보유 포지션 손절/익절/Jarvis 판단"""
+        jarvis_cooldown = {}
 
         while self.running:
             try:
-                if self.positions:
-                    # Redis에서 코인 시세 읽기
-                    try:
-                        import json as _json
-                        cached = await cache.client.get("crypto:prices")
-                        prices_data = _json.loads(cached) if cached else {}
-                    except:
-                        prices_data = {}
+                if not self.positions:
+                    await asyncio.sleep(3)
+                    continue
 
-                    for pair, pos in list(self.positions.items()):
-                        avg_price = float(pos.get("avg_price", 0))
-                        if avg_price <= 0:
+                now_kst = datetime.now(KST)
+                night = _is_night(now_kst)
+                tp = NIGHT_PARAMS["take_profit"] if night else DAY_PARAMS["take_profit"]
+                sl = NIGHT_PARAMS["stop_loss"]   if night else DAY_PARAMS["stop_loss"]
+
+                try:
+                    cached = await cache.client.get("crypto:prices")
+                    prices_data = json.loads(cached) if cached else {}
+                except:
+                    prices_data = {}
+
+                for pair, pos in list(self.positions.items()):
+                    avg_price = float(pos.get("avg_price", 0))
+                    if avg_price <= 0:
+                        continue
+
+                    cur_price = float(prices_data.get(pair, {}).get("price", 0))
+                    if cur_price <= 0:
+                        continue
+
+                    pnl_rate = (cur_price - avg_price) / avg_price
+                    qty = float(pos.get("qty", 0))
+                    if qty <= 0 or cur_price * qty < 5000:
+                        continue
+
+                    # 손절
+                    if pnl_rate <= sl:
+                        result = await self.trader.sell_market(pair, qty)
+                        if result.get("success"):
+                            pnl_krw = (cur_price - avg_price) * qty
+                            await db.insert_trade(
+                                bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
+                                price=cur_price, quantity=qty, amount=cur_price * qty,
+                                strategy="손절", pnl=pnl_krw,
+                            )
+                            logger.info("🛑 손절 [%s] %.1f%% | %+,.0f원", pair, pnl_rate*100, pnl_krw)
+                            self.positions.pop(pair, None)
+                        continue
+
+                    # 일반 익절 (tp 이상, +3% 미만)
+                    if tp <= pnl_rate < 0.03:
+                        result = await self.trader.sell_market(pair, qty)
+                        if result.get("success"):
+                            pnl_krw = (cur_price - avg_price) * qty
+                            label = "야간익절" if night else "단타익절"
+                            await db.insert_trade(
+                                bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
+                                price=cur_price, quantity=qty, amount=cur_price * qty,
+                                strategy=label, pnl=pnl_krw,
+                            )
+                            logger.info("🎯 %s [%s] %.1f%% | %+,.0f원", label, pair, pnl_rate*100, pnl_krw)
+                            self.positions.pop(pair, None)
+                        continue
+
+                    # +3% 이상: Jarvis 판단
+                    if pnl_rate >= 0.03:
+                        now_ts = now_kst.timestamp()
+                        if now_ts - jarvis_cooldown.get(pair, 0) < 120:
                             continue
-
-                        price_info = prices_data.get(pair, {})
-                        cur_price = float(price_info.get("price", 0))
-                        if cur_price <= 0:
-                            continue
-
-                        pnl_rate = (cur_price - avg_price) / avg_price * 100
-
-                        now_ts = datetime.now(KST).timestamp()
-                        last_alert = alert_cooldown.get(pair, 0)
-                        if now_ts - last_alert < 60:  # 1분 쿨다운
-                            continue
-
-                        # 급락 -4% 또는 급등 +8% 감지
-                        if pnl_rate <= -5.0 or pnl_rate >= 1.0:
-                            alert_cooldown[pair] = now_ts
-                            direction = "급락" if pnl_rate < 0 else "급등"
-                            logger.info(f"⚡ [{pair}] {direction} 감지: {pnl_rate:+.1f}%")
-
-                            qty = float(pos.get("qty", 0))
-                            if qty <= 0:
-                                continue
-
-                            # 단타 매도 로직
-                            if pnl_rate <= stop_loss:
-                                # 손절: 즉시 자동 매도
-                                result = await self.trader.sell_market(pair, qty)
-                                if result.get("success"):
-                                    pnl = (cur_price - avg_price) * qty
-                                    await db.insert_trade(
-                                        bot="crypto_trader", asset_type="crypto",
-                                        symbol=pair, side="SELL",
-                                        price=cur_price, quantity=qty,
-                                        amount=cur_price * qty,
-                                        strategy="손절", pnl=pnl,
-                                    )
-                                    logger.info(f"🛑 손절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
-                                    self.positions.pop(pair, None)
-
-                            elif take_profit <= pnl_rate < 3.0:
-                                # 익절 (단타/야간)
-                                result = await self.trader.sell_market(pair, qty)
-                                if result.get("success"):
-                                    pnl = (cur_price - avg_price) * qty
-                                    await db.insert_trade(
-                                        bot="crypto_trader", asset_type="crypto",
-                                        symbol=pair, side="SELL",
-                                        price=cur_price, quantity=qty,
-                                        amount=cur_price * qty,
-                                        strategy="단타익절", pnl=pnl,
-                                    )
-                                    logger.info(f"🎯 단타 익절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
-                                    self.positions.pop(pair, None)
-
-                            elif pnl_rate >= 3.0:
-                                # +3% 이상: Jarvis에게 더 갈지 물어봄
-                                import aiohttp as _h, os as _os
-                                name = pair.replace("KRW-","")
-                                dashboard_url = _os.getenv("DASHBOARD_URL","https://dashboard-production-65e3.up.railway.app")
-                                try:
-                                    async with _h.ClientSession() as _s:
-                                        resp = await _s.post(
-                                            f"{dashboard_url}/api/jarvis/chat",
-                                            json={"message": f"{name} 현재 {pnl_rate:+.1f}% 수익중. 더 오를것같아? SELL이면 팔고 HOLD면 계속 보유. 한단어만.",
-                                                  "session_id": "crypto_signal"},
-                                            timeout=_h.ClientTimeout(total=10)
-                                        )
-                                        if resp.status == 200:
-                                            reply = (await resp.json()).get("reply","SELL")
-                                            if "HOLD" in reply.upper():
-                                                logger.info(f"🤖 Jarvis HOLD [{pair}] {pnl_rate:+.1f}%")
-                                            else:
-                                                result = await self.trader.sell_market(pair, qty)
-                                                if result.get("success"):
-                                                    pnl = (cur_price - avg_price) * qty
-                                                    await db.insert_trade(
-                                                        bot="crypto_trader", asset_type="crypto",
-                                                        symbol=pair, side="SELL",
-                                                        price=cur_price, quantity=qty,
-                                                        amount=cur_price * qty,
-                                                        strategy="Jarvis익절", pnl=pnl,
-                                                    )
-                                                    logger.info(f"🎯 Jarvis 익절 [{pair}] {pnl_rate:+.1f}% PnL:{pnl:+,.0f}원")
-                                                    self.positions.pop(pair, None)
-                                except:
-                                    # Jarvis 실패 시 즉시 익절
-                                    result = await self.trader.sell_market(pair, qty)
-                                    if result.get("success"):
-                                        pnl = (cur_price - avg_price) * qty
-                                        logger.info(f"🎯 익절(Jarvis오류) [{pair}] {pnl_rate:+.1f}%")
-                                        self.positions.pop(pair, None)
+                        jarvis_cooldown[pair] = now_ts
+                        name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
+                        logger.info("🤖 [%s] +%.1f%% → Jarvis 판단", pair, pnl_rate*100)
+                        try:
+                            import aiohttp as _h
+                            async with _h.ClientSession() as _s:
+                                resp = await _s.post(
+                                    DASHBOARD_URL + "/api/jarvis/chat",
+                                    json={"message": name + " 현재 " + str(round(pnl_rate*100,1)) + "% 수익 중. 추가 상승 여지 있어? HOLD면 보유, SELL이면 익절. 한 단어만.",
+                                          "session_id": "crypto_signal"},
+                                    timeout=_h.ClientTimeout(total=15),
+                                )
+                                if resp.status == 200:
+                                    reply = (await resp.json()).get("reply","SELL")
+                                    if "HOLD" in reply.upper():
+                                        logger.info("🤖 Jarvis HOLD [%s]", pair)
+                                    else:
+                                        result = await self.trader.sell_market(pair, qty)
+                                        if result.get("success"):
+                                            pnl_krw = (cur_price - avg_price) * qty
+                                            await db.insert_trade(
+                                                bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
+                                                price=cur_price, quantity=qty, amount=cur_price * qty,
+                                                strategy="Jarvis익절", pnl=pnl_krw,
+                                            )
+                                            logger.info("🎯 Jarvis익절 [%s] %.1f%% | %+,.0f원", pair, pnl_rate*100, pnl_krw)
+                                            self.positions.pop(pair, None)
+                        except Exception as e:
+                            logger.warning("Jarvis 실패 [%s] → 즉시 익절: %s", pair, e)
+                            result = await self.trader.sell_market(pair, qty)
+                            if result.get("success"):
+                                pnl_krw = (cur_price - avg_price) * qty
+                                await db.insert_trade(
+                                    bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
+                                    price=cur_price, quantity=qty, amount=cur_price * qty,
+                                    strategy="익절(Jarvis오류)", pnl=pnl_krw,
+                                )
+                                self.positions.pop(pair, None)
 
             except Exception as e:
-                logger.debug(f"코인 가격 모니터 오류: {e}")
-
+                logger.debug("가격 모니터 오류: %s", e)
             await asyncio.sleep(3)
 
-
     async def _run_cycle(self):
-        strat_name, params = self.get_active_strategy()
-        if not strat_name:
-            return
+        now_kst = datetime.now(KST)
+        night = _is_night(now_kst)
+        rsi_entry  = NIGHT_PARAMS["rsi_entry"]  if night else DAY_PARAMS["rsi_entry"]
+        tp         = NIGHT_PARAMS["take_profit"] if night else DAY_PARAMS["take_profit"]
+        sl         = NIGHT_PARAMS["stop_loss"]   if night else DAY_PARAMS["stop_loss"]
+        mode_label = "🌙야간" if night else "☀️낮"
 
-        strategy = self.build_strategy(strat_name, params)
-        if not strategy:
-            return
+        trade_mode = "scalping"
+        try:
+            mode = await cache.client.get("crypto:trade_mode")
+            if mode:
+                trade_mode = mode.decode() if isinstance(mode, bytes) else mode
+        except:
+            pass
 
-        buy_amount = float(params.get("buy_amount", 10000))
+        STABLE_COINS = ["USDT","BUSD","USDC","DAI","TUSD"]
+        try:
+            positions = await self.trader.get_positions()
+            self.positions = {
+                p["pair"]: p for p in positions
+                if not any(s in p.get("pair","") for s in STABLE_COINS) and p.get("qty",0) > 0
+            }
+        except Exception as e:
+            logger.warning("포지션 조회 실패: %s", e)
 
-        # ① 포지션 조회
-        STABLE_COINS = ['USDT', 'BUSD', 'USDC', 'DAI', 'TUSD']
-        positions = await self.trader.get_positions()
-        self.positions = {
-            p["pair"]: p for p in positions
-            if not any(s in p.get("pair", "") for s in STABLE_COINS)
-            and p.get("qty", 0) > 0
-        }
-        logger.info(f"📊 보유 코인: {list(self.positions.keys()) or '없음'}")
+        logger.info("📊 보유 코인 (%s RSI≤%d TP+%.0f%% SL%.0f%%): %s",
+                    mode_label, rsi_entry, tp*100, sl*100, list(self.positions.keys()) or "없음")
 
-        # ② 손절/익절 체크
-        for pair, pos in list(self.positions.items()):
-            avg = pos["avg_price"]
-            cur = pos["cur_price"]
-            qty = pos["qty"]
-
-            if cur * qty < 5000:
-                continue
-
-            if strategy.check_stop_loss(avg, cur):
-                result = await self.trader.sell_market(pair, qty)
-                if result["success"]:
-                    pnl = (cur - avg) * qty
-                    await db.insert_trade(
-                        bot="crypto_trader", asset_type="crypto",
-                        symbol=pair, side="SELL",
-                        price=cur, quantity=qty,
-                        amount=cur * qty,
-                        strategy=f"{strat_name}_손절", pnl=pnl,
-                    )
-                    logger.info(f"🛑 손절 [{pair}] PnL: {pnl:+,.0f}원")
-                continue
-
-            if strategy.check_take_profit(avg, cur):
-                result = await self.trader.sell_market(pair, qty)
-                if result["success"]:
-                    pnl = (cur - avg) * qty
-                    await db.insert_trade(
-                        bot="crypto_trader", asset_type="crypto",
-                        symbol=pair, side="SELL",
-                        price=cur, quantity=qty,
-                        amount=cur * qty,
-                        strategy=f"{strat_name}_익절", pnl=pnl,
-                    )
-                    logger.info(f"🎯 익절 [{pair}] PnL: {pnl:+,.0f}원")
-                continue
-
-        # ③ 신규 매수
         krw_balance = await self.trader.get_balance("KRW")
+        if krw_balance < MIN_BUY_KRW:
+            logger.info("💸 KRW 잔고 부족 (%,.0f원)", krw_balance)
+            await self._update_status(krw_balance)
+            return
 
-        for pair in config.CRYPTO_PAIRS:
+        for pair in MAJOR_PAIRS:
             if pair in self.positions:
                 continue
-            if krw_balance < max(buy_amount * 0.5, 5000):
-                logger.info(f"💸 KRW 잔고 부족 ({krw_balance:,.0f}원)")
-                break
 
             rows = await db.get_recent_ohlcv(pair, limit=50, asset="crypto")
             if len(rows) < 40:
-                logger.info(f"⏳ [{pair}] 데이터 부족 ({len(rows)}개)")
+                logger.debug("⏳ [%s] 데이터 부족 (%d개/40)", pair, len(rows))
                 continue
 
             prices = [float(r["close"]) for r in rows]
-            signal_type = strategy.generate_signal(pair, prices)
+            rsi_now  = _calc_rsi(prices)
+            rsi_prev = _calc_rsi(prices[:-1])
 
-            if signal_type == "BUY":
-                cur_price = await self.trader.get_current_price(pair)
-                if cur_price <= 0:
+            # RSI entry 이하이고 반등 중인지
+            if not (rsi_prev <= rsi_entry and rsi_now > rsi_prev):
+                continue
+
+            # MACD 데드크로스면 보류
+            try:
+                macd_strat = MACDStrategy(MACDConfig(fast=12,slow=26,signal=9,stop_loss=sl,take_profit=tp))
+                if macd_strat.generate_signal(pair, prices) == "SELL":
+                    logger.info("⛔ [%s] MACD 데드크로스 → 진입 보류", pair)
+                    continue
+            except:
+                pass
+
+            cur_price = await self.trader.get_current_price(pair)
+            if cur_price <= 0:
+                continue
+
+            if rsi_now <= 20:
+                ratio, strength = 0.40, "강함(RSI%.0f)" % rsi_now
+            elif rsi_now <= 25:
+                ratio, strength = 0.25, "보통(RSI%.0f)" % rsi_now
+            elif rsi_now <= 30:
+                ratio, strength = 0.15, "약함(RSI%.0f)" % rsi_now
+            else:
+                ratio, strength = 0.10, "최소(RSI%.0f)" % rsi_now
+
+            actual_amount = max(krw_balance * ratio, MIN_BUY_KRW)
+            actual_amount = min(actual_amount, krw_balance * 0.95)
+
+            if actual_amount < MIN_BUY_KRW:
+                logger.info("⛔ [%s] 잔고 부족 (%,.0f원)", pair, krw_balance)
+                break
+
+            name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
+            logger.info("📈 %s 신호 [%s] RSI:%.1f 금액:%,.0f원 (%s)",
+                        mode_label, name, rsi_now, actual_amount, strength)
+
+            if trade_mode == "swing":
+                execute = await self._ask_jarvis(pair=pair, rsi=rsi_now, cur_price=cur_price,
+                                                  amount=actual_amount, krw_balance=krw_balance)
+                if not execute:
                     continue
 
-                # ML 판단
-                # ML 제거 - RSI 수치로 신호 강도 판단
-                ml_prob = 0.75  # 기본값 (RSI 신호 발생 = 충분한 조건)
+            result = await self.trader.buy_market(pair, actual_amount)
+            if result.get("success"):
+                qty = actual_amount / cur_price
+                await db.insert_trade(
+                    bot="crypto_trader", asset_type="crypto", symbol=pair, side="BUY",
+                    price=cur_price, quantity=qty, amount=actual_amount,
+                    strategy="RSI반등_" + mode_label,
+                )
+                self.positions[pair] = {"pair":pair,"avg_price":cur_price,"qty":qty,"amount":actual_amount}
+                krw_balance -= actual_amount
+                logger.info("✅ 매수 [%s] %,.0f원 × %.6f = %,.0f원", name, cur_price, qty, actual_amount)
+                if krw_balance < MIN_BUY_KRW:
+                    break
+            else:
+                logger.error("❌ 매수 실패 [%s]: %s", pair, result.get("error","알 수 없음"))
 
-                # 트레이딩 모드 확인 (Redis)
-                trade_mode = "scalping"
-                try:
-                    mode = await cache.client.get("crypto:trade_mode")
-                    if mode:
-                        trade_mode = mode.decode()
-                except: pass
+        await self._update_status(krw_balance)
 
-                if trade_mode == "scalping":
-                    # 단타: 중복 매수 완전 차단
-                    if pair in self.positions:
-                        continue
-
-                    # 시간대별 전략 분기
-                    now_hour = datetime.now(KST).hour
-                    is_night = (23 <= now_hour or now_hour < 4)
-
-                    if is_night:
-                        # 야간: RSI 25 이하만 매수, 익절 +2%, 손절 -7%
-                        night_rsi = 35.0
-                        prices_tmp = [float(r.get("close", 0)) for r in rows]
-                        if len(prices_tmp) >= 15:
-                            gains = [max(prices_tmp[i]-prices_tmp[i-1],0) for i in range(-14,0)]
-                            losses = [max(prices_tmp[i-1]-prices_tmp[i],0) for i in range(-14,0)]
-                            ag = sum(gains)/14; al = sum(losses)/14
-                            night_rsi = 100-(100/(1+ag/al)) if al > 0 else 100
-                        if night_rsi > 25:
-                            logger.info(f"🌙 [{pair}] 야간 RSI 기준 미달 ({night_rsi:.1f} > 25)")
-                            continue
-                        # 야간 익절/손절 기준 임시 저장
-                        await cache.client.setex(f"crypto:night_pos:{pair}", 86400, "1")
-                        logger.info(f"🌙 [{pair}] 야간 매수 (RSI{night_rsi:.1f}) → 아침 +2% 익절 목표")
-
-                    # RSI 직접 계산해서 신호 강도 결정
-                    prices = [float(r.get("close", 0)) for r in rows]
-                    rsi_val = 35.0
-                    if len(prices) >= 15:
-                        gains = [max(prices[i]-prices[i-1],0) for i in range(-14,0)]
-                        losses = [max(prices[i-1]-prices[i],0) for i in range(-14,0)]
-                        ag = sum(gains)/14
-                        al = sum(losses)/14
-                        rsi_val = 100-(100/(1+ag/al)) if al > 0 else 100
-
-                    if rsi_val <= 20:
-                        ratio, strength = 0.40, f"강함(RSI{rsi_val:.0f})"
-                    elif rsi_val <= 25:
-                        ratio, strength = 0.25, f"보통(RSI{rsi_val:.0f})"
-                    elif rsi_val <= 30:
-                        ratio, strength = 0.15, f"약함(RSI{rsi_val:.0f})"
-                    else:
-                        ratio, strength = 0.10, f"최소(RSI{rsi_val:.0f})"
-
-                    actual_amount = krw_balance * ratio
-                    actual_amount = max(actual_amount, 150000)  # 최소 15만원
-                    actual_amount = min(actual_amount, krw_balance * 0.95)
-
-                    if actual_amount < 150000:
-                        logger.info(f"⛔ [{pair}] 잔고 부족 (최소 15만원 필요, 현재 {krw_balance:,.0f}원)")
-                        continue
-
-                    logger.info(f"⚡ 단타 매수 [{pair}] {actual_amount:,.0f}원 (ML:{ml_prob:.0%} {strength})")
-                else:
-                    # 스윙: Jarvis 판단
-                    actual_amount = await self._ask_jarvis_amount(
-                        pair=pair, signal=signal_type,
-                        ml_prob=ml_prob, cur_price=cur_price,
-                        krw_balance=krw_balance,
-                    )
-                    if actual_amount < 5000:
-                        logger.info(f"⏭️ Jarvis SKIP [{pair}] (금액:{actual_amount:,.0f}원)")
-                        continue
-
-                # 매수 실행
-                result = await self.trader.buy_market(pair, actual_amount)
-                if result["success"]:
-                    qty = actual_amount / cur_price
-                    await db.insert_trade(
-                        bot="crypto_trader", asset_type="crypto",
-                        symbol=pair, side="BUY",
-                        price=cur_price, quantity=qty,
-                        amount=actual_amount, strategy=strat_name,
-                    )
-                    krw_balance -= actual_amount
-                    # 즉시 포지션 등록 (중복 매수 방지)
-                    self.positions[pair] = {
-                        "pair": pair,
-                        "avg_price": cur_price,
-                        "qty": qty,
-                        "amount": actual_amount,
-                    }
-                    logger.info(f"✅ 매수 완료 [{pair}] {actual_amount:,.0f}원")
-
-        # Redis 캐시 업데이트
-        # KRW 잔고 Redis 저장 (dashboard에서 읽음)
+    async def _update_status(self, krw_balance: float):
         await cache.client.setex("crypto:krw_balance", 120, str(krw_balance))
-
         await cache.set_bot_status("crypto_trader", {
-            "status":      "running",
-            "last_cycle":  datetime.now(KST).isoformat(),
-            "positions":   len(self.positions),
-            "strategy":    strat_name,
-            "krw_balance": krw_balance,
+            "status": "running", "last_cycle": datetime.now(KST).isoformat(),
+            "positions": len(self.positions), "krw_balance": krw_balance,
         })
-
         positions_data = [
-            {
-                "pair": pair,
-                "currency": pos.get("currency", pair.replace("KRW-", "")),
-                "qty": pos.get("qty", 0),
-                "avg_price": pos.get("avg_price", 0),
-                "cur_price": pos.get("cur_price", 0),
-                "pnl": pos.get("pnl", 0),
-                "pnl_rate": pos.get("pnl_rate", 0),
-                "name": pos.get("currency", pair.replace("KRW-", "")),
-            }
+            {"pair":pair,"currency":pair.replace("KRW-",""),"name":COIN_NAMES.get(pair,pair.replace("KRW-","")),
+             "qty":pos.get("qty",0),"avg_price":pos.get("avg_price",0),"cur_price":pos.get("cur_price",0),
+             "pnl":pos.get("pnl",0),"pnl_rate":pos.get("pnl_rate",0)}
             for pair, pos in self.positions.items()
         ]
         await cache.client.setex("crypto:positions", 120, json.dumps(positions_data))
 
-    async def _check_ml(self, pair: str, rows: list) -> tuple:
-        """ML 모델로 매수 신호 검증 → (통과여부, 확률)"""
+    async def _ask_jarvis(self, pair: str, rsi: float, cur_price: float,
+                           amount: float, krw_balance: float) -> bool:
         try:
-            from ml.model import MLModelManager
-            ml = MLModelManager(db_pool=db.pool)
-            ohlcv = [
-                {
-                    "ts": str(r.get("ts", ""))[:10],
-                    "open": float(r.get("open", 0)),
-                    "high": float(r.get("high", 0)),
-                    "low": float(r.get("low", 0)),
-                    "close": float(r.get("close", 0)),
-                    "volume": float(r.get("volume", 0)),
-                }
-                for r in rows
-            ]
-            result = await ml.predict(pair, ohlcv)
-            if not result.get("success"):
-                logger.info(f"[{pair}] ML 모델 없음 → 신호 허용")
-                return True, 0.65  # 기본 확률
-            signal = result.get("signal", "HOLD")
-            prob   = result.get("buy_prob", 0.5)
-            logger.info(f"[{pair}] ML 판단: {signal} ({prob:.0%})")
-            return (signal == "BUY" and prob >= 0.60), prob
+            import aiohttp
+            name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
+            btc_trend = "알 수 없음"
+            try:
+                btc_cached = await cache.client.get("crypto:prices")
+                if btc_cached:
+                    pm = json.loads(btc_cached)
+                    btc_rate = float(pm.get("KRW-BTC",{}).get("change_rate",0))
+                    btc_trend = ("상승" if btc_rate > 0 else "하락") + " %.2f%%" % btc_rate
+            except:
+                pass
+            msg = (name + " RSI=" + str(round(rsi,1)) + " 반등 신호. BTC:" + btc_trend +
+                   " 매수금액:" + str(round(amount)) + "원. BTC 급락(-3%이상) 아니면 EXECUTE, 아니면 SKIP. 한 단어.")
+            async with aiohttp.ClientSession() as s:
+                resp = await s.post(DASHBOARD_URL + "/api/jarvis/chat",
+                                    json={"message": msg, "session_id": "crypto_signal"},
+                                    timeout=aiohttp.ClientTimeout(total=20))
+                if resp.status == 200:
+                    reply = (await resp.json()).get("reply","SKIP")
+                    execute = "EXECUTE" in reply.upper()
+                    logger.info("🤖 Jarvis [%s]: %s", name, "✅ EXECUTE" if execute else "⏭️ SKIP")
+                    return execute
         except Exception as e:
-            logger.warning(f"[{pair}] ML 오류 → 허용: {e}")
-            return True, 0.65
+            logger.warning("Jarvis 실패 [%s]: %s → 허용", pair, e)
+            return True
+        return True
 
     async def _init_ohlcv(self):
-        """시작 시 OHLCV 데이터 없는 코인 자동 수집"""
         try:
             import aiohttp as _aio
-            pairs_to_collect = []
-            for pair in config.CRYPTO_PAIRS:
-                async with db.pool.acquire() as conn:
-                    cnt = await conn.fetchval(
-                        "SELECT COUNT(*) FROM crypto_ohlcv WHERE pair=$1", pair
-                    )
-                if cnt < 40:
-                    pairs_to_collect.append(pair)
-
-            if not pairs_to_collect:
-                logger.info("✅ 모든 코인 OHLCV 데이터 있음")
+            to_collect = []
+            for pair in MAJOR_PAIRS:
+                try:
+                    async with db.pool.acquire() as conn:
+                        cnt = await conn.fetchval("SELECT COUNT(*) FROM crypto_ohlcv WHERE pair=$1", pair)
+                    if cnt < 40:
+                        to_collect.append((pair, cnt))
+                except:
+                    to_collect.append((pair, 0))
+            if not to_collect:
+                logger.info("✅ 모든 코인 OHLCV 충분")
                 return
-
-            logger.info(f"📊 OHLCV 자동 수집: {len(pairs_to_collect)}개 코인")
+            logger.info("📊 OHLCV 초기 수집: %d개 코인", len(to_collect))
             async with _aio.ClientSession() as s:
-                for pair in pairs_to_collect:
+                for pair, existing in to_collect:
                     try:
-                        r = await s.get(
-                            "https://api.upbit.com/v1/candles/minutes/1",
-                            params={"market": pair, "count": 200},
-                            timeout=_aio.ClientTimeout(total=10)
-                        )
+                        r = await s.get("https://api.upbit.com/v1/candles/minutes/1",
+                                        params={"market":pair,"count":200},
+                                        timeout=_aio.ClientTimeout(total=10))
                         candles = await r.json()
                         if isinstance(candles, list) and candles:
-                            from datetime import datetime as _dt
-                            rows = [(pair,
-                                     _dt.fromisoformat(c["candle_date_time_kst"]),
-                                     c["opening_price"], c["high_price"],
-                                     c["low_price"], c["trade_price"],
-                                     c["candle_acc_trade_volume"]) for c in candles]
+                            rows = [(pair, datetime.fromisoformat(c["candle_date_time_kst"]),
+                                     c["opening_price"],c["high_price"],c["low_price"],
+                                     c["trade_price"],c["candle_acc_trade_volume"]) for c in candles]
                             async with db.pool.acquire() as conn:
-                                await conn.executemany("""
-                                    INSERT INTO crypto_ohlcv(pair,ts,open,high,low,close,volume)
-                                    VALUES($1,$2,$3,$4,$5,$6,$7)
-                                    ON CONFLICT(pair,ts) DO NOTHING
-                                """, rows)
-                            logger.info(f"✅ {pair}: {len(rows)}개 수집")
+                                await conn.executemany(
+                                    "INSERT INTO crypto_ohlcv(pair,ts,open,high,low,close,volume) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(pair,ts) DO NOTHING",
+                                    rows
+                                )
+                            logger.info("✅ %s: %d개 수집", pair, len(rows))
                         await asyncio.sleep(0.2)
                     except Exception as e:
-                        logger.error(f"❌ {pair} 수집 실패: {e}")
+                        logger.error("❌ %s 수집 실패: %s", pair, e)
             logger.info("🎉 OHLCV 초기 수집 완료")
         except Exception as e:
-            logger.error(f"OHLCV 초기 수집 오류: {e}")
+            logger.error("OHLCV 초기 수집 오류: %s", e)
 
-    async def _ask_jarvis_amount(self, pair: str, signal: str, ml_prob: float,
-                                  cur_price: float, krw_balance: float) -> float:
-        """Jarvis에게 매수 여부 + 금액 결정 요청"""
-        try:
-            import aiohttp, os
-            from common.database import cache as _cache
-            import json as _json
-
-            COIN_NAMES = {
-                "KRW-BTC":"비트코인","KRW-ETH":"이더리움","KRW-XRP":"리플",
-                "KRW-SOL":"솔라나","KRW-ADA":"에이다","KRW-DOGE":"도지코인",
-                "KRW-AVAX":"아발란체","KRW-LINK":"체인링크","KRW-DOT":"폴카닷",
-                "KRW-SUI":"수이","KRW-TRX":"트론","KRW-NEAR":"니어",
-                "KRW-SHIB":"시바이누","KRW-ARB":"아비트럼","KRW-MATIC":"폴리곤",
-            }
-            name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
-
-            # BTC 추세
-            btc_trend = "알 수 없음"
-            try:
-                btc_cached = await _cache.client.get("crypto:prices")
-                if btc_cached:
-                    prices = _json.loads(btc_cached)
-                    btc = prices.get("KRW-BTC", {})
-                    btc_rate = float(btc.get("change_rate", 0))
-                    btc_trend = f"{'상승' if btc_rate > 0 else '하락'} {btc_rate:+.2f}%"
-            except: pass
-
-            # 현재 포트폴리오
-            portfolio = [f"{p}({v.get('qty',0):.4f}개, 수익률{v.get('pnl_rate',0):+.1f}%)"
-                        for p, v in self.positions.items()]
-
-            dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
-
-            prompt = f"""[코인 매수 판단] {name}
-
-신호: RSI 과매도 반등
-현재가: {cur_price:,.0f}원
-가용KRW: {krw_balance:,.0f}원
-BTC시장: {btc_trend}
-보유중: {portfolio if portfolio else '없음'}
-
-RSI 과매도 구간에서 반등 신호 발생했어.
-BTC 급락장(-3% 이상)이 아니면 매수 추천해줘.
-EXECUTE [금액]원 - [이유] 또는 SKIP - [이유] 형식으로만 답해줘.
-"""
-
-            async with aiohttp.ClientSession() as s:
-                resp = await s.post(
-                    f"{dashboard_url}/api/jarvis/chat",
-                    json={"message": prompt, "session_id": "crypto_signal"},
-                    timeout=aiohttp.ClientTimeout(total=25)
-                )
-                if resp.status == 200:
-                    data = await resp.json()
-                    reply = data.get("reply", "0").strip()
-                    import re
-                    reply_upper = reply.upper()
-
-                    if reply_upper.startswith("SKIP") or "SKIP" in reply_upper[:10]:
-                        logger.info(f"⏭️ Jarvis SKIP [{name}]: {reply[:60]}")
-                        return 0
-
-                    # EXECUTE면 금액 추출
-                    if "EXECUTE" in reply_upper:
-                        numbers = re.findall(r'[\d,]+', reply.replace(',',''))
-                        extracted = [int(n) for n in numbers if len(n) >= 4]
-                        if extracted:
-                            amount = float(min(extracted[0], krw_balance * 0.9))
-                        else:
-                            # 금액 없으면 ML 기반
-                            if ml_prob >= 0.80:
-                                amount = krw_balance * 0.3
-                            elif ml_prob >= 0.70:
-                                amount = krw_balance * 0.2
-                            else:
-                                amount = krw_balance * 0.15
-                            amount = min(amount, krw_balance * 0.9)
-                        logger.info(f"🤖 Jarvis EXECUTE [{name}]: {amount:,.0f}원 - {reply[:60]}")
-                    else:
-                        # 애매한 답변 → SKIP
-                        logger.info(f"⏭️ Jarvis 애매 SKIP [{name}]: {reply[:60]}")
-                        return 0
-
-                    # 메모리 저장
-                    try:
-                        await s.post(
-                            f"{dashboard_url}/api/jarvis/chat",
-                            json={"message": f"[코인판단] {name} {signal} ML:{ml_prob:.0%} BTC:{btc_trend} → {amount:,.0f}원",
-                                  "session_id": "crypto_memory"},
-                            timeout=aiohttp.ClientTimeout(total=10)
-                        )
-                    except: pass
-
-                    return amount
-                return 0
-
-        except Exception as e:
-            logger.warning(f"Jarvis 판단 실패 [{pair}]: {e} → 기본값 사용")
-            # 실패 시 기본 로직
-            if ml_prob >= 0.80:
-                return min(krw_balance * 0.3, krw_balance * 0.9)
-            elif ml_prob >= 0.70:
-                return min(krw_balance * 0.2, krw_balance * 0.9)
+    async def _six_hour_report_loop(self):
+        while self.running:
+            now = datetime.now(KST)
+            next_hour = ((now.hour // 6) + 1) * 6
+            if next_hour >= 24:
+                next_run = now.replace(hour=0,minute=0,second=0,microsecond=0) + timedelta(days=1)
             else:
-                return min(krw_balance * 0.1, krw_balance * 0.9)
-
-    async def _ask_jarvis(self, pair: str, signal: str, ml_prob: float,
-                           amount: float, cur_price: float, krw_balance: float) -> bool:
-        """Jarvis에게 매수 판단 요청 + 결과 메모리 저장"""
-        try:
-            import aiohttp, os
-            from common.database import cache as _cache
-            import json as _json
-
-            COIN_NAMES = {
-                "KRW-BTC":"비트코인","KRW-ETH":"이더리움","KRW-XRP":"리플",
-                "KRW-SOL":"솔라나","KRW-ADA":"에이다","KRW-DOGE":"도지코인",
-                "KRW-AVAX":"아발란체","KRW-LINK":"체인링크","KRW-DOT":"폴카닷",
-                "KRW-SUI":"수이","KRW-TRX":"트론","KRW-NEAR":"니어",
-            }
-            name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
-
-            # BTC 시장 추세 확인
-            btc_trend = "알 수 없음"
+                next_run = now.replace(hour=next_hour,minute=0,second=0,microsecond=0)
+            await asyncio.sleep((next_run - now).total_seconds())
             try:
-                btc_cached = await _cache.client.get("crypto:prices")
-                if btc_cached:
-                    prices = _json.loads(btc_cached)
-                    btc = prices.get("KRW-BTC", {})
-                    btc_rate = float(btc.get("change_rate", 0))
-                    btc_trend = f"{'상승' if btc_rate > 0 else '하락'} {btc_rate:+.2f}%"
-            except: pass
-
-            # 포지션 현황
-            pos_count = len(self.positions)
-            pos_list = list(self.positions.keys())
-
-            dashboard_url = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
-
-            prompt = f"""코인 매수 신호 분석 요청
-
-종목: {name} ({pair})
-현재가: {cur_price:,.0f}원
-신호: {signal} (ML확률 {ml_prob:.0%})
-매수금액: {amount:,.0f}원
-KRW 잔고: {krw_balance:,.0f}원
-보유 코인: {pos_count}개 {pos_list}
-
-시장 현황:
-- BTC 추세: {btc_trend}
-
-판단 기준:
-1. BTC 급락 중이면 SKIP (시장 전체 하락)
-2. ML 확률 70% 미만이면 SKIP
-3. 잔고 대비 매수금액이 과하면 SKIP
-4. 이미 같은 코인 보유 중이면 SKIP
-
-반드시 EXECUTE 또는 SKIP 으로만 답해줘. 이유는 한 줄로."""
-
-            async with aiohttp.ClientSession() as s:
-                resp = await s.post(
-                    f"{dashboard_url}/api/jarvis/chat",
-                    json={"message": prompt, "session_id": "crypto_signal"},
-                    timeout=aiohttp.ClientTimeout(total=20)
-                )
-                if resp.status == 200:
-                    data = await resp.json()
-                    reply = data.get("reply", "SKIP")
-                    execute = reply.upper().startswith("EXECUTE") or "실행" in reply[:20]
-
-                    # Jarvis 메모리에 판단 결과 저장 (학습용)
-                    await s.post(
-                        f"{dashboard_url}/api/jarvis/chat",
-                        json={"message": f"[코인매매기록] {name} {signal} ML:{ml_prob:.0%} → {'EXECUTE' if execute else 'SKIP'} | {reply[:80]}",
-                              "session_id": "crypto_memory"},
-                        timeout=aiohttp.ClientTimeout(total=10)
+                from common.telegram import send_crypto
+                now = datetime.now(KST)
+                async with db.pool.acquire() as conn:
+                    trades = await conn.fetch(
+                        "SELECT side,symbol,amount,pnl,strategy,created_at FROM trade_history WHERE bot='crypto_trader' AND created_at >= NOW() - INTERVAL '6 hours' ORDER BY created_at DESC"
                     )
+                buys = [t for t in trades if t["side"]=="BUY"]
+                sells = [t for t in trades if t["side"]=="SELL"]
+                total_pnl = sum(float(t["pnl"] or 0) for t in trades)
+                krw = await self.trader.get_balance("KRW")
+                pos_lines = []
+                for p, pos in self.positions.items():
+                    n = COIN_NAMES.get(p, p.replace("KRW-",""))
+                    r = float(pos.get("pnl_rate",0))
+                    pos_lines.append(n + " " + ("%+.1f%%" % r))
+                lines = [
+                    "📊 코인 6시간 리포트 (" + now.strftime('%m/%d %H:%M') + ")",
+                    "",
+                    "매수 %d건 / 매도 %d건" % (len(buys), len(sells)),
+                    "손익: %+,.0f원" % total_pnl,
+                    "",
+                    "보유: " + (", ".join(pos_lines) if pos_lines else "없음"),
+                    "KRW: %,.0f원" % krw,
+                ]
+                if trades:
+                    lines.append("")
+                    lines.append("최근 매매:")
+                    for t in list(trades)[:5]:
+                        pnl = float(t["pnl"] or 0)
+                        side = "🔴매수" if t["side"]=="BUY" else "🔵매도"
+                        coin = t["symbol"].replace("KRW-","")
+                        line = side + " " + coin + " " + ("%,.0f원" % float(t["amount"]))
+                        if pnl:
+                            line += " (" + ("%+,.0f원" % pnl) + ")"
+                        lines.append(line)
+                await send_crypto("\n".join(lines))
+                logger.info("📨 6시간 코인 리포트 전송")
+            except Exception as e:
+                logger.error("코인 리포트 실패: %s", e)
 
-                    logger.info(f"🤖 Jarvis [{pair}]: {'✅ EXECUTE' if execute else '⏭️ SKIP'} - {reply[:60]}")
-                    return execute
-                return True  # 응답 실패 시 허용
+    async def _daily_report_loop(self):
+        while self.running:
+            now = datetime.now(KST)
+            today = now.date()
+            if now.hour == 0 and now.minute == 0 and self.report_sent_date != today:
+                self.report_sent_date = today
+                await self._send_daily_report()
+            await asyncio.sleep(60)
 
-        except Exception as e:
-            logger.warning(f"Jarvis 판단 실패 [{pair}]: {e} → 허용")
-            return True  # 오류 시 허용
-
-    async def _decide_amount(self, pair: str, krw_balance: float,
-                              ml_prob: float, base_amount: float) -> float:
-        """잔고 분산 매수 금액 결정
-
-        잔고에 따라 최대 보유 종목수 자동 결정:
-          100만원+ → 최대 5종목 (종목당 20%)
-          50만원+  → 최대 4종목 (종목당 25%)
-          20만원+  → 최대 3종목 (종목당 33%)
-          10만원+  → 최대 2종목 (종목당 50%)
-          5만원 미만 → 1종목 (전액)
-
-        ML 확률로 비중 가감:
-          90%+ → ×1.0 (강한 신호)
-          80%+ → ×0.8
-          70%+ → ×0.6
-          60%+ → ×0.4 (약한 신호)
-        """
-        if krw_balance < 5000:
-            return 0
-
-        # 전체 자산(KRW + 보유 코인 평가) 기준으로 최대 종목수 결정
-        coin_eval = sum(
-            float(p.get("cur_price", 0)) * float(p.get("qty", 0))
-            for p in self.positions.values()
-        )
-        total_assets = krw_balance + coin_eval
-
-        if total_assets >= 1_000_000:
-            max_pos, base_ratio = 5, 0.20
-        elif total_assets >= 500_000:
-            max_pos, base_ratio = 4, 0.25
-        elif total_assets >= 200_000:
-            max_pos, base_ratio = 3, 0.33
-        elif total_assets >= 50_000:
-            max_pos, base_ratio = 2, 0.45
-        else:
-            max_pos, base_ratio = 1, 0.80
-
-        # 현재 보유 종목수 확인
-        current_pos = len(self.positions)
-        if current_pos >= max_pos:
-            logger.info(f"⚠️ [{pair}] 최대 보유종목 초과 ({current_pos}/{max_pos})")
-            return 0
-
-        # ML 확률로 비중 조정
-        if ml_prob >= 0.90:
-            ml_ratio, strength = 1.0, "강함"
-        elif ml_prob >= 0.80:
-            ml_ratio, strength = 0.8, "보통"
-        elif ml_prob >= 0.70:
-            ml_ratio, strength = 0.6, "약함"
-        else:
-            ml_ratio, strength = 0.4, "최소"
-
-        amount = krw_balance * base_ratio * ml_ratio
-        amount = max(amount, 5000)                      # 최소 5,000원
-        amount = min(amount, krw_balance * base_ratio)  # 기본비중 초과 금지
-        amount = min(amount, krw_balance * 0.95)        # 잔고 95% 초과 금지
-
-        logger.info(f"💡 [{pair}] 분산매수: {amount:,.0f}원 "
-                    f"(잔고:{krw_balance:,.0f}원 비중:{base_ratio:.0%} "
-                    f"ML:{ml_prob:.0%} {strength} {current_pos+1}/{max_pos})")
-        return round(amount)
-
-    async def _notify_error(self, error: str):
-        import os
-        if os.getenv("CRYPTO_NOTIFY_ERRORS", "false").lower() != "true":
-            return
+    async def _send_daily_report(self):
         try:
-            from common.telegram import notify_error
-            await notify_error("crypto_trader", error)
-        except:
-            pass
+            from common.telegram import send_jarvis
+            now = datetime.now(KST)
+            yesterday = (now - timedelta(days=1)).strftime("%m/%d")
+            async with db.pool.acquire() as conn:
+                trades = await conn.fetch(
+                    "SELECT symbol,side,amount,pnl,strategy,created_at FROM trade_history WHERE bot='crypto_trader' AND created_at >= NOW() - INTERVAL '24 hours' ORDER BY created_at"
+                )
+            krw = await self.trader.get_balance("KRW")
+            buy_cnt  = sum(1 for t in trades if t["side"]=="BUY")
+            sell_cnt = sum(1 for t in trades if t["side"]=="SELL")
+            total_pnl = sum(float(t["pnl"] or 0) for t in trades if t["side"]=="SELL")
+            emoji = "📈" if total_pnl >= 0 else "📉"
+            lines = [
+                "📊 코인 일일 결산 [" + yesterday + "]",
+                "="*20,
+                "매수 %d건 / 매도 %d건" % (buy_cnt, sell_cnt),
+                emoji + " 실현손익: %+,.0f원" % total_pnl,
+                "KRW: %,.0f원 | 보유: %d종목" % (krw, len(self.positions)),
+            ]
+            if not trades:
+                lines.append("거래 없음")
+            else:
+                lines.append("")
+                lines.append("거래 내역:")
+                for t in list(trades)[:8]:
+                    side_e = "🟢" if t["side"]=="BUY" else "🔴"
+                    lines.append(side_e + " " + t["symbol"].replace("KRW-","") + " " + ("%,.0f원" % float(t["amount"])))
+            await send_jarvis("\n".join(lines))
+            logger.info("✅ 일일 결산 전송")
+        except Exception as e:
+            logger.error("일일 결산 실패: %s", e)
 
     async def stop(self):
         logger.info("🛑 crypto-trader 종료 중...")
@@ -1030,13 +590,10 @@ KRW 잔고: {krw_balance:,.0f}원
 async def main():
     trader = CryptoTrader()
     loop = asyncio.get_event_loop()
-
     def shutdown():
         loop.create_task(trader.stop())
-
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown)
-
     await trader.start()
 
 

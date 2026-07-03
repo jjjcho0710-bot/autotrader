@@ -234,7 +234,7 @@ class CryptoTrader:
                                 price=cur_price, quantity=qty, amount=cur_price * qty,
                                 strategy="손절", pnl=pnl_krw,
                             )
-                            logger.info("🛑 손절 [%s] %.1f%% | %+,.0f원", pair, pnl_rate*100, pnl_krw)
+                            logger.info("🛑 손절 [%s] %.1f%% | %s원", pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
                             self.positions.pop(pair, None)
                         continue
 
@@ -249,7 +249,7 @@ class CryptoTrader:
                                 price=cur_price, quantity=qty, amount=cur_price * qty,
                                 strategy=label, pnl=pnl_krw,
                             )
-                            logger.info("🎯 %s [%s] %.1f%% | %+,.0f원", label, pair, pnl_rate*100, pnl_krw)
+                            logger.info("🎯 %s [%s] %.1f%% | %s원", label, pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
                             self.positions.pop(pair, None)
                         continue
 
@@ -283,7 +283,7 @@ class CryptoTrader:
                                                 price=cur_price, quantity=qty, amount=cur_price * qty,
                                                 strategy="Jarvis익절", pnl=pnl_krw,
                                             )
-                                            logger.info("🎯 Jarvis익절 [%s] %.1f%% | %+,.0f원", pair, pnl_rate*100, pnl_krw)
+                                            logger.info("🎯 Jarvis익절 [%s] %.1f%% | %s원", pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
                                             self.positions.pop(pair, None)
                         except Exception as e:
                             logger.warning("Jarvis 실패 [%s] → 즉시 익절: %s", pair, e)
@@ -332,7 +332,7 @@ class CryptoTrader:
 
         krw_balance = await self.trader.get_balance("KRW")
         if krw_balance < 5_000:
-            logger.info("💸 KRW 잔고 소진 (%,.0f원) → 매수 불가", krw_balance)
+            logger.info("💸 KRW 잔고 소진 (%s원) → 매수 불가", f"{krw_balance:,.0f}")
             await self._update_status(krw_balance)
             return
 
@@ -378,14 +378,14 @@ class CryptoTrader:
             # 잔고가 15만원 이하면 잔고 전액 매수 (기회 놓치지 않음)
             if krw_balance < MIN_BUY_KRW:
                 actual_amount = krw_balance * 0.99   # 수수료 여유분
-                logger.info("⚡ [%s] 잔고 전액 매수 모드 (%,.0f원)", pair, actual_amount)
+                logger.info("⚡ [%s] 잔고 전액 매수 모드 (%s원)", pair, f"{actual_amount:,.0f}")
             else:
                 actual_amount = max(krw_balance * ratio, MIN_BUY_KRW)
                 actual_amount = min(actual_amount, krw_balance * 0.95)
 
             name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
-            logger.info("📈 %s 신호 [%s] RSI:%.1f 금액:%,.0f원 (%s)",
-                        mode_label, name, rsi_now, actual_amount, strength)
+            logger.info("📈 %s 신호 [%s] RSI:%.1f 금액:%s원 (%s)",
+                        mode_label, name, rsi_now, f"{actual_amount:,.0f}", strength)
 
             if trade_mode == "swing":
                 execute = await self._ask_jarvis(pair=pair, rsi=rsi_now, cur_price=cur_price,
@@ -403,7 +403,7 @@ class CryptoTrader:
                 )
                 self.positions[pair] = {"pair":pair,"avg_price":cur_price,"qty":qty,"amount":actual_amount}
                 krw_balance -= actual_amount
-                logger.info("✅ 매수 [%s] %,.0f원 × %.6f = %,.0f원", name, cur_price, qty, actual_amount)
+                logger.info("✅ 매수 [%s] %s원 × %.6f = %s원", name, f"{cur_price:,.0f}", qty, f"{actual_amount:,.0f}")
                 if krw_balance < MIN_BUY_KRW:
                     break
             else:
@@ -614,10 +614,10 @@ class CryptoTrader:
                     "📊 코인 6시간 리포트 (" + now.strftime('%m/%d %H:%M') + ")",
                     "",
                     "매수 %d건 / 매도 %d건" % (len(buys), len(sells)),
-                    "손익: %+,.0f원" % total_pnl,
+                    f"손익: {total_pnl:+,.0f}원",
                     "",
                     "보유: " + (", ".join(pos_lines) if pos_lines else "없음"),
-                    "KRW: %,.0f원" % krw,
+                    f"KRW: {krw:,.0f}원",
                 ]
                 if trades:
                     lines.append("")
@@ -626,9 +626,9 @@ class CryptoTrader:
                         pnl = float(t["pnl"] or 0)
                         side = "🔴매수" if t["side"]=="BUY" else "🔵매도"
                         coin = t["symbol"].replace("KRW-","")
-                        line = side + " " + coin + " " + ("%,.0f원" % float(t["amount"]))
+                        line = side + " " + coin + " " + f"{float(t['amount']):,.0f}원"
                         if pnl:
-                            line += " (" + ("%+,.0f원" % pnl) + ")"
+                            line += " (" + f"{pnl:+,.0f}원" + ")"
                         lines.append(line)
                 await send_crypto("\n".join(lines))
                 logger.info("📨 6시간 코인 리포트 전송")
@@ -662,8 +662,8 @@ class CryptoTrader:
                 "📊 코인 일일 결산 [" + yesterday + "]",
                 "="*20,
                 "매수 %d건 / 매도 %d건" % (buy_cnt, sell_cnt),
-                emoji + " 실현손익: %+,.0f원" % total_pnl,
-                "KRW: %,.0f원 | 보유: %d종목" % (krw, len(self.positions)),
+                f"{emoji} 실현손익: {total_pnl:+,.0f}원",
+                f"KRW: {krw:,.0f}원 | 보유: {len(self.positions)}종목",
             ]
             if not trades:
                 lines.append("거래 없음")
@@ -672,7 +672,7 @@ class CryptoTrader:
                 lines.append("거래 내역:")
                 for t in list(trades)[:8]:
                     side_e = "🟢" if t["side"]=="BUY" else "🔴"
-                    lines.append(side_e + " " + t["symbol"].replace("KRW-","") + " " + ("%,.0f원" % float(t["amount"])))
+                    lines.append(side_e + " " + t["symbol"].replace("KRW-","") + " " + f"{float(t['amount']):,.0f}원")
             await send_jarvis("\n".join(lines))
             logger.info("✅ 일일 결산 전송")
         except Exception as e:

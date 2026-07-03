@@ -54,7 +54,7 @@ NIGHT_PARAMS = {"rsi_entry": 20, "take_profit": 0.03, "stop_loss": -0.05}
 MIN_BUY_KRW  = 150_000   # 최소 매수금액 15만원
 
 # 코인 목록 자동 갱신 설정
-MAX_EXTRA_PAIRS   = 5           # 메이저 외 신규 코인 최대 개수
+MAX_EXTRA_PAIRS   = 0           # 메이저 외 신규 코인 최대 개수 (0=메이저만, 아르고 등 부실코인 차단)
 MIN_TRADE_VALUE   = 50_000_000_000   # 최소 24h 거래대금 500억
 MIN_LISTING_DAYS  = 180         # 최소 상장 경과일 (6개월)
 
@@ -456,22 +456,41 @@ class CryptoTrader:
         """
         업비트 전체 KRW 코인 스캔 → 필터 → active_pairs 갱신
         메이저 20개는 항상 포함, 조건 통과 신규 코인 최대 MAX_EXTRA_PAIRS개 추가
-        필터: 거래대금 500억 이상 + 상장 6개월 이상
+        필터: 거래대금 500억 이상 + 상장 6개월 이상 + 거래정지 아님
         """
+        # 신규 추가 0개면 스캔 자체를 건너뛰고 메이저만 사용
+        if MAX_EXTRA_PAIRS <= 0:
+            self.extra_pairs  = []
+            self.active_pairs = list(MAJOR_PAIRS)
+            await cache.client.setex("crypto:top_pairs", 86400, json.dumps(self.active_pairs))
+            logger.info("🔒 메이저 %d개만 사용 (신규 스캔 비활성)", len(MAJOR_PAIRS))
+            return
         try:
             import aiohttp as _aio
             async with _aio.ClientSession() as s:
                 # 1) 전체 KRW 마켓 목록
                 r = await s.get("https://api.upbit.com/v1/market/all",
-                                params={"isDetails": "false"},
+                                params={"isDetails": "true"},
                                 timeout=_aio.ClientTimeout(total=10))
                 markets = await r.json()
                 if not isinstance(markets, list):
                     logger.warning("업비트 마켓 목록 응답 이상 → 메이저 유지")
                     self.active_pairs = list(MAJOR_PAIRS)
                     return
-                krw_markets = [m["market"] for m in markets
-                               if isinstance(m, dict) and m.get("market", "").startswith("KRW-")]
+                # 유의종목(CAUTION)/거래정지 제외한 정상 KRW 마켓만
+                krw_markets = []
+                warning_set = set()
+                for m in markets:
+                    if not isinstance(m, dict):
+                        continue
+                    mk = m.get("market", "")
+                    if not mk.startswith("KRW-"):
+                        continue
+                    # market_warning이 CAUTION이면 유의종목 → 제외
+                    if m.get("market_warning") == "CAUTION":
+                        warning_set.add(mk)
+                        continue
+                    krw_markets.append(mk)
 
                 # 2) 티커 (24h 거래대금) — 100개씩 나눠 조회
                 tickers = []

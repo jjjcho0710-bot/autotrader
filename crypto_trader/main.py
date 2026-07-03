@@ -58,6 +58,10 @@ MAX_EXTRA_PAIRS   = 5           # 메이저 외 신규 코인 최대 개수
 MIN_TRADE_VALUE   = 50_000_000_000   # 최소 24h 거래대금 500억
 MIN_LISTING_DAYS  = 180         # 최소 상장 경과일 (6개월)
 
+# 하이브리드 트레일링 익절 설정
+TRAIL_ACTIVATE    = 0.015       # +1.5% 넘으면 트레일링 발동
+TRAIL_GAP         = 0.007       # 고점 대비 -0.7% 떨어지면 매도
+
 
 def _is_night(now_kst: datetime) -> bool:
     """22:00~04:00 야간 여부"""
@@ -190,8 +194,7 @@ class CryptoTrader:
             await asyncio.sleep(3)
 
     async def _price_monitor(self):
-        """3초마다 보유 포지션 손절/익절/Jarvis 판단"""
-        jarvis_cooldown = {}
+        """3초마다 보유 포지션 손절/트레일링 익절 판단"""
 
         while self.running:
             try:
@@ -235,11 +238,48 @@ class CryptoTrader:
                                 strategy="손절", pnl=pnl_krw,
                             )
                             logger.info("🛑 손절 [%s] %.1f%% | %s원", pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
+                            await cache.client.delete("crypto:peak:" + pair)
                             self.positions.pop(pair, None)
                         continue
 
-                    # 일반 익절 (tp 이상, +3% 미만)
-                    if tp <= pnl_rate < 0.03:
+                    # ── 하이브리드 트레일링 익절 ──────────────────
+                    # tp% ~ +1.5% : 트레일링 발동 전, 도달 즉시 익절 (작은 익절 확보)
+                    # +1.5% 이상  : 트레일링 발동 → 고점 추적, 고점 -0.7% 시 매도
+                    peak_key = "crypto:peak:" + pair
+
+                    if pnl_rate >= TRAIL_ACTIVATE:
+                        # 트레일링 구간: 고점 갱신
+                        try:
+                            prev_peak = await cache.client.get(peak_key)
+                            peak_rate = float(prev_peak) if prev_peak else pnl_rate
+                        except:
+                            peak_rate = pnl_rate
+
+                        if pnl_rate > peak_rate:
+                            peak_rate = pnl_rate
+                            await cache.client.setex(peak_key, 86400, str(peak_rate))
+
+                        # 고점 대비 TRAIL_GAP 이상 하락 → 매도
+                        if pnl_rate <= peak_rate - TRAIL_GAP:
+                            result = await self.trader.sell_market(pair, qty)
+                            if result.get("success"):
+                                pnl_krw = (cur_price - avg_price) * qty
+                                await db.insert_trade(
+                                    bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
+                                    price=cur_price, quantity=qty, amount=cur_price * qty,
+                                    strategy="트레일링익절", pnl=pnl_krw,
+                                )
+                                logger.info("🎯 트레일링익절 [%s] %.1f%% (고점%.1f%%) | %s원",
+                                            pair, pnl_rate*100, peak_rate*100, f"{pnl_krw:+,.0f}")
+                                await cache.client.delete(peak_key)
+                                self.positions.pop(pair, None)
+                        else:
+                            logger.info("📈 트레일링 추적중 [%s] 현재%.1f%% 고점%.1f%%",
+                                        pair, pnl_rate*100, peak_rate*100)
+                        continue
+
+                    # tp ~ +1.5% : 일반 익절 (트레일링 발동 전)
+                    if tp <= pnl_rate < TRAIL_ACTIVATE:
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
                             pnl_krw = (cur_price - avg_price) * qty
@@ -250,52 +290,9 @@ class CryptoTrader:
                                 strategy=label, pnl=pnl_krw,
                             )
                             logger.info("🎯 %s [%s] %.1f%% | %s원", label, pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
+                            await cache.client.delete(peak_key)
                             self.positions.pop(pair, None)
                         continue
-
-                    # +3% 이상: Jarvis 판단
-                    if pnl_rate >= 0.03:
-                        now_ts = now_kst.timestamp()
-                        if now_ts - jarvis_cooldown.get(pair, 0) < 120:
-                            continue
-                        jarvis_cooldown[pair] = now_ts
-                        name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
-                        logger.info("🤖 [%s] +%.1f%% → Jarvis 판단", pair, pnl_rate*100)
-                        try:
-                            import aiohttp as _h
-                            async with _h.ClientSession() as _s:
-                                resp = await _s.post(
-                                    DASHBOARD_URL + "/api/jarvis/chat",
-                                    json={"message": name + " 현재 " + str(round(pnl_rate*100,1)) + "% 수익 중. 추가 상승 여지 있어? HOLD면 보유, SELL이면 익절. 한 단어만.",
-                                          "session_id": "crypto_signal"},
-                                    timeout=_h.ClientTimeout(total=15),
-                                )
-                                if resp.status == 200:
-                                    reply = (await resp.json()).get("reply","SELL")
-                                    if "HOLD" in reply.upper():
-                                        logger.info("🤖 Jarvis HOLD [%s]", pair)
-                                    else:
-                                        result = await self.trader.sell_market(pair, qty)
-                                        if result.get("success"):
-                                            pnl_krw = (cur_price - avg_price) * qty
-                                            await db.insert_trade(
-                                                bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
-                                                price=cur_price, quantity=qty, amount=cur_price * qty,
-                                                strategy="Jarvis익절", pnl=pnl_krw,
-                                            )
-                                            logger.info("🎯 Jarvis익절 [%s] %.1f%% | %s원", pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
-                                            self.positions.pop(pair, None)
-                        except Exception as e:
-                            logger.warning("Jarvis 실패 [%s] → 즉시 익절: %s", pair, e)
-                            result = await self.trader.sell_market(pair, qty)
-                            if result.get("success"):
-                                pnl_krw = (cur_price - avg_price) * qty
-                                await db.insert_trade(
-                                    bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
-                                    price=cur_price, quantity=qty, amount=cur_price * qty,
-                                    strategy="익절(Jarvis오류)", pnl=pnl_krw,
-                                )
-                                self.positions.pop(pair, None)
 
             except Exception as e:
                 logger.debug("가격 모니터 오류: %s", e)

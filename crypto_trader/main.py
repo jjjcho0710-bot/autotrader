@@ -469,7 +469,12 @@ class CryptoTrader:
                                 params={"isDetails": "false"},
                                 timeout=_aio.ClientTimeout(total=10))
                 markets = await r.json()
-                krw_markets = [m["market"] for m in markets if m["market"].startswith("KRW-")]
+                if not isinstance(markets, list):
+                    logger.warning("업비트 마켓 목록 응답 이상 → 메이저 유지")
+                    self.active_pairs = list(MAJOR_PAIRS)
+                    return
+                krw_markets = [m["market"] for m in markets
+                               if isinstance(m, dict) and m.get("market", "").startswith("KRW-")]
 
                 # 2) 티커 (24h 거래대금) — 100개씩 나눠 조회
                 tickers = []
@@ -478,11 +483,14 @@ class CryptoTrader:
                     rt = await s.get("https://api.upbit.com/v1/ticker",
                                      params={"markets": ",".join(chunk)},
                                      timeout=_aio.ClientTimeout(total=10))
-                    tickers.extend(await rt.json())
+                    data = await rt.json()
+                    # 정상 응답은 list[dict]. 에러 시 dict 반환될 수 있음
+                    if isinstance(data, list):
+                        tickers.extend([t for t in data if isinstance(t, dict) and t.get("market")])
                     await asyncio.sleep(0.1)
 
             # 3) 거래대금 내림차순 정렬
-            tickers.sort(key=lambda t: t.get("acc_trade_price_24h", 0), reverse=True)
+            tickers.sort(key=lambda t: t.get("acc_trade_price_24h", 0) or 0, reverse=True)
 
             STABLE = ["USDT", "USDC", "BUSD", "DAI", "TUSD"]
             new_extra = []

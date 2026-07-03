@@ -117,6 +117,7 @@ class CryptoTrader:
         asyncio.create_task(self._price_monitor())
         asyncio.create_task(self._six_hour_report_loop())
         asyncio.create_task(self._daily_report_loop())
+        asyncio.create_task(self._telegram_polling_loop())
 
         await self._loop()
 
@@ -708,6 +709,169 @@ class CryptoTrader:
             logger.info("✅ 일일 결산 전송")
         except Exception as e:
             logger.error("일일 결산 실패: %s", e)
+
+    # ── 텔레그램 명령어 처리 ──────────────────────────────
+    async def _telegram_polling_loop(self):
+        """텔레그램 명령어 폴링 루프"""
+        import aiohttp
+        token = config.CRYPTO_BOT_TOKEN
+        if not token:
+            logger.warning("CRYPTO_BOT_TOKEN 없음 — 텔레그램 폴링 스킵")
+            return
+        chat_id = config.CRYPTO_CHAT_ID or config.TELEGRAM_CHAT_ID
+        offset = None
+        logger.info("✅ 텔레그램 코인봇 폴링 시작")
+        while self.running:
+            try:
+                params = {"timeout": 20, "allowed_updates": ["message"]}
+                if offset:
+                    params["offset"] = offset
+                async with aiohttp.ClientSession() as s:
+                    resp = await s.get(
+                        f"https://api.telegram.org/bot{token}/getUpdates",
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    )
+                    data = await resp.json()
+                if data.get("ok") and data.get("result"):
+                    for update in data["result"]:
+                        offset = update["update_id"] + 1
+                        msg = update.get("message", {})
+                        text = msg.get("text", "").strip()
+                        if text:
+                            await self._handle_telegram_command(text, chat_id, token)
+            except Exception as e:
+                logger.error(f"텔레그램 폴링 오류: {e}")
+                await asyncio.sleep(5)
+
+    async def _handle_telegram_command(self, text: str, chat_id: str, token: str):
+        """텔레그램 명령어 처리"""
+        import aiohttp
+        cmd = text.lower().split()[0] if text else ""
+
+        async def reply(msg: str):
+            try:
+                async with aiohttp.ClientSession() as s:
+                    await s.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    )
+            except Exception as e:
+                logger.error(f"텔레그램 응답 전송 실패: {e}")
+
+        if cmd in ("/status", "상태"):
+            await self._cmd_status(reply)
+        elif cmd in ("/pnl", "수익"):
+            await self._cmd_pnl(reply)
+        elif cmd in ("/night", "야간", "밤"):
+            await self._cmd_night(reply)
+        elif cmd in ("/help", "도움말"):
+            await reply(
+                "🤖 <b>코인봇 명령어</b>\n\n"
+                "/status — 현재 보유 포지션\n"
+                "/pnl — 오늘 수익 현황\n"
+                "/night — 야간 요약\n"
+                "/help — 도움말"
+            )
+
+    async def _cmd_status(self, reply):
+        """현재 보유 포지션 + 잔고"""
+        try:
+            krw = await self.trader.get_balance("KRW")
+            lines = ["📊 <b>현재 상태</b>", ""]
+            lines.append(f"💰 KRW 잔고: {krw:,.0f}원")
+            lines.append(f"📦 보유 종목: {len(self.positions)}개")
+            if self.positions:
+                lines.append("")
+                for pair, pos in list(self.positions.items())[:10]:
+                    symbol = pair.replace("KRW-", "")
+                    avg = pos.get("avg_price", 0)
+                    qty = pos.get("quantity", 0)
+                    cur_price = await cache.get_price(pair) or 0
+                    if avg > 0 and cur_price > 0:
+                        pnl_pct = (cur_price - avg) / avg * 100
+                        emoji = "🟢" if pnl_pct >= 0 else "🔴"
+                        lines.append(f"{emoji} {symbol}: {pnl_pct:+.2f}%")
+                    else:
+                        lines.append(f"⚪ {symbol}")
+            now = datetime.now(KST).strftime("%H:%M")
+            lines.append(f"\n🕐 {now} 기준")
+            await reply("\n".join(lines))
+        except Exception as e:
+            await reply(f"⚠️ 상태 조회 실패: {e}")
+
+    async def _cmd_pnl(self, reply):
+        """오늘 수익 현황"""
+        try:
+            async with db.pool.acquire() as conn:
+                trades = await conn.fetch(
+                    "SELECT symbol, side, amount, pnl, created_at FROM trade_history "
+                    "WHERE bot='crypto_trader' AND created_at >= NOW() - INTERVAL '24 hours' "
+                    "ORDER BY created_at DESC"
+                )
+            buy_cnt = sum(1 for t in trades if t["side"] == "BUY")
+            sell_cnt = sum(1 for t in trades if t["side"] == "SELL")
+            total_pnl = sum(float(t["pnl"] or 0) for t in trades if t["side"] == "SELL")
+            wins = sum(1 for t in trades if t["side"] == "SELL" and float(t["pnl"] or 0) > 0)
+            losses = sum(1 for t in trades if t["side"] == "SELL" and float(t["pnl"] or 0) < 0)
+            emoji = "📈" if total_pnl >= 0 else "📉"
+            lines = [
+                f"{emoji} <b>오늘 수익 현황</b>", "",
+                f"매수: {buy_cnt}건 / 매도: {sell_cnt}건",
+                f"익절: {wins}건 / 손절: {losses}건",
+                f"실현손익: {total_pnl:+,.0f}원",
+            ]
+            if trades:
+                lines.append("")
+                lines.append("최근 매매:")
+                for t in list(trades)[:5]:
+                    side_e = "🟢" if t["side"] == "BUY" else "🔴"
+                    pnl_str = f" ({float(t['pnl']):+,.0f}원)" if t["side"] == "SELL" and t["pnl"] else ""
+                    lines.append(f"{side_e} {t['symbol'].replace('KRW-', '')} {float(t['amount']):,.0f}원{pnl_str}")
+            await reply("\n".join(lines))
+        except Exception as e:
+            await reply(f"⚠️ 수익 조회 실패: {e}")
+
+    async def _cmd_night(self, reply):
+        """야간 요약 (22:00~현재)"""
+        try:
+            now = datetime.now(KST)
+            # 오늘 22시 기준
+            night_start = now.replace(hour=22, minute=0, second=0, microsecond=0)
+            if now.hour < 22:
+                night_start -= timedelta(days=1)
+            async with db.pool.acquire() as conn:
+                trades = await conn.fetch(
+                    "SELECT symbol, side, amount, pnl, created_at FROM trade_history "
+                    "WHERE bot='crypto_trader' AND created_at >= $1 ORDER BY created_at DESC",
+                    night_start
+                )
+            krw = await self.trader.get_balance("KRW")
+            buy_cnt = sum(1 for t in trades if t["side"] == "BUY")
+            sell_cnt = sum(1 for t in trades if t["side"] == "SELL")
+            total_pnl = sum(float(t["pnl"] or 0) for t in trades if t["side"] == "SELL")
+            emoji = "🌙" if total_pnl >= 0 else "😰"
+            lines = [
+                f"{emoji} <b>야간 요약</b> ({night_start.strftime('%H:%M')}~{now.strftime('%H:%M')})", "",
+                f"매수: {buy_cnt}건 / 매도: {sell_cnt}건",
+                f"실현손익: {total_pnl:+,.0f}원",
+                f"현재 KRW: {krw:,.0f}원",
+                f"보유 종목: {len(self.positions)}개",
+            ]
+            if trades:
+                lines.append("")
+                lines.append("야간 거래:")
+                for t in list(trades)[:8]:
+                    side_e = "🟢" if t["side"] == "BUY" else "🔴"
+                    pnl_str = f" ({float(t['pnl']):+,.0f}원)" if t["side"] == "SELL" and t["pnl"] else ""
+                    t_time = t["created_at"].astimezone(KST).strftime("%H:%M")
+                    lines.append(f"{side_e} {t['symbol'].replace('KRW-', '')} {t_time}{pnl_str}")
+            else:
+                lines.append("야간 거래 없음")
+            await reply("\n".join(lines))
+        except Exception as e:
+            await reply(f"⚠️ 야간 요약 실패: {e}")
 
     async def stop(self):
         logger.info("🛑 crypto-trader 종료 중...")

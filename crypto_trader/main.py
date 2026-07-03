@@ -219,7 +219,14 @@ class CryptoTrader:
                         continue
 
                     cur_price = float(prices_data.get(pair, {}).get("price", 0))
+                    # 캐시에 없으면(비메이저/거래정지 코인) 직접 조회 → 손절 누락 방지
                     if cur_price <= 0:
+                        try:
+                            cur_price = await self.trader.get_current_price(pair)
+                        except:
+                            cur_price = 0
+                    if cur_price <= 0:
+                        # 시세 자체를 못 얻으면(완전 거래정지) 스킵 — 팔 수도 없음
                         continue
 
                     pnl_rate = (cur_price - avg_price) / avg_price

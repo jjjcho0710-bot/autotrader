@@ -51,6 +51,10 @@ COIN_NAMES = {
 # 시간대별 전략 파라미터
 DAY_PARAMS   = {"rsi_entry": 35, "take_profit": 0.01, "stop_loss": -0.05}
 NIGHT_PARAMS = {"rsi_entry": 20, "take_profit": 0.03, "stop_loss": -0.05}
+
+# 주말 보수 모드 (거래량 적어 하락 위험 큼)
+WEEKEND_DAY_RSI   = 30    # 주말 낮: RSI 35→30 더 빡세게
+WEEKEND_NIGHT_BUY = False # 주말 야간(금·토 22시~): 매수 중단
 MIN_BUY_KRW  = 150_000   # 최소 매수금액 15만원
 
 # 코인 목록 자동 갱신 설정
@@ -67,6 +71,18 @@ def _is_night(now_kst: datetime) -> bool:
     """22:00~04:00 야간 여부"""
     h = now_kst.hour
     return h >= 22 or h < 4
+
+
+def _is_weekend(now_kst: datetime) -> bool:
+    """주말(토·일) 여부. 금요일 밤 22시 이후도 주말 취급"""
+    wd = now_kst.weekday()  # 월0 ~ 일6
+    # 토(5), 일(6)
+    if wd in (5, 6):
+        return True
+    # 금(4) 22시 이후 → 주말 야간 시작
+    if wd == 4 and now_kst.hour >= 22:
+        return True
+    return False
 
 
 def _calc_rsi(prices: list, period: int = 14) -> float:
@@ -309,10 +325,22 @@ class CryptoTrader:
     async def _run_cycle(self):
         now_kst = datetime.now(KST)
         night = _is_night(now_kst)
+        weekend = _is_weekend(now_kst)
         rsi_entry  = NIGHT_PARAMS["rsi_entry"]  if night else DAY_PARAMS["rsi_entry"]
         tp         = NIGHT_PARAMS["take_profit"] if night else DAY_PARAMS["take_profit"]
         sl         = NIGHT_PARAMS["stop_loss"]   if night else DAY_PARAMS["stop_loss"]
         mode_label = "🌙야간" if night else "☀️낮"
+
+        # ── 주말 보수 모드 ────────────────────────────────
+        weekend_block_buy = False
+        if weekend:
+            mode_label = "📉주말" + mode_label
+            if night and not WEEKEND_NIGHT_BUY:
+                # 주말 야간: 매수 완전 중단 (거래량 최저, 하락 위험 최대)
+                weekend_block_buy = True
+            elif not night:
+                # 주말 낮: RSI 기준 더 빡세게 (35→30)
+                rsi_entry = min(rsi_entry, WEEKEND_DAY_RSI)
 
         trade_mode = "scalping"
         try:
@@ -338,6 +366,12 @@ class CryptoTrader:
         krw_balance = await self.trader.get_balance("KRW")
         if krw_balance < 5_000:
             logger.info("💸 KRW 잔고 소진 (%s원) → 매수 불가", f"{krw_balance:,.0f}")
+            await self._update_status(krw_balance)
+            return
+
+        # 주말 야간 매수 차단 (보유 포지션 손절/익절은 정상 작동)
+        if weekend_block_buy:
+            logger.info("📉 주말 야간 보수 모드 → 신규 매수 중단 (거래량 최저)")
             await self._update_status(krw_balance)
             return
 

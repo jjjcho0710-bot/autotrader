@@ -251,8 +251,10 @@ class CryptoTrader:
                     if qty <= 0 or cur_price * qty < 5000:
                         continue
 
-                    # 손절
-                    if pnl_rate <= sl:
+                    # 손절 — 현재 비활성 (메이저 보유 버티기 전략)
+                    # 재개하려면 Railway 환경변수 CRYPTO_STOPLOSS_ENABLED=true
+                    stoploss_on = os.getenv("CRYPTO_STOPLOSS_ENABLED", "false").lower() == "true"
+                    if stoploss_on and pnl_rate <= sl:
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
                             pnl_krw = (cur_price - avg_price) * qty

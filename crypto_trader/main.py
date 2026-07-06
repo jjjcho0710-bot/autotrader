@@ -215,8 +215,8 @@ class CryptoTrader:
 
         while self.running:
             try:
-                # 전역 매도 스위치 — 현재 중단 (기본 false). 켜려면 CRYPTO_SELL_ENABLED=true
-                sell_enabled = os.getenv("CRYPTO_SELL_ENABLED", "false").lower() == "true"
+                # 매도 스위치 — 현재 익절만 허용 (손절은 CRYPTO_STOPLOSS_ENABLED로 별도 제어)
+                sell_enabled = os.getenv("CRYPTO_SELL_ENABLED", "true").lower() != "false"
                 if not sell_enabled:
                     await asyncio.sleep(5)
                     continue

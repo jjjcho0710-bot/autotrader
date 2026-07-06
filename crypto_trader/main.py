@@ -369,10 +369,11 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
-        # 전역 매수 스위치 (Railway 환경변수 CRYPTO_BUY_ENABLED=false 로 중단)
-        buy_enabled = os.getenv("CRYPTO_BUY_ENABLED", "true").lower() != "false"
+        # 전역 매수 스위치 — 현재 전면 중단 상태 (기본 false)
+        # 다시 켜려면 Railway 환경변수 CRYPTO_BUY_ENABLED=true 설정
+        buy_enabled = os.getenv("CRYPTO_BUY_ENABLED", "false").lower() == "true"
         if not buy_enabled:
-            logger.info("🚫 신규 매수 중단 상태 (CRYPTO_BUY_ENABLED=false) — 보유 코인 손절/익절만 작동")
+            logger.info("🚫 신규 매수 전면 중단 — 보유 코인 손절/익절만 작동")
             await self._update_status(krw_balance)
             return
 

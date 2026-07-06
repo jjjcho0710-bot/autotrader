@@ -215,6 +215,12 @@ class CryptoTrader:
 
         while self.running:
             try:
+                # 전역 매도 스위치 — 현재 중단 (기본 false). 켜려면 CRYPTO_SELL_ENABLED=true
+                sell_enabled = os.getenv("CRYPTO_SELL_ENABLED", "false").lower() == "true"
+                if not sell_enabled:
+                    await asyncio.sleep(5)
+                    continue
+
                 if not self.positions:
                     await asyncio.sleep(3)
                     continue
@@ -251,8 +257,8 @@ class CryptoTrader:
                     if qty <= 0 or cur_price * qty < 5000:
                         continue
 
-                    # 손절 (기본 활성). 끄려면 CRYPTO_STOPLOSS_ENABLED=false
-                    stoploss_on = os.getenv("CRYPTO_STOPLOSS_ENABLED", "true").lower() != "false"
+                    # 손절 — 현재 중단 (기본 false). 켜려면 CRYPTO_STOPLOSS_ENABLED=true
+                    stoploss_on = os.getenv("CRYPTO_STOPLOSS_ENABLED", "false").lower() == "true"
                     if stoploss_on and pnl_rate <= sl:
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
@@ -370,8 +376,8 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
-        # 전역 매수 스위치 (기본 활성). 끄려면 CRYPTO_BUY_ENABLED=false
-        buy_enabled = os.getenv("CRYPTO_BUY_ENABLED", "true").lower() != "false"
+        # 전역 매수 스위치 — 현재 중단 (기본 false). 켜려면 CRYPTO_BUY_ENABLED=true
+        buy_enabled = os.getenv("CRYPTO_BUY_ENABLED", "false").lower() == "true"
         if not buy_enabled:
             logger.info("🚫 신규 매수 중단 상태 — 보유 코인 손절/익절만 작동")
             await self._update_status(krw_balance)

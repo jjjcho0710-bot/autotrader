@@ -251,9 +251,8 @@ class CryptoTrader:
                     if qty <= 0 or cur_price * qty < 5000:
                         continue
 
-                    # 손절 — 현재 비활성 (메이저 보유 버티기 전략)
-                    # 재개하려면 Railway 환경변수 CRYPTO_STOPLOSS_ENABLED=true
-                    stoploss_on = os.getenv("CRYPTO_STOPLOSS_ENABLED", "false").lower() == "true"
+                    # 손절 (기본 활성). 끄려면 CRYPTO_STOPLOSS_ENABLED=false
+                    stoploss_on = os.getenv("CRYPTO_STOPLOSS_ENABLED", "true").lower() != "false"
                     if stoploss_on and pnl_rate <= sl:
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
@@ -371,11 +370,10 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
-        # 전역 매수 스위치 — 현재 전면 중단 상태 (기본 false)
-        # 다시 켜려면 Railway 환경변수 CRYPTO_BUY_ENABLED=true 설정
-        buy_enabled = os.getenv("CRYPTO_BUY_ENABLED", "false").lower() == "true"
+        # 전역 매수 스위치 (기본 활성). 끄려면 CRYPTO_BUY_ENABLED=false
+        buy_enabled = os.getenv("CRYPTO_BUY_ENABLED", "true").lower() != "false"
         if not buy_enabled:
-            logger.info("🚫 신규 매수 전면 중단 — 보유 코인 손절/익절만 작동")
+            logger.info("🚫 신규 매수 중단 상태 — 보유 코인 손절/익절만 작동")
             await self._update_status(krw_balance)
             return
 

@@ -629,6 +629,16 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
+    with open("static/home.html", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/home", response_class=HTMLResponse)
+async def home_page():
+    with open("static/home.html", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/jarvis", response_class=HTMLResponse)
+async def jarvis_page():
     with open("static/jarvis.html", encoding="utf-8") as f:
         return f.read()
 

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AutoTrader</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --surface: #131920;
+    --surface-2: #1a222c;
+    --border: #232d3a;
+    --text: #e6edf3;
+    --text-dim: #7d8896;
+    --up: #f6465d;      /* 수익 = 빨강 (한국 관습) */
+    --down: #2f8fff;    /* 손실 = 파랑 */
+    --accent: #f0b90b;  /* 골드 */
+    --accent-crypto: #16c784;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    font-size: 14px; line-height: 1.4;
+    padding-bottom: 40px;
+  }
+  .mono { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+  /* ── 헤더 탭 ── */
+  .tabs {
+    display: flex; position: sticky; top: 0; z-index: 10;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    flex: 1; text-align: center; padding: 16px 0;
+    font-size: 16px; font-weight: 700; color: var(--text-dim);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    transition: color .15s, border-color .15s;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab.crypto.active { border-bottom-color: var(--accent-crypto); }
+
+  /* ── 요약 카드 ── */
+  .summary {
+    padding: 20px 16px 8px;
+  }
+  .hero-eval {
+    font-size: 13px; color: var(--text-dim); margin-bottom: 4px;
+  }
+  .hero-amount {
+    font-size: 34px; font-weight: 800; letter-spacing: -1px;
+  }
+  .hero-pnl {
+    font-size: 16px; font-weight: 700; margin-top: 4px;
+  }
+  .cards {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    padding: 12px 16px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px;
+  }
+  .card .label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+  .card .value { font-size: 20px; font-weight: 700; }
+
+  .up { color: var(--up); }
+  .down { color: var(--down); }
+  .flat { color: var(--text-dim); }
+
+  /* ── 섹션 ── */
+  .section { padding: 8px 16px; }
+  .section-title {
+    font-size: 13px; font-weight: 700; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .5px;
+    margin: 16px 0 10px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--surface-2); color: var(--text-dim); font-weight: 600;
+  }
+
+  /* ── 보유 종목 ── */
+  .pos {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px; margin-bottom: 8px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .pos-left .name { font-size: 15px; font-weight: 700; }
+  .pos-left .sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+  .pos-right { text-align: right; }
+  .pos-right .amt { font-size: 15px; font-weight: 700; }
+  .pos-right .rate { font-size: 13px; font-weight: 700; margin-top: 3px; }
+
+  /* ── 거래내역 ── */
+  .trade {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 0; border-bottom: 1px solid var(--border);
+  }
+  .trade:last-child { border-bottom: none; }
+  .trade-left { display: flex; align-items: center; gap: 10px; }
+  .side-tag {
+    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px;
+    min-width: 40px; text-align: center;
+  }
+  .side-buy { background: rgba(246,70,93,.15); color: var(--up); }
+  .side-sell { background: rgba(47,143,255,.15); color: var(--down); }
+  .trade-name { font-size: 14px; font-weight: 600; }
+  .trade-time { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .trade-right { text-align: right; }
+  .trade-amt { font-size: 14px; font-weight: 600; }
+  .trade-pnl { font-size: 12px; font-weight: 700; margin-top: 2px; }
+
+  .empty { text-align: center; color: var(--text-dim); padding: 30px 0; font-size: 14px; }
+  .loading { text-align: center; color: var(--text-dim); padding: 20px 0; }
+
+  /* ── 상태 표시 ── */
+  .status-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 16px; font-size: 12px; color: var(--text-dim);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-crypto); }
+  .dot.off { background: var(--text-dim); }
+
+  .nav {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: flex; background: var(--surface); border-top: 1px solid var(--border);
+  }
+  .nav a {
+    flex: 1; text-align: center; padding: 10px 0; font-size: 11px;
+    color: var(--text-dim); text-decoration: none;
+  }
+  .nav a.active { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <div class="tab active" id="tab-stock" onclick="switchTab('stock')">📈 주식</div>
+  <div class="tab crypto" id="tab-crypto" onclick="switchTab('crypto')">🪙 코인</div>
+</div>
+
+<div class="status-bar" style="padding-top:10px;">
+  <span class="dot" id="statusDot"></span>
+  <span id="statusText">연결 중...</span>
+</div>
+
+<!-- 요약 -->
+<div class="summary">
+  <div class="hero-eval" id="heroLabel">총 평가금액</div>
+  <div class="hero-amount mono" id="heroAmount">—</div>
+  <div class="hero-pnl mono" id="heroPnl">—</div>
+</div>
+
+<div class="cards">
+  <div class="card">
+    <div class="label" id="cardLabel1">예수금</div>
+    <div class="value mono" id="cardCash">—</div>
+  </div>
+  <div class="card">
+    <div class="label">매입금액</div>
+    <div class="value mono" id="cardBuy">—</div>
+  </div>
+</div>
+
+<!-- 보유 종목 -->
+<div class="section">
+  <div class="section-title">
+    보유 종목 <span class="badge" id="posCount">0</span>
+  </div>
+  <div id="positions"><div class="loading">불러오는 중...</div></div>
+</div>
+
+<!-- 거래 내역 -->
+<div class="section">
+  <div class="section-title">거래 내역</div>
+  <div id="trades"><div class="loading">불러오는 중...</div></div>
+</div>
+
+<div class="nav">
+  <a href="/" class="active">홈</a>
+  <a href="/strategy">전략</a>
+  <a href="/jarvis.html">자비스</a>
+  <a href="/logs">로그</a>
+</div>
+
+<script>
+const API = "";
+let currentTab = "stock";
+
+function won(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return Math.round(n).toLocaleString("ko-KR") + "원";
+}
+function pct(n) {
+  if (n === null || n === undefined || isNaN(n)) return "";
+  return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+}
+function cls(n) { return n > 0 ? "up" : n < 0 ? "down" : "flat"; }
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById("tab-stock").classList.toggle("active", tab === "stock");
+  document.getElementById("tab-crypto").classList.toggle("active", tab === "crypto");
+  document.getElementById("heroLabel").textContent =
+    tab === "stock" ? "총 평가금액" : "총 보유자산";
+  document.getElementById("cardLabel1").textContent =
+    tab === "stock" ? "예수금" : "KRW 잔고";
+  loadAll();
+}
+
+async function loadAll() {
+  loadSummary();
+  loadTrades();
+}
+
+async function loadSummary() {
+  const posEl = document.getElementById("positions");
+  try {
+    const res = await fetch(`${API}/api/positions/${currentTab}`);
+    const json = await res.json();
+
+    // 상태
+    const dot = document.getElementById("statusDot");
+    const st  = document.getElementById("statusText");
+    if (json.success) {
+      dot.classList.remove("off");
+      st.textContent = currentTab === "stock" ? "주식 봇 연결됨" : "코인 봇 연결됨";
+    } else {
+      dot.classList.add("off");
+      st.textContent = "연결 실패: " + (json.error || "알 수 없음");
+    }
+
+    const acct = json.account || {};
+    const total = acct.total_eval ?? acct.total ?? 0;
+    const pnl   = acct.pnl ?? 0;
+    const pnlRate = acct.pnl_rate ?? 0;
+    const cash  = acct.cash ?? 0;
+    const buy   = acct.buy_amount ?? 0;
+
+    document.getElementById("heroAmount").textContent = won(total);
+    const heroPnl = document.getElementById("heroPnl");
+    heroPnl.textContent = (pnl >= 0 ? "▲ " : "▼ ") + won(Math.abs(pnl)) + "  " + pct(pnlRate);
+    heroPnl.className = "hero-pnl mono " + cls(pnl);
+
+    document.getElementById("cardCash").textContent = won(cash);
+    document.getElementById("cardBuy").textContent = won(buy);
+
+    // 보유 종목
+    const positions = json.data || [];
+    document.getElementById("posCount").textContent = positions.length;
+    if (positions.length === 0) {
+      posEl.innerHTML = '<div class="empty">보유 종목이 없습니다</div>';
+    } else {
+      posEl.innerHTML = positions.map(p => {
+        const name = p.name || (p.symbol || "").replace("KRW-", "");
+        const rate = p.pnl_rate ?? 0;
+        const pnlv = p.pnl ?? 0;
+        const cur  = p.cur_price ?? 0;
+        const avg  = p.avg_price ?? 0;
+        return `
+          <div class="pos">
+            <div class="pos-left">
+              <div class="name">${name}</div>
+              <div class="sub mono">${p.qty}주 · 평단 ${won(avg)}</div>
+            </div>
+            <div class="pos-right">
+              <div class="amt mono">${won(cur)}</div>
+              <div class="rate mono ${cls(pnlv)}">${won(pnlv)} ${pct(rate)}</div>
+            </div>
+          </div>`;
+      }).join("");
+    }
+  } catch (e) {
+    document.getElementById("statusDot").classList.add("off");
+    document.getElementById("statusText").textContent = "네트워크 오류";
+    posEl.innerHTML = '<div class="empty">불러오기 실패</div>';
+  }
+}
+
+async function loadTrades() {
+  const el = document.getElementById("trades");
+  const bot = currentTab === "stock" ? "stock_trader" : "crypto_trader";
+  try {
+    const res = await fetch(`${API}/api/trades?bot=${bot}&limit=30`);
+    const json = await res.json();
+    const trades = json.data || [];
+    if (trades.length === 0) {
+      el.innerHTML = '<div class="empty">거래 내역이 없습니다</div>';
+      return;
+    }
+    el.innerHTML = trades.map(t => {
+      const name = (t.symbol || "").replace("KRW-", "");
+      const isBuy = t.side === "BUY";
+      const t2 = t.ts ? new Date(t.ts) : null;
+      const timeStr = t2 ? `${t2.getMonth()+1}/${t2.getDate()} ${String(t2.getHours()).padStart(2,"0")}:${String(t2.getMinutes()).padStart(2,"0")}` : "";
+      const pnlHtml = (t.pnl !== null && t.pnl !== undefined)
+        ? `<div class="trade-pnl mono ${cls(t.pnl)}">${won(t.pnl)}</div>` : "";
+      return `
+        <div class="trade">
+          <div class="trade-left">
+            <span class="side-tag ${isBuy ? "side-buy" : "side-sell"}">${isBuy ? "매수" : "매도"}</span>
+            <div>
+              <div class="trade-name">${name}</div>
+              <div class="trade-time mono">${timeStr} · ${t.strategy || ""}</div>
+            </div>
+          </div>
+          <div class="trade-right">
+            <div class="trade-amt mono">${won(t.amount)}</div>
+            ${pnlHtml}
+          </div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    el.innerHTML = '<div class="empty">불러오기 실패</div>';
+  }
+}
+
+loadAll();
+setInterval(loadSummary, 10000);  // 10초마다 갱신
+setInterval(loadTrades, 30000);   // 30초마다 갱신
+</script>
+</body>
+</html>

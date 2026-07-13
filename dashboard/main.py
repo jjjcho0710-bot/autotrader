@@ -359,43 +359,63 @@ async def _jarvis_stock_scanner():
             await _send_telegram(f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음")
             return
 
-        # watchlist에 자동 추가
+        # ── watchlist 갱신 ──────────────────────────────────
+        # 매일 재선정: 스캐너가 넣은 기존 종목은 비활성화하되,
+        # 현재 보유 중인 종목과 수동 추가 종목은 유지
+        held_symbols = set()
+        try:
+            pos_res = await get_stock_positions()
+            if pos_res.get("success"):
+                held_symbols = {p["symbol"] for p in pos_res.get("data", []) if p.get("symbol")}
+        except Exception as e:
+            logger.warning(f"보유 종목 조회 실패(무시): {e}")
+
+        today_symbols = {c["symbol"] for c in candidates}
         added = []
         async with db_pool.acquire() as conn:
-            existing = [r["symbol"] for r in await conn.fetch(
+            # 1) 스캐너가 넣었던 종목 중 오늘 안 뽑혔고 보유중도 아닌 것 → 비활성화
+            old_scanner = await conn.fetch(
+                "SELECT symbol FROM watchlist WHERE is_active=TRUE AND added_by='jarvis_scanner'"
+            )
+            deactivated = 0
+            for r in old_scanner:
+                sym = r["symbol"]
+                if sym not in today_symbols and sym not in held_symbols:
+                    await conn.execute(
+                        "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", sym
+                    )
+                    deactivated += 1
+
+            # 2) 오늘 뽑은 종목 활성화 (신규는 추가, 기존은 갱신)
+            existing_active = {r["symbol"] for r in await conn.fetch(
                 "SELECT symbol FROM watchlist WHERE is_active=TRUE"
-            )]
+            )}
             for c in candidates:
-                if c["symbol"] not in existing:
-                    reason = f"{'골든크로스+' if c['golden_cross'] else ''}거래량{c['vol_ratio']:.1f}배 등락률{c['change']:+.1f}%"
-                    await conn.execute("""
-                        INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
-                        VALUES ($1, $2, 'jarvis_scanner', $3, TRUE)
-                        ON CONFLICT (symbol) DO UPDATE
-                        SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
-                    """, c["symbol"], c["name"], reason)
-                    gc = "🌟" if c["golden_cross"] else ""
-                    rsi_tag = f" RSI{c.get('rsi',50):.0f}" if c.get("rsi") else ""
-                    mom_tag = f" 5d{c.get('momentum_5d',0):+.1f}%" if c.get("momentum_5d") else ""
-                    reason = (f"{'골든크로스+' if c['golden_cross'] else ''}"
-                              f"거래량{c['vol_ratio']:.1f}배 등락률{c['change']:+.1f}%"
-                              f" RSI{c.get('rsi',50):.0f} 모멘텀{c.get('momentum_5d',0):+.1f}%")
-                    await conn.execute("""
-                        INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
-                        VALUES ($1, $2, 'jarvis_scanner', $3, TRUE)
-                        ON CONFLICT (symbol) DO UPDATE
-                        SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
-                    """, c["symbol"], c["name"], reason)
+                gc = "🌟" if c["golden_cross"] else ""
+                rsi_tag = f" RSI{c.get('rsi',50):.0f}"
+                mom_tag = f" 5d{c.get('momentum_5d',0):+.1f}%"
+                reason = (f"{'골든크로스+' if c['golden_cross'] else ''}"
+                          f"거래량{c['vol_ratio']:.1f}배 등락률{c['change']:+.1f}%"
+                          f" RSI{c.get('rsi',50):.0f} 모멘텀{c.get('momentum_5d',0):+.1f}%")
+                await conn.execute("""
+                    INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                    VALUES ($1, $2, 'jarvis_scanner', $3, TRUE)
+                    ON CONFLICT (symbol) DO UPDATE
+                    SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
+                """, c["symbol"], c["name"], reason)
+                if c["symbol"] not in existing_active:
                     added.append(f"  {gc}{c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%{rsi_tag}{mom_tag}")
 
         msg = f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n"
-        msg += f"총 {len(candidates)}종목 발굴"
+        msg += f"총 {len(candidates)}종목 선정 (재선정)"
+        if deactivated:
+            msg += f" · 기존 {deactivated}종목 해제"
+        if held_symbols:
+            msg += f" · 보유 {len(held_symbols)}종목 유지"
         if added:
-            msg += f", {len(added)}종목 신규 추가:\n" + "\n".join(added[:10])
-        else:
-            msg += " (모두 기존 watchlist에 있음)"
+            msg += f"\n신규 {len(added)}종목:\n" + "\n".join(added[:10])
         await _send_telegram(msg)
-        logger.info(f"✅ 스캐너 완료: {len(candidates)}종목 발굴, {len(added)}종목 추가")
+        logger.info(f"✅ 스캐너 완료: {len(candidates)}종목 선정, 신규 {len(added)}, 해제 {deactivated}")
 
     except Exception as e:
         logger.error(f"Jarvis 스캐너 실패: {e}")

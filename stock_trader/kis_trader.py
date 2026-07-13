@@ -24,8 +24,27 @@ class KISTrader:
         self.session: aiohttp.ClientSession = None
 
     async def start(self):
+        # 키 설정 진단
+        mode = "모의투자" if config.KIS_IS_PAPER else "실전투자"
+        key = config.kis_app_key
+        secret = config.kis_app_secret
+        acct = config.KIS_ACCOUNT_NO
+        logger.info("🔑 KIS 설정: %s | 서버=%s", mode, self.BASE_URL)
+        logger.info("🔑 앱키=%s | 시크릿=%s | 계좌=%s",
+                    (key[:6] + "..." if key else "❌미설정"),
+                    ("설정됨" if secret else "❌미설정"),
+                    (acct if acct else "❌미설정"))
+        if not key or not secret:
+            logger.error("❌ KIS 앱키/시크릿 미설정 — Railway 환경변수 확인 필요"
+                         " (모의투자면 KIS_APP_KEY_PAPER / KIS_APP_SECRET_PAPER)")
+        if not acct:
+            logger.error("❌ KIS_ACCOUNT_NO 미설정 — 계좌번호 확인 필요")
+
         await self._get_token()
-        logger.info("✅ KISTrader 시작")
+        if self.access_token:
+            logger.info("✅ KISTrader 시작 (토큰 정상)")
+        else:
+            logger.error("❌ KISTrader 토큰 발급 실패 — 매매 불가 상태")
 
     def _new_session(self):
         """매 요청마다 새 세션 생성 (Server disconnected 방지)"""
@@ -57,17 +76,25 @@ class KISTrader:
             "appkey": config.kis_app_key,
             "appsecret": config.kis_app_secret,
         }
-        async with self._new_session() as sess:
-          async with sess.post(url, json=payload) as resp:
-            data = await resp.json()
-            token = data.get("access_token", "")
-            if token:
-                self.access_token = token
-                try:
-                    await cache.client.setex("kis:access_token", 82800, token)
-                except Exception:
-                    pass
-                logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
+        try:
+            async with self._new_session() as sess:
+              async with sess.post(url, json=payload) as resp:
+                data = await resp.json()
+                token = data.get("access_token", "")
+                if token:
+                    self.access_token = token
+                    try:
+                        await cache.client.setex("kis:access_token", 82800, token)
+                    except Exception:
+                        pass
+                    logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
+                else:
+                    # 실패 원인 로그 (KIS는 error_description 반환)
+                    err = data.get("error_description") or data.get("error_code") or data.get("msg1") or str(data)[:200]
+                    logger.error("❌ KIS 토큰 발급 실패: %s", err)
+        except Exception as e:
+            logger.error("❌ KIS 연결 실패: %s — Railway Static IP를 KIS에 등록했는지 확인"
+                         " (한국투자 개발자센터 > 마이페이지 > 사용 IP 등록)", e)
 
     @property
     def _cano(self) -> str:

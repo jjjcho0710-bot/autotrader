@@ -260,18 +260,23 @@ async def _jarvis_stock_scanner():
 
         def _scan():
             results = []
+            stats = {"total": 0, "no_data": 0, "low_price": 0, "scored": 0, "err": 0}
             for market in ["KOSPI", "KOSDAQ"]:
                 try:
                     tickers = pykrx_stock.get_market_ticker_list(market=market)
+                    logger.info(f"🔍 {market} 종목 수: {len(tickers)}")
                     for ticker in tickers:  # 전체 종목
+                        stats["total"] += 1
                         try:
                             # 30일 데이터로 MA크로스 체크
                             df = pykrx_stock.get_market_ohlcv(d30, today, ticker)
                             if df is None or len(df) < 22:
+                                stats["no_data"] += 1
                                 continue
 
                             close = df["종가"].iloc[-1]
                             if close < 1000:  # 동전주 제외
+                                stats["low_price"] += 1
                                 continue
 
                             vol = df["거래량"].iloc[-1]
@@ -334,6 +339,7 @@ async def _jarvis_stock_scanner():
                                 score += 1
 
                             if score >= 2:  # 조건 완화 유지
+                                stats["scored"] += 1
                                 name = pykrx_stock.get_market_ticker_name(ticker)
                                 results.append({
                                     "symbol": ticker,
@@ -346,10 +352,14 @@ async def _jarvis_stock_scanner():
                                     "rsi": round(rsi, 1),
                                     "momentum_5d": round(momentum_5d, 2),
                                 })
-                        except:
+                        except Exception:
+                            stats["err"] += 1
                             continue
-                except:
+                except Exception as e:
+                    logger.error(f"🔍 {market} 스캔 오류: {e}")
                     continue
+            logger.info(f"🔍 스캔 통계: 전체 {stats['total']} · 데이터부족 {stats['no_data']} · "
+                        f"동전주 {stats['low_price']} · 통과 {stats['scored']} · 오류 {stats['err']}")
             return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
 
         candidates = await loop.run_in_executor(None, _scan)
@@ -646,6 +656,21 @@ async def shutdown():
 # ── 정적 파일 ───────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+
+@app.post("/api/scan/run")
+async def run_scan_now():
+    """수동 스캔 트리거 — 08:30 안 기다리고 즉시 실행"""
+    try:
+        await _jarvis_stock_scanner()
+        # 결과 조회
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT symbol, name, reason FROM watchlist WHERE is_active=TRUE ORDER BY updated_at DESC LIMIT 30"
+            )
+        return {"success": True, "count": len(rows),
+                "watchlist": [{"symbol": r["symbol"], "name": r["name"], "reason": r["reason"]} for r in rows]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.get("/", response_class=HTMLResponse)
 async def root():

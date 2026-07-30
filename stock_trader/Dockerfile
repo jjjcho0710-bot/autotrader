@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONPATH=/app
+ENV TZ=Asia/Seoul
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 COPY common/ ./common/
 COPY ml/ ./ml/
 COPY stock_trader/requirements.txt .

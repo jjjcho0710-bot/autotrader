@@ -1,5 +1,7 @@
 FROM python:3.12-slim
 WORKDIR /app
+ENV TZ=Asia/Seoul
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # 공통 모듈 복사
 COPY common/ ./common/
 COPY ml/ ./ml/

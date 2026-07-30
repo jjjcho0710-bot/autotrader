@@ -253,8 +253,23 @@ async def _jarvis_stock_scanner():
         KST = timezone(timedelta(hours=9))
         now_kst = datetime.now(KST)
         logger.info("🔍 Jarvis 전종목 스캔 시작...")
+
+        # 08:30 스캔은 장 시작 전이라 '오늘' 데이터가 아직 없음.
+        # pykrx가 실제 보유한 최근 거래일 기준으로 분석해야 함.
+        # 넉넉히 today까지 요청하되, 최근 거래일을 pykrx로 확인.
         today = now_kst.strftime("%Y%m%d")
         d30 = (now_kst - timedelta(days=45)).strftime("%Y%m%d")
+        try:
+            # 삼성전자(005930)로 실제 마지막 거래일 확인
+            _probe = pykrx_stock.get_market_ohlcv(d30, today, "005930")
+            if _probe is not None and len(_probe) > 0:
+                last_trading_day = _probe.index[-1].strftime("%Y%m%d")
+                logger.info(f"🔍 최근 거래일: {last_trading_day} (오늘: {today})")
+                today = last_trading_day  # 분석 종료일을 실제 마지막 거래일로
+            else:
+                logger.warning("🔍 pykrx 프로브 데이터 없음 — 기본 날짜 사용")
+        except Exception as e:
+            logger.warning(f"🔍 거래일 확인 실패: {e}")
 
         loop = asyncio.get_event_loop()
 
@@ -1357,7 +1372,9 @@ async def get_crypto_ohlcv(pair: str, limit: int = 60):
 async def get_summary():
     """전체 요약 (오늘 수익, 체결 수 등)"""
     try:
-        today = datetime.now().date()
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        today = datetime.now(KST).date()
         async with db_pool.acquire() as conn:
             # 오늘 매매
             today_trades = await conn.fetchrow("""

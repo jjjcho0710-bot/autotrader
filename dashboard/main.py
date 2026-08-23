@@ -244,6 +244,111 @@ async def _auto_register_webhook():
         logger.warning(f"텔레그램 webhook 자동 등록 실패: {e}")
 
 
+async def _kis_scan_candidates() -> list:
+    """KRX(pykrx) 차단 시 폴백: KIS 거래량순위 → KIS 일봉으로 스코어링"""
+    import asyncio as _asyncio
+    token = await get_kis_token()
+    if not token:
+        logger.error("🔍 KIS 폴백 스캔: 토큰 없음")
+        return []
+
+    import ssl as _ssl
+    ctx = _ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = _ssl.CERT_NONE
+    conn = _aiohttp.TCPConnector(ssl=ctx)
+
+    def _hdr(tr_id):
+        return {"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret, "tr_id": tr_id, "custtype": "P"}
+
+    # 1) 거래량 순위로 후보 유니버스 (코스피 0001 / 코스닥 1001, 각 상위 30)
+    # 모의투자 서버는 순위 TR 미지원일 수 있어 실전 시세 도메인도 시도
+    bases = [config.kis_base_url]
+    if config.KIS_IS_PAPER:
+        bases.append("https://openapi.koreainvestment.com:9443")
+    universe = []
+    async with _aiohttp.ClientSession(connector=conn) as sess:
+        for mkt_code in ["0001", "1001"]:
+            got = []
+            for base in bases:
+                try:
+                    r = await sess.get(
+                        f"{base}/uapi/domestic-stock/v1/quotations/volume-rank",
+                        headers=_hdr("FHPST01710000"),
+                        params={"FID_COND_MRKT_DIV_CODE": "J", "FID_COND_SCR_DIV_CODE": "20171",
+                                "FID_INPUT_ISCD": mkt_code, "FID_DIV_CLS_CODE": "0",
+                                "FID_BLNG_CLS_CODE": "0", "FID_TRGT_CLS_CODE": "111111111",
+                                "FID_TRGT_EXLS_CLS_CODE": "0000000000", "FID_INPUT_PRICE_1": "",
+                                "FID_INPUT_PRICE_2": "", "FID_VOL_CNT": "", "FID_INPUT_DATE_1": ""},
+                        timeout=_aiohttp.ClientTimeout(total=10))
+                    data = await r.json()
+                    rows = data.get("output", []) or []
+                    if rows:
+                        got = [(x.get("mksc_shrn_iscd"), x.get("hts_kor_isnm")) for x in rows[:30]]
+                        break
+                except Exception as e:
+                    logger.debug(f"거래량순위 실패({base}): {e}")
+            universe.extend([(s, n) for s, n in got if s])
+            await _asyncio.sleep(0.3)
+
+        if not universe:
+            logger.error("🔍 KIS 폴백: 거래량순위 조회 실패")
+            return []
+        logger.info(f"🔍 KIS 폴백 유니버스: {len(universe)}종목")
+
+        # 2) 각 종목 일봉 30개로 스코어링 (기존 pykrx 로직과 동일)
+        from datetime import timedelta as _td
+        end = datetime.now(KST).strftime("%Y%m%d")
+        start = (datetime.now(KST) - _td(days=60)).strftime("%Y%m%d")
+        results = []
+        for symbol, name in universe:
+            try:
+                r = await sess.get(
+                    f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                    headers=_hdr("FHKST03010100"),
+                    params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
+                            "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
+                            "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+                    timeout=_aiohttp.ClientTimeout(total=10))
+                data = await r.json()
+                rows = [x for x in (data.get("output2") or []) if x.get("stck_clpr")]
+                if len(rows) < 22:
+                    continue
+                rows.reverse()  # 과거→최신
+                closes = [float(x["stck_clpr"]) for x in rows]
+                vols   = [float(x.get("acml_vol", 0) or 0) for x in rows]
+                close = closes[-1]
+                if close < 1000:
+                    continue
+                vol, vol_avg = vols[-1], (sum(vols[-6:-1]) / 5 if len(vols) >= 6 else 0)
+                change = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
+                ma5 = sum(closes[-5:]) / 5; ma20 = sum(closes[-20:]) / 20
+                ma5p = sum(closes[-6:-1]) / 5; ma20p = sum(closes[-21:-1]) / 20
+                golden_cross = ma5p < ma20p and ma5 > ma20
+                ma_trend_ok = ma5 > ma20
+                vol_ok = vol > vol_avg * 1.5 if vol_avg > 0 else False
+                gains = [max(closes[i] - closes[i-1], 0) for i in range(-14, 0)]
+                losses = [max(closes[i-1] - closes[i], 0) for i in range(-14, 0)]
+                ag, al = sum(gains) / 14, sum(losses) / 14
+                rsi = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+                momentum_5d = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0
+                score = (3 if golden_cross else 0) + (2 if vol_ok else 0)
+                score += (1 if change > 1 else 0) + (1 if change > 3 else 0)
+                score += (2 if 30 <= rsi <= 55 else 0) + (1 if 50 < rsi <= 70 else 0)
+                score += (1 if momentum_5d > 1.5 else 0)
+                score += (1 if (ma_trend_ok and not golden_cross) else 0)
+                if score >= 2:
+                    results.append({"symbol": symbol, "name": name or symbol, "change": change,
+                                    "vol_ratio": vol / vol_avg if vol_avg > 0 else 1,
+                                    "golden_cross": golden_cross, "score": score, "close": int(close),
+                                    "rsi": round(rsi, 1), "momentum_5d": round(momentum_5d, 2)})
+            except Exception:
+                pass
+            await _asyncio.sleep(0.5)  # 모의투자 rate limit (초당 2건)
+
+    logger.info(f"🔍 KIS 폴백 스캔 완료: {len(results)}종목 통과")
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
+
+
 async def _jarvis_stock_scanner():
     """08:30 — 코스피/코스닥 전종목 스캔 → 유망 종목 watchlist 자동 추가"""
     try:
@@ -394,6 +499,10 @@ async def _jarvis_stock_scanner():
             return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
 
         candidates = await loop.run_in_executor(None, _scan)
+
+        if not candidates:
+            logger.warning("🔍 pykrx 스캔 실패/0종목 → KIS API 폴백 스캔 시도")
+            candidates = await _kis_scan_candidates()
 
         if not candidates:
             logger.info("🔍 스캔 완료: 유망 종목 없음")

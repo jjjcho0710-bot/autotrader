@@ -323,6 +323,57 @@ class StockTrader:
         except Exception as e:
             logger.error(f"Jarvis 매도 판단 실패 [{symbol}]: {e}")
 
+    # ── 재매수 금지 (손절 쿨다운) ────────────────────────
+    async def _check_rebuy_cooldown(self, symbol: str, cur_price: float) -> tuple:
+        """
+        손절 이력 기반 재매수 차단.
+        반환: (허용 여부, 사유)
+        - 최근 3거래일(달력 5일) 내 손절 1회 → 차단
+        - 최근 10거래일(달력 14일) 내 손절 2회+ → 차단(7거래일 상당)
+        - 예외: 마지막 손절가 대비 +5% 이상 위에서 신호 → 추세 전환으로 보고 허용
+        """
+        try:
+            async with db.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT price, created_at
+                    FROM trade_history
+                    WHERE bot='stock_trader' AND symbol=$1 AND side='SELL'
+                      AND strategy LIKE '%손절%'
+                      AND created_at >= NOW() - INTERVAL '14 days'
+                    ORDER BY created_at DESC
+                """, symbol)
+            if not rows:
+                return True, ""
+            last_stop_price = float(rows[0]["price"] or 0)
+            # 예외: 손절가 +5% 위 신호면 허용
+            if last_stop_price > 0 and cur_price >= last_stop_price * 1.05:
+                return True, f"손절가({last_stop_price:,.0f}) +5% 상회 → 재진입 허용"
+            # 2회 이상 손절 → 14일 차단
+            if len(rows) >= 2:
+                return False, f"최근 2회 손절 → 재매수 금지 (마지막 손절가 {last_stop_price:,.0f}원)"
+            # 1회 손절 → 5일 차단
+            from datetime import timezone as _tz
+            age_days = (datetime.now(_tz.utc) - rows[0]["created_at"]).days
+            if age_days < 5:
+                return False, f"손절 후 {age_days}일 경과 (5일 미만) → 재매수 금지"
+            return True, ""
+        except Exception as e:
+            logger.debug(f"쿨다운 조회 실패(허용): {e}")
+            return True, ""
+
+    async def _daily_stop_count(self) -> int:
+        """오늘 손절 횟수 (2회 이상이면 당일 신규 매수 중단)"""
+        try:
+            async with db.pool.acquire() as conn:
+                n = await conn.fetchval("""
+                    SELECT COUNT(*) FROM trade_history
+                    WHERE bot='stock_trader' AND side='SELL' AND strategy LIKE '%손절%'
+                      AND DATE(created_at AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                """)
+            return int(n or 0)
+        except Exception:
+            return 0
+
     # ── 매매 사이클 ───────────────────────────────────────
     async def _run_cycle(self):
         active_strategies = self.get_all_active_strategies()
@@ -399,6 +450,12 @@ class StockTrader:
             logger.info(f"⚠️ 최대 보유 종목수 ({len(self.positions)}/{max_positions})")
             return
 
+        # 당일 2회 이상 손절 → 신규 매수 중단 (틸트 방지)
+        stop_cnt = await self._daily_stop_count()
+        if stop_cnt >= 2:
+            logger.info(f"🛑 오늘 손절 {stop_cnt}회 → 당일 신규 매수 중단")
+            return
+
         try:
             symbols = await db.get_watchlist_symbols()
             if not symbols:
@@ -438,6 +495,14 @@ class StockTrader:
             cur_price = await self.trader.get_current_price(symbol)
             if cur_price <= 0:
                 continue
+
+            # 재매수 금지 체크 (손절 쿨다운)
+            allowed, cd_reason = await self._check_rebuy_cooldown(symbol, cur_price)
+            if not allowed:
+                logger.info(f"⛔ [{symbol}] {cd_reason}")
+                continue
+            elif cd_reason:
+                logger.info(f"✅ [{symbol}] {cd_reason}")
 
             # 잔고 조회
             available_cash = await self.trader.get_balance()

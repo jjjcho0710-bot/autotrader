@@ -319,6 +319,11 @@ async def _kis_scan_candidates() -> list:
         results = []
         for symbol, name in universe:
             try:
+                # 특수증권 제외: 6자리 숫자 보통주(끝 0)만, 스팩 제외
+                if not (symbol and symbol.isdigit() and len(symbol) == 6 and symbol.endswith("0")):
+                    continue
+                if name and ("스팩" in name or "SPAC" in name.upper()):
+                    continue
                 r = await sess.get(
                     f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
                     headers=_hdr("FHKST03010100"),
@@ -337,7 +342,12 @@ async def _kis_scan_candidates() -> list:
                 if close < 1000:
                     continue
                 vol, vol_avg = vols[-1], (sum(vols[-6:-1]) / 5 if len(vols) >= 6 else 0)
-                change = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
+                # 등락률: 마지막 서로 다른 두 종가 기준 (중복 캔들 0.0% 버그 방지)
+                change = 0.0
+                for k in range(len(closes) - 2, -1, -1):
+                    if closes[k] != closes[-1]:
+                        change = (closes[-1] / closes[k] - 1) * 100
+                        break
                 ma5 = sum(closes[-5:]) / 5; ma20 = sum(closes[-20:]) / 20
                 ma5p = sum(closes[-6:-1]) / 5; ma20p = sum(closes[-21:-1]) / 20
                 golden_cross = ma5p < ma20p and ma5 > ma20
@@ -348,12 +358,15 @@ async def _kis_scan_candidates() -> list:
                 ag, al = sum(gains) / 14, sum(losses) / 14
                 rsi = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
                 momentum_5d = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0
+                # 폭락 종목 제외 (떨어지는 칼날)
+                if momentum_5d <= -5:
+                    continue
                 score = (3 if golden_cross else 0) + (2 if vol_ok else 0)
                 score += (1 if change > 1 else 0) + (1 if change > 3 else 0)
                 score += (2 if 30 <= rsi <= 55 else 0) + (1 if 50 < rsi <= 70 else 0)
                 score += (1 if momentum_5d > 1.5 else 0)
                 score += (1 if (ma_trend_ok and not golden_cross) else 0)
-                if score >= 2:
+                if score >= 4:
                     results.append({"symbol": symbol, "name": name or symbol, "change": change,
                                     "vol_ratio": vol / vol_avg if vol_avg > 0 else 1,
                                     "golden_cross": golden_cross, "score": score, "close": int(close),
@@ -499,9 +512,15 @@ async def _jarvis_stock_scanner():
                             if ma_trend_ok and not golden_cross:
                                 score += 1
 
-                            if score >= 2:  # 조건 완화 유지
-                                stats["scored"] += 1
+                            if score >= 4:  # 강화된 기준
+                                if momentum_5d <= -5:  # 폭락 종목 제외
+                                    continue
+                                if not (ticker.isdigit() and ticker.endswith("0")):  # 특수증권 제외
+                                    continue
                                 name = pykrx_stock.get_market_ticker_name(ticker)
+                                if name and "스팩" in name:
+                                    continue
+                                stats["scored"] += 1
                                 results.append({
                                     "symbol": ticker,
                                     "name": name,

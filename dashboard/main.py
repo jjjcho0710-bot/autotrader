@@ -822,7 +822,7 @@ async def shutdown():
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-@app.post("/api/scan/run")
+@app.api_route("/api/scan/run", methods=["GET", "POST"])
 async def run_scan_now():
     """수동 스캔 트리거 — 08:30 안 기다리고 즉시 실행"""
     try:

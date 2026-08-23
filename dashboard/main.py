@@ -267,7 +267,7 @@ async def _kis_scan_candidates() -> list:
     token = await get_kis_token()
     if not token:
         logger.error("🔍 KIS 폴백 스캔: 토큰 없음")
-        return []
+        return None  # 하드 실패
 
     import ssl as _ssl
     ctx = _ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = _ssl.CERT_NONE
@@ -309,7 +309,7 @@ async def _kis_scan_candidates() -> list:
 
         if not universe:
             logger.error("🔍 KIS 폴백: 거래량순위 조회 실패")
-            return []
+            return None  # 하드 실패
         logger.info(f"🔍 KIS 폴백 유니버스: {len(universe)}종목")
 
         # 2) 각 종목 일봉 30개로 스코어링 (기존 pykrx 로직과 동일)
@@ -548,9 +548,20 @@ async def _jarvis_stock_scanner():
             logger.warning("🔍 pykrx 스캔 실패/0종목 → KIS API 폴백 스캔 시도")
             candidates = await _kis_scan_candidates()
 
+        if candidates is None:
+            # 스캔 자체 실패 → 기존 watchlist 보존
+            logger.error("🔍 스캔 실패 — 기존 watchlist 유지")
+            await _send_telegram(f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n⚠️ 스캔 실패 (기존 감시종목 유지)")
+            return
+
         if not candidates:
-            logger.info("🔍 스캔 완료: 유망 종목 없음")
-            await _send_telegram(f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음")
+            # 스캔은 성공했으나 통과 종목 없음 → 잔재 정리
+            cleaned = await _cleanup_scanner_watchlist()
+            logger.info(f"🔍 스캔 완료: 유망 종목 없음 (잔재 {cleaned}개 정리)")
+            await _send_telegram(
+                f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음"
+                + (f" · 기존 {cleaned}종목 해제" if cleaned else "")
+            )
             return
 
         # ── watchlist 갱신 ──────────────────────────────────
@@ -839,6 +850,42 @@ async def shutdown():
 
 # ── 정적 파일 ───────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+async def _cleanup_scanner_watchlist() -> int:
+    """스캐너가 넣은 종목 중 보유하지 않은 것 비활성화. 반환: 해제 수"""
+    held = set()
+    try:
+        pos_res = await get_stock_positions()
+        if pos_res.get("success"):
+            held = {p["symbol"] for p in pos_res.get("data", []) if p.get("symbol")}
+    except Exception:
+        pass
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT symbol FROM watchlist WHERE is_active=TRUE AND added_by='jarvis_scanner'"
+        )
+        n = 0
+        for r in rows:
+            if r["symbol"] not in held:
+                await conn.execute(
+                    "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", r["symbol"]
+                )
+                n += 1
+    return n
+
+
+@app.api_route("/api/watchlist/cleanup", methods=["GET", "POST"])
+async def watchlist_cleanup():
+    """잔재 감시종목 즉시 정리 (보유 종목 제외)"""
+    try:
+        n = await _cleanup_scanner_watchlist()
+        async with db_pool.acquire() as conn:
+            remain = await conn.fetchval("SELECT COUNT(*) FROM watchlist WHERE is_active=TRUE")
+        await _send_telegram(f"🧹 감시종목 정리: {n}개 해제, 활성 {remain}개 남음")
+        return {"success": True, "deactivated": n, "remaining": remain}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.api_route("/api/scan/run", methods=["GET", "POST"])

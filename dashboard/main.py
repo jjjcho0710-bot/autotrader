@@ -32,6 +32,23 @@ _fmt = KSTFormatter(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logging.basicConfig(level=logging.INFO)
+
+# pykrx 내부의 깨진 logging.info(args, kwargs) 호출이 KRX 차단 시
+# 'Logging error' 트레이스백을 대량 발생 → pykrx 발 레코드 차단
+class _PykrxNoiseFilter(logging.Filter):
+    def filter(self, record):
+        try:
+            if "pykrx" in (record.pathname or ""):
+                return False
+            if record.name == "root" and "Expecting value" in str(record.msg):
+                return False
+        except Exception:
+            pass
+        return True
+
+for _h in logging.root.handlers:
+    _h.addFilter(_PykrxNoiseFilter())
+logging.raiseExceptions = False  # 포맷 오류 트레이스백 출력 억제
 logging.root.handlers[0].setFormatter(_fmt)
 logger = logging.getLogger("dashboard")
 
@@ -346,6 +363,14 @@ async def _kis_scan_candidates() -> list:
             await _asyncio.sleep(0.5)  # 모의투자 rate limit (초당 2건)
 
     logger.info(f"🔍 KIS 폴백 스캔 완료: {len(results)}종목 통과")
+    # 종목명 캐시 보강 (pykrx 실패 시에도 이름 표시 가능)
+    try:
+        for r_ in results:
+            if r_.get("name"):
+                _stock_name_cache[r_["name"]] = r_["symbol"]
+                _stock_code_cache[r_["symbol"]] = r_["name"]
+    except Exception:
+        pass
     return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
 
 

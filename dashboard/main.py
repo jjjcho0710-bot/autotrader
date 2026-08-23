@@ -793,6 +793,108 @@ async def _jarvis_closing_report():
         logger.error(f"Jarvis 마감 리포트 실패: {e}")
 
 
+async def _get_jarvis_lessons(limit: int = 5) -> str:
+    """최근 복기 교훈 로드 (아침 작전 수립용)"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS jarvis_memory (
+                    id SERIAL PRIMARY KEY,
+                    category VARCHAR(30) DEFAULT 'note',
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )""")
+            rows = await conn.fetch(
+                "SELECT content FROM jarvis_memory WHERE category='lesson' ORDER BY created_at DESC LIMIT $1",
+                limit)
+        return "\n".join(f"- {r['content']}" for r in rows) if rows else "(아직 없음)"
+    except Exception:
+        return "(로드 실패)"
+
+
+async def _jarvis_daily_plan():
+    """아침 작전 수립 → Redis 캐시 (장중 빠른 판단의 컨텍스트 1장)"""
+    try:
+        async with db_pool.acquire() as conn:
+            wl = await conn.fetch(
+                "SELECT symbol, name, reason FROM watchlist WHERE is_active=TRUE LIMIT 20")
+        wl_txt = "\n".join(f"- {r['name']}({r['symbol']}): {r['reason'] or ''}" for r in wl) or "(없음)"
+        lessons = await _get_jarvis_lessons()
+        now_str = datetime.now(KST).strftime("%m/%d")
+
+        prompt = f"""너는 한국 주식 단타 전문 트레이더다. 오늘({now_str}) 장중 매매 작전을 수립하라.
+
+[오늘의 감시종목]
+{wl_txt}
+
+[최근 복기 교훈]
+{lessons}
+
+아래 형식으로 500자 이내 '오늘의 작전'을 작성하라. 장중 매수/매도 판단 시 이 작전만 보고 즉시 결정한다.
+1. 시장 스탠스: (공격/중립/보수 중 하나와 한줄 이유)
+2. 우선 종목: (감시종목 중 주목할 2~3개와 이유 한줄씩)
+3. 회피 조건: (오늘 매수를 피할 상황)
+4. 리스크 한도: (연속 손절 시 대응)"""
+
+        plan = await _ask_openwebui(prompt, session_id="daily_plan")
+        if plan and not plan.startswith("❌"):
+            await redis_client.setex("jarvis:daily_plan", 60 * 60 * 12, plan)
+            logger.info("🧭 오늘의 작전 캐시 완료")
+            await _send_telegram(f"🧭 자비스 오늘의 작전 [{now_str}]\n{plan[:900]}")
+        else:
+            logger.warning(f"작전 수립 실패(AI 응답 불가): {str(plan)[:100]}")
+    except Exception as e:
+        logger.error(f"작전 수립 오류: {e}")
+
+
+async def _jarvis_evening_review():
+    """저녁 복기 → 교훈을 jarvis_memory에 저장 (내일 작전에 반영)"""
+    try:
+        today = datetime.now(KST).date()
+        async with db_pool.acquire() as conn:
+            trades = await conn.fetch("""
+                SELECT symbol, side, amount, pnl, strategy
+                FROM trade_history
+                WHERE bot='stock_trader'
+                  AND DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
+                ORDER BY created_at""", today)
+        if not trades:
+            logger.info("🌙 복기: 오늘 매매 없음 — 스킵")
+            return
+        t_txt = "\n".join(
+            f"- {t['side']} {t['symbol']} {float(t['amount']):,.0f}원"
+            + (f" 손익 {float(t['pnl'] or 0):+,.0f}원" if t['pnl'] is not None else "")
+            + f" ({t['strategy']})" for t in trades)
+        total_pnl = sum(float(t['pnl'] or 0) for t in trades)
+        plan = ""
+        try:
+            cached = await redis_client.get("jarvis:daily_plan")
+            plan = (cached if isinstance(cached, str) else (cached or b"").decode())[:500]
+        except Exception:
+            pass
+
+        prompt = f"""너는 한국 주식 단타 트레이더다. 오늘 매매를 복기하라.
+
+[아침 작전]
+{plan or '(없음)'}
+
+[오늘 매매 기록] (총 손익 {total_pnl:+,.0f}원)
+{t_txt}
+
+내일 매매에 반영할 핵심 교훈을 딱 1~2줄로 작성하라. 형식: "교훈: ..." """
+
+        review = await _ask_openwebui(prompt, session_id="daily_plan")
+        if review and not review.startswith("❌"):
+            lesson = review.strip()[:300]
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO jarvis_memory (category, content) VALUES ('lesson', $1)", lesson)
+            await _send_telegram(f"🌙 자비스 복기\n{lesson}")
+            logger.info("🌙 복기 교훈 저장 완료")
+    except Exception as e:
+        logger.error(f"복기 오류: {e}")
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -817,8 +919,9 @@ async def _jarvis_scheduler():
             logger.info("🌅 Jarvis 장 시작 전 루틴")
             await _jarvis_stock_scanner()        # 1. 전종목 스캔 → watchlist 업데이트
             await _jarvis_auto_analysis()         # 2. watchlist ML 예측
-            asyncio.create_task(_manual_collect())  # 3. 뉴스 감성 수집
-            asyncio.create_task(_trigger_ohlcv_collect())  # 4. OHLCV 수집 트리거
+            await _jarvis_daily_plan()            # 3. 오늘의 작전 수립 → 캐시
+            asyncio.create_task(_manual_collect())  # 4. 뉴스 감성 수집
+            asyncio.create_task(_trigger_ohlcv_collect())  # 5. OHLCV 수집 트리거
 
             # 오늘 공시 확인
             try:
@@ -838,6 +941,7 @@ async def _jarvis_scheduler():
             await _jarvis_auto_analysis()
             asyncio.create_task(_manual_collect())  # 장 마감 후 뉴스 수집
             asyncio.create_task(_jarvis_closing_report())  # 마감 리포트 + 내일 전략
+            asyncio.create_task(_jarvis_evening_review())  # 복기 → 교훈 저장
 
 
 @app.on_event("shutdown")
@@ -873,6 +977,28 @@ async def _cleanup_scanner_watchlist() -> int:
                 )
                 n += 1
     return n
+
+
+@app.api_route("/api/jarvis/plan/run", methods=["GET", "POST"])
+async def run_daily_plan_now():
+    """오늘의 작전 수동 수립 (점심 테스트용)"""
+    try:
+        await _jarvis_daily_plan()
+        cached = await redis_client.get("jarvis:daily_plan")
+        plan = cached if isinstance(cached, str) else (cached or b"").decode()
+        return {"success": bool(plan), "plan": plan[:1500]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.api_route("/api/jarvis/review/run", methods=["GET", "POST"])
+async def run_review_now():
+    """복기 수동 실행"""
+    try:
+        await _jarvis_evening_review()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.api_route("/api/watchlist/cleanup", methods=["GET", "POST"])
@@ -3519,6 +3645,15 @@ async def jarvis_signal(request: Request):
         # 1. DB 컨텍스트 수집
         ctx = await get_portfolio_context()
 
+        # 1-1. 오늘의 작전 (아침에 캐시된 1장 — 빠른 판단용)
+        daily_plan = ""
+        try:
+            cached_plan = await redis_client.get("jarvis:daily_plan")
+            if cached_plan:
+                daily_plan = cached_plan if isinstance(cached_plan, str) else cached_plan.decode()
+        except Exception:
+            pass
+
         # 2. Jarvis에게 분석 요청 (DB 데이터 포함)
         analysis_prompt = f"""[매매 신호 발생]
 종목: {name}({symbol})
@@ -3529,19 +3664,30 @@ async def jarvis_signal(request: Request):
 매수금액: {price * (qty if isinstance(qty, (int,float)) else 0):,.0f}원
 신호 이유: {reason}
 
+[오늘의 작전]
+{daily_plan or '(작전 없음 — 일반 기준으로 판단)'}
+
 [현재 포트폴리오 현황]
 {ctx}
 
-위 데이터를 기반으로 이 {action_kr} 신호를 실행해야 할지 판단해줘.
-- 잔고가 충분한지
-- 현재 포지션과 중복되지 않는지
-- 시장 흐름이 신호와 일치하는지
+오늘의 작전과 위 데이터 기준으로 이 {action_kr} 신호를 즉시 판단하라.
 반드시 EXECUTE 또는 SKIP 으로 시작해서 이유를 한 줄로 설명해줘."""
 
-        # 3. Jarvis 판단
+        # 3. Jarvis 판단 (+ AI 장애 시 ML 폴백)
         jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
         logger.info(f"🤖 Jarvis 판단 [{symbol}]: {jarvis_reply[:150]}")
         should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
+
+        # 429/오류 폴백: AI 응답 불가 시 신호의 ML 확률로 규칙 판단 (봇 생존)
+        ai_failed = (not jarvis_reply) or jarvis_reply.startswith("❌") or "429" in jarvis_reply[:200]
+        if ai_failed:
+            import re as _re
+            m = _re.search(r"ML매수확률[:\s]*([0-9]+)%", reason or "")
+            ml_prob = int(m.group(1)) if m else 0
+            should_execute = (action == "buy" and ml_prob >= 70)
+            jarvis_reply = (f"[AI폴백] ML확률 {ml_prob}% 기준 "
+                            f"{'EXECUTE' if should_execute else 'SKIP'} (Gemini 응답 불가)")
+            logger.warning(f"🤖 AI 폴백 판단 [{symbol}]: {jarvis_reply}")
 
         if should_execute:
             # 3. 실제 매매 실행 (주식 vs 코인 분기)

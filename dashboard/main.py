@@ -832,6 +832,20 @@ async def run_scan_now():
             rows = await conn.fetch(
                 "SELECT symbol, name, reason FROM watchlist WHERE is_active=TRUE ORDER BY updated_at DESC LIMIT 30"
             )
+        # 텔레그램 결과 전송 (수동 스캔용)
+        try:
+            now_str = datetime.now(KST).strftime("%m/%d %H:%M")
+            if rows:
+                msg = f"📋 수동 스캔 결과 [{now_str}]\n감시종목 {len(rows)}개:\n"
+                for r in rows[:15]:
+                    msg += f"· {r['name']}({r['symbol']})\n"
+                if len(rows) > 15:
+                    msg += f"...외 {len(rows)-15}개"
+            else:
+                msg = f"📋 수동 스캔 결과 [{now_str}]\n감시종목 없음"
+            await _send_telegram(msg)
+        except Exception as te:
+            logger.warning(f"수동 스캔 텔레그램 전송 실패: {te}")
         return {"success": True, "count": len(rows),
                 "watchlist": [{"symbol": r["symbol"], "name": r["name"], "reason": r["reason"]} for r in rows]}
     except Exception as e:

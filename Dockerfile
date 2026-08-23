@@ -3,6 +3,7 @@ WORKDIR /app
 ENV TZ=Asia/Seoul
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 COPY common/ ./common/
+COPY data_collector/ ./data_collector/
 COPY dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY dashboard/ ./dashboard/

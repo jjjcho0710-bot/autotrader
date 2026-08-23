@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+KST = timezone(timedelta(hours=9))
 
 import fastapi
 from fastapi import FastAPI, HTTPException, Request
@@ -274,12 +276,26 @@ async def _jarvis_stock_scanner():
         loop = asyncio.get_event_loop()
 
         def _scan():
+            import time as _t
             results = []
             stats = {"total": 0, "no_data": 0, "low_price": 0, "scored": 0, "err": 0}
             for market in ["KOSPI", "KOSDAQ"]:
+                # KRX가 간헐적으로 빈 응답 반환 → 최대 3회 재시도
+                tickers = []
+                for attempt in range(3):
+                    try:
+                        # 날짜 명시 → pykrx 내부 '최근 영업일 탐색'(불안정) 우회
+                        tickers = pykrx_stock.get_market_ticker_list(today, market=market)
+                        if tickers:
+                            break
+                    except Exception as e:
+                        logger.warning(f"🔍 {market} 티커 조회 {attempt+1}차 실패: {e}")
+                    _t.sleep(3)
+                logger.info(f"🔍 {market} 종목 수: {len(tickers)}")
+                if not tickers:
+                    logger.error(f"🔍 {market} 티커 목록 조회 최종 실패 — 스킵")
+                    continue
                 try:
-                    tickers = pykrx_stock.get_market_ticker_list(market=market)
-                    logger.info(f"🔍 {market} 종목 수: {len(tickers)}")
                     for ticker in tickers:  # 전체 종목
                         stats["total"] += 1
                         try:
@@ -554,7 +570,7 @@ async def _jarvis_closing_report():
             # 오늘 거래 실적
             trades = await conn.fetch("""
                 SELECT symbol, side, price, quantity, amount, pnl, strategy, created_at
-                FROM trades
+                FROM trade_history
                 WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
                   AND asset_type = 'stock'
                 ORDER BY created_at DESC
@@ -568,7 +584,7 @@ async def _jarvis_closing_report():
                 SELECT symbol,
                        SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) as net_qty,
                        AVG(CASE WHEN side='BUY' THEN price END) as avg_buy
-                FROM trades
+                FROM trade_history
                 WHERE asset_type='stock'
                 GROUP BY symbol
                 HAVING SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) > 0

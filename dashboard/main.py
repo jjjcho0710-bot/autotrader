@@ -2,6 +2,7 @@
 AutoTrader Dashboard — FastAPI 서버
 실시간 DB/Redis 데이터를 API로 제공
 """
+import asyncio
 import json
 import logging
 import os
@@ -2322,6 +2323,57 @@ JARVIS_SYSTEM_PROMPT = """너는 AutoTrader의 AI 집사 Jarvis야. 주인님(�
 - 확신 없으면 SKIP 우선
 """
 
+async def _get_watchlist_prices_context() -> str:
+    """감시종목 현재가·등락률 (KIS, Redis 30초 캐시)"""
+    try:
+        cached = await redis_client.get("jarvis:wl_prices")
+        if cached:
+            return cached if isinstance(cached, str) else cached.decode()
+    except Exception:
+        pass
+    try:
+        token = await get_kis_token()
+        if not token:
+            return ""
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT symbol, name FROM watchlist WHERE is_active=TRUE LIMIT 10")
+        if not rows:
+            return ""
+        import ssl as _ssl
+        ctx = _ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = _ssl.CERT_NONE
+        lines = []
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=ctx)) as sess:
+            for r in rows:
+                try:
+                    pr = await sess.get(
+                        f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                        headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                                 "appsecret": config.kis_app_secret,
+                                 "tr_id": "FHKST01010100", "custtype": "P"},
+                        params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": r["symbol"]},
+                        timeout=_aiohttp.ClientTimeout(total=5))
+                    o = (await pr.json()).get("output", {})
+                    p = int(o.get("stck_prpr", 0) or 0)
+                    cr = float(o.get("prdy_ctrt", 0) or 0)
+                    if p > 0:
+                        lines.append(f"- {r['name'] or r['symbol']}({r['symbol']}): {p:,}원 ({cr:+.1f}%)")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.25)
+        if not lines:
+            return ""
+        result = "\n[감시종목 현황 (실시간)]\n" + "\n".join(lines)
+        try:
+            await redis_client.setex("jarvis:wl_prices", 30, result)
+        except Exception:
+            pass
+        return result
+    except Exception as e:
+        logger.debug(f"감시종목 시세 조회 실패: {e}")
+        return ""
+
+
 async def get_portfolio_context() -> str:
     """현재 포트폴리오 데이터를 Gemini 컨텍스트로 변환"""
     ctx_parts = []
@@ -2553,6 +2605,14 @@ async def get_portfolio_context() -> str:
                     [f"{r['name'] or r['symbol']}({r['sentiment_score']:+d})" for r in negative[:5]]
                 ))
     except:
+        pass
+
+    # 감시종목 실시간 시세 (30초 캐시)
+    try:
+        wl_ctx = await _get_watchlist_prices_context()
+        if wl_ctx:
+            ctx_parts.append(wl_ctx)
+    except Exception:
         pass
 
     return "\n".join(ctx_parts)

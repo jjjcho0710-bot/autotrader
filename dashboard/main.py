@@ -2848,6 +2848,106 @@ async def _handle_watchlist_command(msg: str) -> str | None:
     return None  # 일반 채팅으로 처리
 
 
+async def _resolve_stock_symbol(text: str) -> tuple:
+    """메시지에서 종목 식별 → (symbol, name). 실패 시 (None, None)"""
+    import re as _re
+    m = _re.search(r"\b(\d{6})\b", text)
+    if m:
+        code = m.group(1)
+        try:
+            async with db_pool.acquire() as conn:
+                nm = await conn.fetchval("SELECT name FROM watchlist WHERE symbol=$1", code)
+            return code, (nm or code)
+        except Exception:
+            return code, code
+    # 이름으로 찾기: watchlist → 캐시
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT symbol, name FROM watchlist WHERE name IS NOT NULL")
+        for r in rows:
+            if r["name"] and r["name"] in text:
+                return r["symbol"], r["name"]
+    except Exception:
+        pass
+    try:
+        for nm, code in _stock_name_cache.items():
+            if nm and nm in text:
+                return code, nm
+    except Exception:
+        pass
+    return None, None
+
+
+async def _handle_trade_command(user_msg: str):
+    """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
+    import re as _re
+    msg = user_msg.strip()
+    is_buy = bool(_re.search(r"(매수|사자|사줘|사라)", msg))
+    is_sell = bool(_re.search(r"(매도|팔아|팔자|팔아줘)", msg))
+    if not (is_buy or is_sell):
+        return None
+    qty_m = _re.search(r"(\d+)\s*주", msg)
+    all_sell = "전량" in msg or "다 팔" in msg
+    if not qty_m and not all_sell:
+        return None  # 수량 없는 문장은 일반 대화로
+
+    symbol, name = await _resolve_stock_symbol(msg)
+    if not symbol:
+        return "⚠️ 종목을 특정할 수 없어요. 종목코드 6자리 또는 감시종목 이름으로 다시 지시해주세요. (예: 000660 2주 매수)"
+
+    action = "buy" if is_buy else "sell"
+    action_kr = "매수" if is_buy else "매도"
+
+    # 현재가
+    try:
+        pr = await get_single_price(symbol)  # /api/price/{symbol} 핸들러 재사용
+        price = int(pr.get("price", 0)) if isinstance(pr, dict) else 0
+    except Exception:
+        price = 0
+    if price <= 0:
+        return f"⚠️ {name}({symbol}) 현재가 조회 실패 — 주문 불가"
+
+    # 수량
+    if all_sell and not qty_m:
+        try:
+            pos = await get_stock_positions()
+            qty = next((int(p["qty"]) for p in pos.get("data", []) if p["symbol"] == symbol), 0)
+        except Exception:
+            qty = 0
+        if qty <= 0:
+            return f"⚠️ {name}({symbol}) 보유 수량이 없어요"
+    else:
+        qty = int(qty_m.group(1))
+
+    # 실제 주문
+    import aiohttp as http
+    from stock_trader.kis_trader import KISTrader
+    trader = KISTrader()
+    trader.session = http.ClientSession()
+    try:
+        await trader._get_token()
+        result = await (trader.buy(symbol, price, qty) if is_buy else trader.sell(symbol, price, qty))
+    finally:
+        await trader.session.close()
+
+    if result.get("success"):
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
+                    VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,'수동지시')
+                """, symbol, action.upper(), float(price), float(qty), float(price * qty))
+        except Exception:
+            pass
+        await _send_telegram(
+            f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
+            f"가격: {price:,}원 × {qty}주 = {price*qty:,}원")
+        return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
+                f"{price:,}원 × {qty}주 = {price*qty:,}원")
+    else:
+        return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error', '알 수 없음')}"
+
+
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
     """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
@@ -2863,6 +2963,11 @@ async def jarvis_chat(body: dict):
         if action_result:
             return {"success": True, "reply": action_result, "context_used": False}
 
+        # 매매 지시 감지 → 실제 KIS 주문 실행 (자비스 경유 X)
+        trade_result = await _handle_trade_command(user_msg)
+        if trade_result:
+            return {"success": True, "reply": trade_result, "context_used": False}
+
         # 수동 수집 명령
         if any(k in user_msg for k in ["수동 수집", "뉴스 수집", "감성 수집", "데이터 수집"]):
             asyncio.create_task(_manual_collect())
@@ -2870,7 +2975,10 @@ async def jarvis_chat(body: dict):
 
         # 포트폴리오 컨텍스트 추가
         portfolio_ctx = await get_portfolio_context()
-        full_msg = f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}"
+        full_msg = (f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}\n\n"
+                    "[시스템 주의] 너는 이 대화에서 직접 주문을 실행할 수 없다. "
+                    "매매는 사용자가 '종목명(또는 코드) N주 매수/매도' 형식으로 지시하면 시스템이 직접 체결하고 결과를 표시한다. "
+                    "네가 '매수 완료/체결'이라고 단정하지 마라. 대신 그 형식으로 지시하라고 안내하라.")
 
         # Open-WebUI 통해서 호출 (텔레그램과 같은 경로)
         reply = await _ask_openwebui(full_msg, session_id=session_id)

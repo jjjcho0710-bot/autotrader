@@ -853,11 +853,23 @@ async function checkConnection() {
   }
 }
 
+// 대화 유지: localStorage 복원 + 변경 시 자동 저장 (탭 이동해도 대화 유지)
+(function(){
+  const el = document.getElementById('messages');
+  try {
+    const saved = localStorage.getItem('jarvis_chat_html');
+    if (saved && el.children.length <= 1) { el.innerHTML = saved; el.scrollTop = el.scrollHeight; }
+  } catch(e){}
+  new MutationObserver(() => {
+    try { localStorage.setItem('jarvis_chat_html', el.innerHTML); } catch(e){}
+  }).observe(el, {childList: true, subtree: true});
+})();
+
 // 초기 로드
 refreshPanel();
 loadHistory();
 checkConnection();
-setInterval(refreshPanel, 30000);
+setInterval(refreshPanel, 10000);
 setInterval(checkConnection, 60000);
 </script>
 <nav class="bottom-nav">

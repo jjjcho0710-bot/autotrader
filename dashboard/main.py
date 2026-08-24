@@ -3987,6 +3987,39 @@ async def _log_journal(bot: str, symbol: str, name: str, action: str,
         logger.warning(f"매매일지 기록 실패: {e}")
 
 
+@app.get("/api/training/summary")
+async def training_summary(days: int = 14):
+    """트레이닝 페이지용: 교훈 목록 + 일별 채점 성적"""
+    try:
+        async with db_pool.acquire() as conn:
+            lessons = await conn.fetch("""
+                SELECT content, created_at FROM jarvis_memory
+                WHERE category='lesson' ORDER BY created_at DESC LIMIT 20""")
+            daily = await conn.fetch("""
+                SELECT DATE(ts AT TIME ZONE 'Asia/Seoul') AS d,
+                       COUNT(*) FILTER (WHERE jarvis_decision='EXECUTE' AND eval_pnl_rate >= 0.5)  AS exec_hit,
+                       COUNT(*) FILTER (WHERE jarvis_decision='EXECUTE' AND eval_pnl_rate < 0.5)   AS exec_miss,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0)     AS skip_missed,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate < 1.0)      AS skip_good,
+                       COUNT(*) AS total
+                FROM trade_journal
+                WHERE ts >= NOW() - ($1 || ' days')::interval AND eval_at IS NOT NULL
+                GROUP BY 1 ORDER BY 1 DESC""", str(days))
+        return {"success": True,
+                "lessons": [{"content": r["content"], "ts": r["created_at"].isoformat()} for r in lessons],
+                "daily": [{"date": str(r["d"]), "exec_hit": r["exec_hit"], "exec_miss": r["exec_miss"],
+                            "skip_good": r["skip_good"], "skip_missed": r["skip_missed"],
+                            "total": r["total"]} for r in daily]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/training", response_class=HTMLResponse)
+async def training_page():
+    with open("static/training.html", encoding="utf-8") as f:
+        return f.read()
+
+
 @app.get("/api/journal")
 async def get_journal(days: int = 7):
     """매매일지 조회 + 요약 (EXECUTE율, 체결수, SKIP수)"""

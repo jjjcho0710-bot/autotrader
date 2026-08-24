@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>자비스 트레이닝</title>
+<style>
+  :root{--bg:#0a0e14;--surface:#131920;--border:#232d3a;--text:#e6edf3;--dim:#7d8896;
+        --up:#f6465d;--down:#2f8fff;--gold:#f0b90b;--green:#16c784;}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       background:var(--bg);color:var(--text);font-size:14px;padding-bottom:60px;}
+  .mono{font-variant-numeric:tabular-nums;}
+  header{padding:18px 16px 8px;display:flex;justify-content:space-between;align-items:center;}
+  h1{font-size:18px;} .sub{font-size:12px;color:var(--dim);margin-top:2px;}
+  .section{padding:8px 16px;}
+  .stitle{font-size:13px;font-weight:700;color:var(--dim);text-transform:uppercase;
+          letter-spacing:.5px;margin:14px 0 8px;}
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+        padding:12px 10px;text-align:center;}
+  .card .v{font-size:20px;font-weight:800;}
+  .card .l{font-size:11px;color:var(--dim);margin-top:3px;}
+  .day{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+       padding:12px;margin-bottom:8px;}
+  .day-head{display:flex;justify-content:space-between;font-weight:700;margin-bottom:6px;}
+  .bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--border);}
+  .bar div{height:100%;}
+  .legend{display:flex;gap:12px;font-size:11px;color:var(--dim);margin-top:6px;flex-wrap:wrap;}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;}
+  .lesson{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--gold);
+          border-radius:8px;padding:12px;margin-bottom:8px;font-size:13px;line-height:1.5;}
+  .lesson .t{font-size:11px;color:var(--dim);margin-top:6px;}
+  .row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;
+       border-bottom:1px solid var(--border);font-size:13px;}
+  .row:last-child{border-bottom:none;}
+  .tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;}
+  .tag.exec{background:rgba(246,70,93,.15);color:var(--up);}
+  .tag.skip{background:rgba(125,136,150,.2);color:var(--dim);}
+  .tag.manual{background:rgba(240,185,11,.15);color:var(--gold);}
+  .rate.pos{color:var(--up);} .rate.neg{color:var(--down);}
+  .empty{text-align:center;color:var(--dim);padding:28px 0;}
+  .nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--surface);
+       border-top:1px solid var(--border);}
+  .nav a{flex:1;text-align:center;padding:10px 0;font-size:11px;color:var(--dim);text-decoration:none;}
+  .nav a.active{color:var(--gold);}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>🎓 자비스 트레이닝</h1><div class="sub">판단 채점 · 학습 교훈 · 성장 기록</div></div>
+</header>
+
+<div class="section">
+  <div class="stitle">최근 14일 성적</div>
+  <div class="cards">
+    <div class="card"><div class="v" id="s-hit">-</div><div class="l">매수 적중</div></div>
+    <div class="card"><div class="v" id="s-miss">-</div><div class="l">매수 빗나감</div></div>
+    <div class="card"><div class="v" id="s-good">-</div><div class="l">SKIP 잘거름</div></div>
+    <div class="card"><div class="v" id="s-missed">-</div><div class="l">기회 놓침</div></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="stitle">일별 채점</div>
+  <div id="daily"><div class="empty">채점 데이터가 아직 없어요 (오늘 15:40 첫 채점)</div></div>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--up)"></span>매수적중</span>
+    <span><span class="dot" style="background:#8b2635"></span>빗나감</span>
+    <span><span class="dot" style="background:var(--green)"></span>잘거름</span>
+    <span><span class="dot" style="background:#b8860b"></span>기회놓침</span>
+  </div>
+</div>
+
+<div class="section">
+  <div class="stitle">누적 교훈 (자비스가 배운 것)</div>
+  <div id="lessons"><div class="empty">아직 교훈이 없어요</div></div>
+</div>
+
+<div class="section">
+  <div class="stitle">최근 판단 기록</div>
+  <div id="journal"><div class="empty">불러오는 중...</div></div>
+</div>
+
+<div class="nav">
+  <a href="/">홈</a><a href="/jarvis.html">자비스</a>
+  <a href="/training" class="active">트레이닝</a><a href="/strategy">전략</a>
+</div>
+
+<script>
+const pct = n => (n>=0?"+":"")+n.toFixed(1)+"%";
+
+async function load(){
+  try{
+    const r = await fetch("/api/training/summary");
+    const j = await r.json();
+    if(j.success){
+      // 합계 카드
+      let hit=0,miss=0,good=0,missed=0;
+      (j.daily||[]).forEach(d=>{hit+=d.exec_hit;miss+=d.exec_miss;good+=d.skip_good;missed+=d.skip_missed;});
+      s_set("s-hit",hit); s_set("s-miss",miss); s_set("s-good",good); s_set("s-missed",missed);
+      // 일별 바
+      const dEl=document.getElementById("daily");
+      if(j.daily && j.daily.length){
+        dEl.innerHTML=j.daily.map(d=>{
+          const t=d.exec_hit+d.exec_miss+d.skip_good+d.skip_missed||1;
+          const seg=(n,c)=>n?`<div style="width:${n/t*100}%;background:${c}"></div>`:"";
+          return `<div class="day"><div class="day-head"><span>${d.date}</span><span class="mono">${d.total}건</span></div>
+            <div class="bar">${seg(d.exec_hit,'var(--up)')}${seg(d.exec_miss,'#8b2635')}${seg(d.skip_good,'var(--green)')}${seg(d.skip_missed,'#b8860b')}</div></div>`;
+        }).join("");
+      }
+      // 교훈
+      const lEl=document.getElementById("lessons");
+      if(j.lessons && j.lessons.length){
+        lEl.innerHTML=j.lessons.map(l=>{
+          const t=new Date(l.ts);
+          return `<div class="lesson">${l.content}<div class="t">${t.getMonth()+1}/${t.getDate()}</div></div>`;
+        }).join("");
+      }
+    }
+  }catch(e){}
+  try{
+    const r=await fetch("/api/journal?days=7");
+    const j=await r.json();
+    const el=document.getElementById("journal");
+    if(j.success && j.data && j.data.length){
+      el.innerHTML=j.data.slice(0,30).map(x=>{
+        const t=new Date(x.ts);
+        const tag=x.source==='chat'?'<span class="tag manual">수동</span>'
+                 :x.jarvis_decision==='EXECUTE'?'<span class="tag exec">매수</span>'
+                 :'<span class="tag skip">SKIP</span>';
+        const ev=(x.eval_pnl_rate!==null&&x.eval_pnl_rate!==undefined)
+          ?`<span class="rate mono ${x.eval_pnl_rate>=0?'pos':'neg'}">${pct(Number(x.eval_pnl_rate))}</span>`:"";
+        return `<div class="row"><div>${tag} <b>${x.name||x.symbol}</b>
+          <span style="color:var(--dim);font-size:11px"> ${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")} · ${x.strategy||""}</span></div>${ev}</div>`;
+      }).join("");
+    } else {
+      el.innerHTML='<div class="empty">판단 기록이 아직 없어요 (오늘 장부터 쌓입니다)</div>';
+    }
+  }catch(e){}
+}
+function s_set(id,v){document.getElementById(id).textContent=v;}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

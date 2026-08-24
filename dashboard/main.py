@@ -1922,7 +1922,7 @@ async def full_health_check():
 
     # 3. stock-trader
     try:
-        stk = await redis_client.get("bot:stock_trader:status")
+        stk = await redis_client.hget("bot:status", "stock_trader")
         if stk:
             stk_data = _json.loads(stk)
             last = stk_data.get("last_cycle", "")
@@ -1945,7 +1945,7 @@ async def full_health_check():
 
     # 4. crypto-trader
     try:
-        cry = await redis_client.get("bot:crypto_trader:status")
+        cry = await redis_client.hget("bot:status", "crypto_trader")
         if cry:
             cry_data = _json.loads(cry)
             last = cry_data.get("last_cycle", "")

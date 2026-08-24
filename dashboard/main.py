@@ -2325,7 +2325,18 @@ JARVIS_SYSTEM_PROMPT = """너는 AutoTrader의 AI 집사 Jarvis야. 주인님(�
 async def get_portfolio_context() -> str:
     """현재 포트폴리오 데이터를 Gemini 컨텍스트로 변환"""
     ctx_parts = []
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _now = datetime.now(KST)
+    _wd = ["월", "화", "수", "목", "금", "토", "일"][_now.weekday()]
+    _t = _now.time()
+    if _now.weekday() >= 5:
+        _session = "주말 휴장"
+    elif _t >= datetime.strptime("09:00", "%H:%M").time() and _t <= datetime.strptime("15:30", "%H:%M").time():
+        _session = "한국 주식시장 장중 (개장 상태)"
+    elif _t < datetime.strptime("09:00", "%H:%M").time():
+        _session = "장 시작 전 (09:00 개장)"
+    else:
+        _session = "장 마감 후"
+    now = f"{_now.strftime('%Y-%m-%d')}({_wd}) {_now.strftime('%H:%M')} KST — {_session}"
     ctx_parts.append(f"[현재 시각: {now}]")
 
     try:

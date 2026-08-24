@@ -3902,7 +3902,7 @@ async def jarvis_signal(request: Request):
 
             if bot == "crypto_trader":
                 # 코인 매매
-                from upbit_trader import UpbitTrader
+                from crypto_trader.upbit_trader import UpbitTrader
                 upbit = UpbitTrader()
                 upbit.session = http.ClientSession()
                 await upbit.start()

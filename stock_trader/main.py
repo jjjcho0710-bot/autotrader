@@ -172,10 +172,34 @@ class StockTrader:
 
             try:
                 await self._run_cycle()
+                self._db_err_count = 0
             except Exception as e:
                 err_str = str(e)
                 logger.error(f"❌ 사이클 오류: {e}")
-                if "Server disconnected" not in err_str and "ServerDisconnected" not in err_str:
+
+                # DB 연결 계열 오류 → 자동 재연결 시도
+                _lower = err_str.lower()
+                if "pool is closed" in _lower or "connection" in _lower or "closed" in _lower:
+                    self._db_err_count = getattr(self, "_db_err_count", 0) + 1
+                    logger.warning(f"🔄 DB 재연결 시도 ({self._db_err_count}회차)...")
+                    try:
+                        try:
+                            await db.disconnect()
+                        except Exception:
+                            pass
+                        try:
+                            await cache.disconnect()
+                        except Exception:
+                            pass
+                        await db.connect()
+                        await cache.connect()
+                        logger.info("✅ DB/Redis 재연결 성공")
+                    except Exception as re_err:
+                        logger.error(f"❌ 재연결 실패: {re_err}")
+                        # 3회 연속 실패 시에만 텔레그램 (스팸 방지)
+                        if self._db_err_count >= 3:
+                            await self._notify_error(f"DB 재연결 {self._db_err_count}회 실패: {re_err}")
+                elif "Server disconnected" not in err_str and "ServerDisconnected" not in err_str:
                     await self._notify_error(err_str)
 
             await asyncio.sleep(config.COLLECT_INTERVAL_SEC)

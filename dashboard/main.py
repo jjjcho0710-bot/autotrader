@@ -2898,12 +2898,27 @@ async def _handle_trade_command(user_msg: str):
     action = "buy" if is_buy else "sell"
     action_kr = "매수" if is_buy else "매도"
 
-    # 현재가
+    # 현재가 (검증된 KIS 직접 조회 경로)
+    price = 0
     try:
-        pr = await get_single_price(symbol)  # /api/price/{symbol} 핸들러 재사용
-        price = int(pr.get("price", 0)) if isinstance(pr, dict) else 0
-    except Exception:
-        price = 0
+        token = await get_kis_token()
+        if token:
+            import ssl as _ssl
+            _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+            async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+                pr = await sess.get(
+                    f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                    headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                             "appsecret": config.kis_app_secret,
+                             "tr_id": "FHKST01010100", "custtype": "P"},
+                    params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
+                    timeout=_aiohttp.ClientTimeout(total=8))
+                o = (await pr.json()).get("output", {})
+                price = int(o.get("stck_prpr", 0) or 0)
+                if o.get("hts_kor_isnm"):
+                    name = o.get("hts_kor_isnm")
+    except Exception as e:
+        logger.warning(f"수동주문 현재가 조회 실패 [{symbol}]: {e}")
     if price <= 0:
         return f"⚠️ {name}({symbol}) 현재가 조회 실패 — 주문 불가"
 

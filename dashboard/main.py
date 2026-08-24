@@ -3530,12 +3530,15 @@ async def get_stock_positions():
             # output2: 계좌 총평가 요약
             out2 = data.get("output2", [{}])
             summary = out2[0] if out2 else {}
-            # 예수금: 필드명 후보 순서대로 시도
-            # dnca_tot_amt=예수금총액, nass_amt=순자산, tot_evlu_amt=총평가
-            cash_val = int(summary.get("dnca_tot_amt", 0) or 0)
             total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
             stock_eval = int(summary.get("evlu_amt_smtl_amt", 0) or 0)  # 평가금액합계
-            cash_val   = int(summary.get("dnca_tot_amt", 0) or 0)       # 예수금총액
+            # 예수금: D+2 정산 예수금(실제 가용) 우선 — 매수해도 dnca_tot_amt는
+            # D+2 결제 전까지 안 줄어 혼동 유발
+            cash_val = int(summary.get("prvs_rcdl_excc_amt", 0) or 0)   # D+2 예수금
+            if cash_val == 0:
+                cash_val = int(summary.get("nxdy_excc_amt", 0) or 0)    # D+1 예수금
+            if cash_val == 0:
+                cash_val = int(summary.get("dnca_tot_amt", 0) or 0)     # 예수금총액
             if cash_val == 0:
                 cash_val = total_eval - stock_eval
 

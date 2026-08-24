@@ -2981,6 +2981,9 @@ async def _handle_trade_command(user_msg: str):
         await _send_telegram(
             f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
             f"가격: {price:,}원 × {qty}주 = {price*qty:,}원")
+        await _log_journal("stock_trader", symbol, name, action, "수동지시",
+                           user_msg[:200], "MANUAL", "사용자 직접 지시",
+                           True, True, price, qty, source="chat")
         return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
                 f"{price:,}원 × {qty}주 = {price*qty:,}원")
     else:
@@ -3850,6 +3853,64 @@ async def remove_watchlist(symbol: str):
     return {"success": False, "error": "제거 실패"}
 
 
+async def _log_journal(bot: str, symbol: str, name: str, action: str,
+                        strategy: str, signal_reason: str,
+                        jarvis_decision: str, jarvis_reason: str,
+                        executed: bool, order_success: bool,
+                        price: float, qty: float, source: str = "auto"):
+    """매매일지: 모든 판단(EXECUTE/SKIP 포함)을 구조화 기록 — 학습의 원재료"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS trade_journal (
+                    id SERIAL PRIMARY KEY,
+                    ts TIMESTAMPTZ DEFAULT NOW(),
+                    bot VARCHAR(20), symbol VARCHAR(15), name VARCHAR(50),
+                    action VARCHAR(10), strategy VARCHAR(50),
+                    signal_reason TEXT,
+                    jarvis_decision VARCHAR(10), jarvis_reason TEXT,
+                    executed BOOLEAN, order_success BOOLEAN,
+                    price NUMERIC, qty NUMERIC,
+                    source VARCHAR(10) DEFAULT 'auto',
+                    eval_price NUMERIC, eval_pnl_rate NUMERIC, eval_at TIMESTAMPTZ
+                )""")
+            await conn.execute("""
+                INSERT INTO trade_journal
+                (bot,symbol,name,action,strategy,signal_reason,
+                 jarvis_decision,jarvis_reason,executed,order_success,price,qty,source)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            """, bot, symbol, name, action, strategy, (signal_reason or "")[:500],
+                 jarvis_decision, (jarvis_reason or "")[:300],
+                 executed, order_success, float(price or 0), float(qty or 0), source)
+    except Exception as e:
+        logger.warning(f"매매일지 기록 실패: {e}")
+
+
+@app.get("/api/journal")
+async def get_journal(days: int = 7):
+    """매매일지 조회 + 요약 (EXECUTE율, 체결수, SKIP수)"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ts, bot, symbol, name, action, strategy,
+                       jarvis_decision, jarvis_reason, executed, order_success,
+                       price, qty, source
+                FROM trade_journal
+                WHERE ts >= NOW() - ($1 || ' days')::interval
+                ORDER BY ts DESC LIMIT 200
+            """, str(days))
+        total = len(rows)
+        executes = sum(1 for r in rows if r["executed"])
+        fills = sum(1 for r in rows if r["order_success"])
+        return {"success": True,
+                "summary": {"total_signals": total, "executes": executes,
+                             "skips": total - executes, "fills": fills,
+                             "execute_rate": round(executes / total * 100, 1) if total else 0},
+                "data": [dict(r) | {"ts": r["ts"].isoformat()} for r in rows]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/jarvis/signal")
 async def jarvis_signal(request: Request):
     """
@@ -4017,18 +4078,24 @@ async def jarvis_signal(request: Request):
                     price=float(price), amount=float(price*qty),
                     result="성공", reason=reason
                 )
+                await _log_journal(bot, symbol, name, action, strategy, reason,
+                                   "EXECUTE", jarvis_reply, True, True, price, qty)
                 return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
             else:
                 await _send_telegram(
                     f"❌ {name} {action_kr} 실패\n{result.get('error')}",
                     chat_id, token
                 )
+                await _log_journal(bot, symbol, name, action, strategy, reason,
+                                   "EXECUTE", jarvis_reply, True, False, price, qty)
                 return {"success": False, "executed": False, "error": result.get("error")}
         else:
             # 4. 건너뜀 보고
             msg = f"⏭️ <b>{name} {action_kr} 신호 건너뜀</b>\nJarvis 판단: {jarvis_reply[:100]}"
             await _send_telegram(msg, chat_id, token)
             logger.info(f"⏭️ Jarvis가 {action_kr} 신호 건너뜀: {symbol}")
+            await _log_journal(bot, symbol, name, action, strategy, reason,
+                               "SKIP", jarvis_reply, False, False, price, qty)
             return {"success": True, "executed": False, "jarvis_reply": jarvis_reply}
 
     except Exception as e:

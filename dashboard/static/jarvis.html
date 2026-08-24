@@ -1,8 +1,15 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <title>AutoTrader — Jarvis</title>
+<link rel="manifest" href="/static/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AutoTrader">
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+<meta name="theme-color" content="#0a0e14">
+
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 :root{
@@ -298,6 +305,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
     overflow:visible!important;
     height:auto!important;
   }
+}
+@media (max-width: 768px) {
+  .input-row { gap: 6px !important; }
+  .msg-input { font-size: 16px !important; min-height: 40px !important; }
+  .analyze-btn { padding: 8px 10px !important; font-size: 12px !important; }
+  .mic-btn, .send-btn { width: 38px !important; height: 38px !important; flex-shrink: 0; }
+  body.kb-open .bottom-nav { display: none !important; }
 }
 @media (max-width: 768px) {
   html { overflow-x: hidden !important; max-width: 100vw !important; }
@@ -863,6 +877,19 @@ async function checkConnection() {
   new MutationObserver(() => {
     try { localStorage.setItem('jarvis_chat_html', el.innerHTML); } catch(e){}
   }).observe(el, {childList: true, subtree: true});
+})();
+
+// 모바일 보정: placeholder 축약 + 키보드 열림 시 하단네비 숨김
+(function(){
+  const inp = document.getElementById('msg-input');
+  if (window.innerWidth <= 768 && inp) {
+    inp.placeholder = 'Jarvis에게 질문하기...';
+    inp.addEventListener('focus', () => {
+      document.body.classList.add('kb-open');
+      setTimeout(() => { const m=document.getElementById('messages'); if(m) m.scrollTop=m.scrollHeight; }, 300);
+    });
+    inp.addEventListener('blur', () => document.body.classList.remove('kb-open'));
+  }
 })();
 
 // 초기 로드

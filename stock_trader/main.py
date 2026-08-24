@@ -528,7 +528,7 @@ class StockTrader:
             elif cd_reason:
                 logger.info(f"✅ [{symbol}] {cd_reason}")
 
-            # 잔고 조회
+            # 잔고 조회 (실패 시 매수 스킵 — 가짜 잔고로 판단 금지)
             available_cash = await self.trader.get_balance()
             cash = available_cash.get("cash", 0)
             if cash <= 0:
@@ -540,7 +540,8 @@ class StockTrader:
                 except:
                     pass
             if cash <= 0:
-                cash = 10000000  # fallback
+                logger.warning(f"⚠️ [{symbol}] 잔고 조회 실패 → 매수 스킵 (다음 사이클 재시도)")
+                continue
 
             if cash < 100000:
                 logger.info(f"💸 잔고 부족 ({cash:,}원) → 매수 스킵")
@@ -609,12 +610,23 @@ class StockTrader:
             except Exception as e:
                 logger.debug(f"뉴스 조회 실패: {e}")
 
+            # SKIP 쿨다운: 자비스가 30분 내 SKIP한 종목은 재판단 요청 안 함
+            try:
+                skip_key = f"jarvis:skip:{symbol}"
+                if await cache.client.get(skip_key):
+                    logger.debug(f"⏸️ [{symbol}] SKIP 쿨다운 중 → 판단 생략")
+                    continue
+            except Exception:
+                pass
+
             # ── Jarvis 최종 판단 (매수/매도 결정 + 실행 + 텔레그램 알림 모두 dashboard가 처리) ──
+            buy_amount_krw = cur_price * qty
             reason = (
                 f"전략:{triggered_strategy} | ML매수확률:{buy_prob:.0%}({strength}) "
-                f"| 수급:{supply_reason} | 뉴스:{news_reason}"
+                f"| 수급:{supply_reason} | 뉴스:{news_reason} "
+                f"| 예수금:{cash:,.0f}원 | 매수예정:{buy_amount_krw:,.0f}원"
             )
-            logger.info(f"🤖 [{symbol}] Jarvis 최종 판단 요청 — {reason}")
+            logger.info(f"🤖 [{symbol}] Jarvis 판단 요청 — 예수금 {cash:,.0f}원 / 매수 {buy_amount_krw:,.0f}원 ({qty}주×{cur_price:,}원)")
 
             import aiohttp as http
             try:
@@ -649,6 +661,11 @@ class StockTrader:
                 else:
                     jarvis_say = result.get("jarvis_reply", "SKIP")[:60]
                     logger.info(f"⏭️ Jarvis 스킵 [{symbol}]: {jarvis_say}")
+                    # 30분 쿨다운 기록 (반복 판단·텔레그램 스팸 방지)
+                    try:
+                        await cache.client.setex(f"jarvis:skip:{symbol}", 1800, "1")
+                    except Exception:
+                        pass
 
             except Exception as e:
                 logger.error(f"Jarvis 신호 전달 실패 [{symbol}]: {e}")

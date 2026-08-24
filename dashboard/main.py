@@ -2331,8 +2331,8 @@ async def get_portfolio_context() -> str:
     try:
         # 주식 포지션
         stock_pos = await get_stock_positions()
-        if stock_pos.get("success") and stock_pos.get("data"):
-            positions = stock_pos["data"]
+        if stock_pos.get("success"):
+            positions = stock_pos.get("data") or []
             account = stock_pos.get("account", {})
             ctx_parts.append(f"\n[주식 계좌]")
             ctx_parts.append(f"총평가금액: {account.get('total_eval', 0):,}원")
@@ -2347,6 +2347,10 @@ async def get_portfolio_context() -> str:
                         f"평균{p['avg_price']:,} 현재{p['cur_price']:,} "
                         f"손익{p['pnl']:+,}원({p['pnl_rate']:+.1f}%)"
                     )
+            else:
+                ctx_parts.append("보유종목: 없음 (신규 매수 가능)")
+        else:
+            ctx_parts.append(f"[주식 계좌 조회 실패: {stock_pos.get('error', '알 수 없음')}]")
     except Exception as e:
         ctx_parts.append(f"[주식 데이터 조회 실패: {e}]")
 

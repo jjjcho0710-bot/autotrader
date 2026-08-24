@@ -2848,6 +2848,38 @@ async def _handle_watchlist_command(msg: str) -> str | None:
     return None  # 일반 채팅으로 처리
 
 
+async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool) -> dict:
+    """KIS 주식 주문 (dashboard 내장 — stock_trader 모듈 불필요)"""
+    token = await get_kis_token()
+    if not token:
+        return {"success": False, "error": "KIS 토큰 없음"}
+    acct = (config.KIS_ACCOUNT_NO or "").split("-")
+    cano = acct[0] if acct else ""
+    prdt = acct[1] if len(acct) > 1 else "01"
+    if config.KIS_IS_PAPER:
+        tr_id = "VTTC0802U" if is_buy else "VTTC0801U"
+    else:
+        tr_id = "TTTC0802U" if is_buy else "TTTC0801U"
+    payload = {"CANO": cano, "ACNT_PRDT_CD": prdt, "PDNO": symbol,
+               "ORD_DVSN": "00", "ORD_QTY": str(qty), "ORD_UNPR": str(price)}
+    import ssl as _ssl
+    _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+    try:
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            async with sess.post(
+                f"{config.kis_base_url}/uapi/domestic-stock/v1/trading/order-cash",
+                headers={"Content-Type": "application/json",
+                         "authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                         "appsecret": config.kis_app_secret, "tr_id": tr_id, "custtype": "P"},
+                json=payload, timeout=_aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+        if data.get("rt_cd") == "0":
+            return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
+        return {"success": False, "error": data.get("msg1", "주문 실패")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 async def _resolve_stock_symbol(text: str) -> tuple:
     """메시지에서 종목 식별 → (symbol, name). 실패 시 (None, None)"""
     import re as _re
@@ -2934,16 +2966,8 @@ async def _handle_trade_command(user_msg: str):
     else:
         qty = int(qty_m.group(1))
 
-    # 실제 주문
-    import aiohttp as http
-    from stock_trader.kis_trader import KISTrader
-    trader = KISTrader()
-    trader.session = http.ClientSession()
-    try:
-        await trader._get_token()
-        result = await (trader.buy(symbol, price, qty) if is_buy else trader.sell(symbol, price, qty))
-    finally:
-        await trader.session.close()
+    # 실제 주문 (dashboard 내장 함수 — 모듈 의존 없음)
+    result = await _kis_stock_order(symbol, price, qty, is_buy)
 
     if result.get("success"):
         try:
@@ -3960,18 +3984,8 @@ async def jarvis_signal(request: Request):
                     return {"success": False, "executed": False, "error": result.get("error")}
 
             else:
-                # 주식 매매
-                from stock_trader.kis_trader import KISTrader
-                trader = KISTrader()
-                trader.session = http.ClientSession()
-                await trader._get_token()
-
-                if action in ["buy", "BUY"]:
-                    result = await trader.buy(symbol, price, qty)
-                else:
-                    result = await trader.sell(symbol, price, qty)
-
-                await trader.session.close()
+                # 주식 매매 (dashboard 내장 주문 — 모듈 의존 없음)
+                result = await _kis_stock_order(symbol, int(price), int(qty), action in ["buy", "BUY"])
 
             if result.get("success"):
                 # DB에 매매 기록

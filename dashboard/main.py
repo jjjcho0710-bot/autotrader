@@ -855,6 +855,87 @@ async def _jarvis_daily_plan():
         logger.error(f"작전 수립 오류: {e}")
 
 
+async def _score_journal() -> str:
+    """오늘의 판단(SKIP/EXECUTE)을 당일 종가로 채점 → 요약 반환"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, symbol, name, action, jarvis_decision, price
+                FROM trade_journal
+                WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                  AND bot='stock_trader' AND eval_at IS NULL AND price > 0
+            """)
+        if not rows:
+            return ""
+        token = await get_kis_token()
+        if not token:
+            return ""
+        import ssl as _ssl
+        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+        scored = {"exec_hit": 0, "exec_miss": 0, "skip_good": 0, "skip_missed": 0}
+        lines = []
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            # 종목별 종가 1회 조회
+            closes = {}
+            for sym in {r["symbol"] for r in rows}:
+                try:
+                    pr = await sess.get(
+                        f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                        headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                                 "appsecret": config.kis_app_secret,
+                                 "tr_id": "FHKST01010100", "custtype": "P"},
+                        params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": sym},
+                        timeout=_aiohttp.ClientTimeout(total=8))
+                    o = (await pr.json()).get("output", {})
+                    closes[sym] = int(o.get("stck_prpr", 0) or 0)
+                except Exception:
+                    closes[sym] = 0
+                await asyncio.sleep(0.3)
+        async with db_pool.acquire() as conn:
+            for r in rows:
+                close = closes.get(r["symbol"], 0)
+                if close <= 0:
+                    continue
+                rate = (close - float(r["price"])) / float(r["price"]) * 100
+                await conn.execute("""
+                    UPDATE trade_journal SET eval_price=$1, eval_pnl_rate=$2, eval_at=NOW()
+                    WHERE id=$3
+                """, float(close), round(rate, 2), r["id"])
+                dec = r["jarvis_decision"]
+                nm = r["name"] or r["symbol"]
+                if dec == "EXECUTE" and r["action"] == "buy":
+                    if rate >= 0.5: scored["exec_hit"] += 1; tag = "✅적중"
+                    else: scored["exec_miss"] += 1; tag = "❌빗나감"
+                    lines.append(f"매수 {nm}: 신호가 대비 {rate:+.1f}% {tag}")
+                elif dec == "SKIP" and r["action"] == "buy":
+                    if rate >= 1.0: scored["skip_missed"] += 1; tag = "⚠️기회놓침"
+                    else: scored["skip_good"] += 1; tag = "✅잘거름"
+                    lines.append(f"SKIP {nm}: 이후 {rate:+.1f}% {tag}")
+        total = sum(scored.values())
+        if total == 0:
+            return ""
+        summary = (f"📝 오늘 판단 채점 ({total}건)\n"
+                   f"매수 적중 {scored['exec_hit']} / 빗나감 {scored['exec_miss']}\n"
+                   f"SKIP 잘거름 {scored['skip_good']} / 기회놓침 {scored['skip_missed']}\n"
+                   + "\n".join(lines[:8]))
+        try:
+            await redis_client.setex("jarvis:score_today", 3600 * 6, summary)
+        except Exception:
+            pass
+        await _send_telegram(summary)
+        logger.info("📝 판단 채점 완료: %s건", total)
+        return summary
+    except Exception as e:
+        logger.error(f"판단 채점 오류: {e}")
+        return ""
+
+
+async def _score_then_review():
+    """마감 후: 채점 → 복기 (채점 결과를 복기에 반영)"""
+    await _score_journal()
+    await _jarvis_evening_review()
+
+
 async def _jarvis_evening_review():
     """저녁 복기 → 교훈을 jarvis_memory에 저장 (내일 작전에 반영)"""
     try:
@@ -881,6 +962,13 @@ async def _jarvis_evening_review():
         except Exception:
             pass
 
+        score_txt = ""
+        try:
+            sc = await redis_client.get("jarvis:score_today")
+            score_txt = sc if isinstance(sc, str) else (sc or b"").decode()
+        except Exception:
+            pass
+
         prompt = f"""너는 한국 주식 단타 트레이더다. 오늘 매매를 복기하라.
 
 [아침 작전]
@@ -888,6 +976,9 @@ async def _jarvis_evening_review():
 
 [오늘 매매 기록] (총 손익 {total_pnl:+,.0f}원)
 {t_txt}
+
+[오늘 판단 채점표]
+{score_txt or '(채점 없음)'}
 
 내일 매매에 반영할 핵심 교훈을 딱 1~2줄로 작성하라. 형식: "교훈: ..." """
 
@@ -949,7 +1040,7 @@ async def _jarvis_scheduler():
             await _jarvis_auto_analysis()
             asyncio.create_task(_manual_collect())  # 장 마감 후 뉴스 수집
             asyncio.create_task(_jarvis_closing_report())  # 마감 리포트 + 내일 전략
-            asyncio.create_task(_jarvis_evening_review())  # 복기 → 교훈 저장
+            asyncio.create_task(_score_then_review())  # 채점 → 복기 → 교훈 저장
 
 
 @app.on_event("shutdown")
@@ -995,6 +1086,16 @@ async def run_daily_plan_now():
         cached = await redis_client.get("jarvis:daily_plan")
         plan = cached if isinstance(cached, str) else (cached or b"").decode()
         return {"success": bool(plan), "plan": plan[:1500]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.api_route("/api/journal/score/run", methods=["GET", "POST"])
+async def run_score_now():
+    """오늘 판단 채점 수동 실행"""
+    try:
+        summary = await _score_journal()
+        return {"success": bool(summary), "summary": summary or "채점 대상 없음"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

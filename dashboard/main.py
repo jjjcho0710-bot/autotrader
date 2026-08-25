@@ -1092,6 +1092,7 @@ async def _jarvis_scheduler():
         if dtime(21, 0) <= cur_time <= dtime(21, 5) and last_daily_report != today:
             last_daily_report = today
             asyncio.create_task(_jarvis_unified_daily_report())
+            asyncio.create_task(_summarize_old_chats())  # 장기 기억 이관 (하루 1일치)
 
         if now.weekday() >= 5:
             continue
@@ -3301,6 +3302,121 @@ async def _handle_setting_command(user_msg: str):
             f"적용: {', '.join(applied)} (봇이 1분 내 자동 반영, 배포 없음)")
 
 
+async def _apply_strategy_settings(changes: dict) -> list:
+    """전략 설정 변경 공용 적용기 (검증된 changes만 받음). 반환: 적용 전략명"""
+    applied = []
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, is_active, params FROM strategy_config WHERE bot='stock_trader'")
+        for r in rows:
+            params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
+            for k, v in changes.items():
+                old = params.get(k)
+                if k in ("stop_loss", "take_profit") and old is not None and abs(float(old)) <= 1:
+                    params[k] = v / 100.0
+                else:
+                    params[k] = v
+            await conn.execute(
+                "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
+                json.dumps(params), r["id"])
+            try:
+                await redis_client.publish("strategy:update", json.dumps({
+                    "bot": "stock_trader", "name": r["name"],
+                    "is_active": r["is_active"], "params": params}))
+            except Exception:
+                pass
+            applied.append(r["name"])
+    return applied
+
+
+def _validate_setting(k: str, v) -> tuple:
+    """(ok, normalized_value or 오류메시지)"""
+    try:
+        v = float(v)
+    except Exception:
+        return False, f"{k} 값이 숫자가 아님"
+    if k == "stop_loss":
+        v = -abs(v)
+        return ((-15 <= v <= -0.5), v if -15 <= v <= -0.5 else "손절 허용범위 -0.5~-15%")
+    if k == "take_profit":
+        v = abs(v)
+        return ((0.5 <= v <= 20), v if 0.5 <= v <= 20 else "익절 허용범위 0.5~20%")
+    if k == "buy_amount":
+        return ((50000 <= v <= 5000000), int(v) if 50000 <= v <= 5000000 else "매수금액 허용범위 5만~500만원")
+    return False, f"알 수 없는 설정 {k}"
+
+
+async def _search_past_chats(query: str, limit: int = 5) -> str:
+    """과거 대화 키워드 검색 → 관련 대화 발췌 ('그때 그거' 기억)"""
+    try:
+        import re as _re
+        words = [w for w in _re.findall(r"[가-힣A-Za-z0-9]{2,}", query)
+                 if w not in ("자비스", "그때", "저번", "예전", "우리", "했던", "말한", "얘기")][:4]
+        if not words:
+            return ""
+        conds = " OR ".join(f"content ILIKE ${i+1}" for i in range(len(words)))
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(f"""
+                SELECT role, content, created_at FROM jarvis_memory
+                WHERE ({conds}) AND created_at < NOW() - INTERVAL '10 minutes'
+                ORDER BY created_at DESC LIMIT {int(limit)}
+            """, *[f"%{w}%" for w in words])
+        if not rows:
+            return ""
+        lines = []
+        for r in reversed(rows):
+            who = "주인" if r["role"] == "user" else "자비스"
+            lines.append(f"[{r['created_at'].strftime('%m/%d')}] {who}: {r['content'][:150]}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+async def _get_chat_summaries(limit: int = 3) -> str:
+    """장기 기억: 과거 대화 요약본"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT content FROM jarvis_notes
+                WHERE category='chat_summary' ORDER BY created_at DESC LIMIT $1""", limit)
+        return "\n".join(r["content"] for r in rows) if rows else ""
+    except Exception:
+        return ""
+
+
+async def _summarize_old_chats():
+    """7일 지난 대화를 일 단위로 요약해 장기 기억으로 이관"""
+    try:
+        async with db_pool.acquire() as conn:
+            day = await conn.fetchval("""
+                SELECT DATE(created_at AT TIME ZONE 'Asia/Seoul') FROM jarvis_memory
+                WHERE created_at < NOW() - INTERVAL '7 days'
+                ORDER BY created_at LIMIT 1""")
+            if not day:
+                return
+            rows = await conn.fetch("""
+                SELECT role, content FROM jarvis_memory
+                WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
+                ORDER BY created_at LIMIT 200""", day)
+        if not rows:
+            return
+        convo = "\n".join(f"{'주인' if r['role']=='user' else '자비스'}: {r['content'][:200]}" for r in rows)[:6000]
+        summary = await _ask_openwebui(
+            f"다음은 {day} 하루의 주인-자비스 대화다. 나중에 참조할 핵심(결정사항, 지시, 전략 논의, 중요 사실)만 "
+            f"500자 이내로 요약하라. 잡담은 제외.\n\n{convo}", session_id="summarizer")
+        if summary and not summary.startswith("❌"):
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO jarvis_notes (category, content) VALUES ('chat_summary', $1)",
+                    f"[{day}] {summary.strip()[:600]}")
+                await conn.execute("""
+                    DELETE FROM jarvis_memory
+                    WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1""", day)
+            logger.info(f"🧠 대화 요약 이관 완료: {day}")
+    except Exception as e:
+        logger.error(f"대화 요약 오류: {e}")
+
+
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
     """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
@@ -3338,13 +3454,74 @@ async def jarvis_chat(body: dict):
 
         # 포트폴리오 컨텍스트 추가
         portfolio_ctx = await get_portfolio_context()
-        full_msg = (f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}\n\n"
+
+        # 기억 주입: 관련 과거 대화 + 장기 기억 요약 + 활성 지시
+        past_ctx = await _search_past_chats(user_msg)
+        summaries = await _get_chat_summaries()
+        directives_now = await _get_active_directives()
+        memory_block = ""
+        if summaries:
+            memory_block += f"\n[장기 기억 — 과거 대화 요약]\n{summaries}\n"
+        if past_ctx:
+            memory_block += f"\n[관련 과거 대화 발췌]\n{past_ctx}\n"
+        if directives_now:
+            memory_block += f"\n[현재 활성 지시사항]\n{directives_now}\n"
+
+        full_msg = (f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}\n{memory_block}\n"
                     "[시스템 주의] 너는 이 대화에서 직접 주문을 실행할 수 없다. "
                     "매매는 사용자가 '종목명(또는 코드) N주 매수/매도' 형식으로 지시하면 시스템이 직접 체결하고 결과를 표시한다. "
-                    "네가 '매수 완료/체결'이라고 단정하지 마라. 대신 그 형식으로 지시하라고 안내하라.")
+                    "네가 '매수 완료/체결'이라고 단정하지 마라.\n"
+                    "[액션 프로토콜] 사용자의 말에 앞으로 계속 적용해야 할 지시(매매 원칙·선호·제한)나 "
+                    "전략 설정 변경(손절%/익절%/매수금액)이 담겨 있으면, 자연스러운 답변 후 마지막 줄에 딱 한 줄로:\n"
+                    '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}}\n'
+                    "형식으로 출력하라. settings 키는 stop_loss/take_profit/buy_amount만 가능. "
+                    "해당 없으면 [[ACTION]] 줄을 출력하지 마라. 일회성 질문·잡담엔 절대 출력 금지.")
 
         # Open-WebUI 통해서 호출 (텔레그램과 같은 경로)
         reply = await _ask_openwebui(full_msg, session_id=session_id)
+
+        # 액션 프로토콜 파싱: 자연어 지시/설정을 자동 저장·적용
+        try:
+            import re as _re
+            m = _re.search(r"\[\[ACTION\]\]\s*(\{.*\})", reply, _re.DOTALL)
+            if m:
+                action_raw = m.group(1).strip()
+                reply = reply[:m.start()].rstrip()  # 표시용 답변에서 액션 줄 제거
+                try:
+                    action = json.loads(action_raw)
+                except Exception:
+                    action = {}
+                notes = []
+                # 지시 저장
+                d = (action.get("directive") or "").strip()
+                if d and len(d) >= 4:
+                    async with db_pool.acquire() as conn:
+                        await conn.execute("""CREATE TABLE IF NOT EXISTS jarvis_notes (
+                            id SERIAL PRIMARY KEY, category VARCHAR(30) DEFAULT 'note',
+                            content TEXT NOT NULL, is_active BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMPTZ DEFAULT NOW())""")
+                        did = await conn.fetchval(
+                            "INSERT INTO jarvis_notes (category, content, is_active) "
+                            "VALUES ('directive', $1, TRUE) RETURNING id", d[:300])
+                    notes.append(f"📌 지시 #{did} 저장됨 (해제: '지시 취소 {did}')")
+                # 설정 적용
+                st = action.get("settings") or {}
+                valid = {}
+                for k, v in st.items():
+                    ok, nv = _validate_setting(k, v)
+                    if ok:
+                        valid[k] = nv
+                    else:
+                        notes.append(f"⚠️ {k} 변경 거부: {nv}")
+                if valid:
+                    applied = await _apply_strategy_settings(valid)
+                    desc = ", ".join(f"{k}={v}" for k, v in valid.items())
+                    notes.append(f"⚙️ 설정 적용됨 [{desc}] → {', '.join(applied)}")
+                    await _send_telegram(f"⚙️ 전략 설정 변경 (대화 인식)\n{desc}")
+                if notes:
+                    reply = reply + "\n\n" + "\n".join(notes)
+        except Exception as ae:
+            logger.warning(f"액션 파싱 오류(무시): {ae}")
 
         logger.info(f"Jarvis 웹 응답: {reply[:100]}...")
         return {"success": True, "reply": reply, "context_used": True}

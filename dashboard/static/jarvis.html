@@ -929,6 +929,12 @@ setInterval(checkConnection, 60000);
 .bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
+/* jarvis 채팅: 입력창을 탭바 위로 (겹침 방지) */
+@media (max-width: 768px) {
+  .input-area { margin-bottom:calc(56px + env(safe-area-inset-bottom)) !important; }
+  body.kb-open .input-area { margin-bottom:0 !important; }  /* 키보드 열리면 탭바 숨고 입력창 하단 밀착 */
+  body { padding-bottom:0 !important; }  /* jarvis는 flex 레이아웃이라 body 패딩 불필요 */
+}
 </style>
 </body>
 </html>

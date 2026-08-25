@@ -3334,16 +3334,28 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
             "messages": messages,  # Open-WebUI 모델 프롬프트 사용 (중복 제거)
             "stream": False,
         }
-        async with http.ClientSession() as session:
-            async with session.post(
-                f"{openwebui_url}/api/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=http.ClientTimeout(total=60),
-            ) as res:
-                data = await res.json()
-                if "choices" not in data or not data["choices"]:
-                    raise Exception(f"응답 없음: {data.get('error', data)}")
+        data = None
+        last_err = None
+        for _attempt in range(2):  # 1회 재시도
+            try:
+                async with http.ClientSession() as session:
+                    async with session.post(
+                        f"{openwebui_url}/api/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        timeout=http.ClientTimeout(total=90),
+                    ) as res:
+                        data = await res.json()
+                if data and data.get("choices"):
+                    break
+                last_err = Exception(f"응답 없음: {data.get('error', data) if data else 'no data'}")
+            except Exception as _e:
+                last_err = _e
+                await asyncio.sleep(2)
+        if not data or not data.get("choices"):
+            raise last_err or Exception("응답 없음")
+        if True:
+            if True:
                 reply = data["choices"][0]["message"]["content"]
 
                 # 대화 히스토리 저장
@@ -4081,6 +4093,32 @@ async def jarvis_signal(request: Request):
         except Exception:
             pass
 
+        # 1-2. 오늘 이 종목에 대한 내 판단 이력 (기회놓침 반복 방지)
+        self_history = ""
+        try:
+            async with db_pool.acquire() as conn:
+                hist = await conn.fetch("""
+                    SELECT jarvis_decision, price, ts
+                    FROM trade_journal
+                    WHERE symbol=$1 AND bot=$2
+                      AND DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                    ORDER BY ts
+                """, symbol, bot)
+            if hist:
+                skips = [h for h in hist if h["jarvis_decision"] == "SKIP"]
+                first_price = float(hist[0]["price"] or 0)
+                drift = ((float(price) - first_price) / first_price * 100) if first_price > 0 else 0
+                self_history = (
+                    f"\n[오늘 이 종목에 대한 내 판단 이력]\n"
+                    f"- 오늘 판단 {len(hist)}회 (SKIP {len(skips)}회)\n"
+                    f"- 첫 판단가 {first_price:,.0f}원 → 현재가 {price:,.0f}원 ({drift:+.1f}%)\n"
+                )
+                if len(skips) >= 2 and drift >= 1.0:
+                    self_history += ("⚠️ 주의: 반복 SKIP 중 가격이 계속 상승. 추세가 확인되면 "
+                                     "과거 SKIP에 얽매이지 말고 재평가하라. 놓친 기회의 반복은 손실과 같다.\n")
+        except Exception:
+            pass
+
         # 2. Jarvis에게 분석 요청 (DB 데이터 포함)
         analysis_prompt = f"""[매매 신호 발생]
 종목: {name}({symbol})
@@ -4093,7 +4131,7 @@ async def jarvis_signal(request: Request):
 
 [오늘의 작전]
 {daily_plan or '(작전 없음 — 일반 기준으로 판단)'}
-
+{self_history}
 [현재 포트폴리오 현황]
 {ctx}
 

@@ -165,6 +165,14 @@ class StockTrader:
 
             if not (MARKET_OPEN <= cur_time <= MARKET_CLOSE):
                 logger.info(f"🕐 장외 시간 [{cur_time.strftime('%H:%M')}] — 대기")
+                # 장외에도 상태 하트비트 (대시보드 '이상' 오표시 방지)
+                try:
+                    await cache.set_bot_status("stock_trader", {
+                        "status": "running", "last_cycle": datetime.now().isoformat(),
+                        "positions": len(self.positions), "strategy": "장외대기",
+                    })
+                except Exception:
+                    pass
                 await asyncio.sleep(60)
                 continue
 

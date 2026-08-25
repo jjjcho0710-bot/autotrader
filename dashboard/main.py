@@ -994,6 +994,78 @@ async def _jarvis_evening_review():
         logger.error(f"복기 오류: {e}")
 
 
+async def _jarvis_unified_daily_report():
+    """관리자 자비스 통합 일일보고: 코인봇+주식봇 보고 종합 → 텔레그램"""
+    try:
+        today = datetime.now(KST).date()
+        async with db_pool.acquire() as conn:
+            # 두 봇의 오늘 매매 보고
+            stock_trades = await conn.fetch("""
+                SELECT symbol, side, amount, pnl, strategy FROM trade_history
+                WHERE bot='stock_trader' AND DATE(created_at AT TIME ZONE 'Asia/Seoul')=$1
+                ORDER BY created_at""", today)
+            crypto_trades = await conn.fetch("""
+                SELECT symbol, side, amount, pnl, strategy FROM trade_history
+                WHERE bot='crypto_trader' AND DATE(created_at AT TIME ZONE 'Asia/Seoul')=$1
+                ORDER BY created_at""", today)
+            journal = await conn.fetchrow("""
+                SELECT COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE jarvis_decision='EXECUTE') AS ex,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP') AS sk
+                FROM trade_journal
+                WHERE DATE(ts AT TIME ZONE 'Asia/Seoul')=$1""", today)
+
+        def _fmt(trades):
+            if not trades:
+                return "매매 없음", 0.0
+            pnl = sum(float(t["pnl"] or 0) for t in trades)
+            buys = sum(1 for t in trades if t["side"] == "BUY")
+            sells = len(trades) - buys
+            lines = "\n".join(
+                f"  · {t['side']} {t['symbol'].replace('KRW-','')} "
+                f"{float(t['amount']):,.0f}원"
+                + (f" ({float(t['pnl']):+,.0f}원)" if t["pnl"] is not None else "")
+                for t in trades[:6])
+            more = f"\n  ...외 {len(trades)-6}건" if len(trades) > 6 else ""
+            return f"매수 {buys} / 매도 {sells} (손익 {pnl:+,.0f}원)\n{lines}{more}", pnl
+
+        stock_txt, stock_pnl = _fmt(stock_trades)
+        crypto_txt, crypto_pnl = _fmt(crypto_trades)
+        total_pnl = stock_pnl + crypto_pnl
+
+        raw = (f"[주식봇 보고]\n{stock_txt}\n\n"
+               f"[코인봇 보고]\n{crypto_txt}\n\n"
+               f"[자비스 판단 활동] 판단 {journal['total']}건 (실행 {journal['ex']} / 보류 {journal['sk']})\n"
+               f"[오늘 총 손익] {total_pnl:+,.0f}원")
+
+        # 자비스 총평 (AI 1회)
+        comment = ""
+        try:
+            reply = await _ask_openwebui(
+                f"너는 트레이딩 시스템 총괄 관리자다. 아래 두 봇의 오늘 보고를 보고 "
+                f"주인에게 전할 총평을 2~3문장으로 작성하라. 솔직하고 간결하게.\n\n{raw}",
+                session_id="daily_report")
+            if reply and not reply.startswith("❌"):
+                comment = f"\n\n💬 자비스 총평:\n{reply.strip()[:400]}"
+        except Exception:
+            pass
+
+        msg = (f"📊 <b>자비스 일일보고</b> [{today.strftime('%m/%d')}]\n\n{raw}{comment}")
+        await _send_telegram(msg)
+        logger.info("📊 통합 일일보고 발송 완료")
+    except Exception as e:
+        logger.error(f"통합 일일보고 오류: {e}")
+
+
+@app.api_route("/api/jarvis/daily-report/run", methods=["GET", "POST"])
+async def run_daily_report_now():
+    try:
+        await _jarvis_unified_daily_report()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -1001,6 +1073,7 @@ async def _jarvis_scheduler():
     logger.info("🕐 Jarvis 스케줄러 시작")
     last_morning = None
     last_closing = None
+    last_daily_report = None
 
     while True:
         await asyncio.sleep(60)
@@ -1009,6 +1082,11 @@ async def _jarvis_scheduler():
         now = datetime.now(KST)
         today = now.date()
         cur_time = now.time().replace(tzinfo=None)
+
+        # 통합 일일보고 (매일 21:00, 주말 포함 — 코인 반영)
+        if dtime(21, 0) <= cur_time <= dtime(21, 5) and last_daily_report != today:
+            last_daily_report = today
+            asyncio.create_task(_jarvis_unified_daily_report())
 
         if now.weekday() >= 5:
             continue

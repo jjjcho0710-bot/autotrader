@@ -3606,8 +3606,60 @@ async def _typing_action(chat_id: str, token: str = None):
         pass
 
 
+async def _store_notification(text: str):
+    """시스템 알림센터 저장 (배지용)"""
+    try:
+        import re as _re
+        clean = _re.sub(r"<[^>]+>", "", text or "").strip()
+        if not clean:
+            return
+        title = clean.split("\n")[0][:80]
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id SERIAL PRIMARY KEY,
+                    title VARCHAR(120), body TEXT,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )""")
+            await conn.execute(
+                "INSERT INTO notifications (title, body) VALUES ($1, $2)",
+                title, clean[:1500])
+    except Exception as e:
+        logger.debug(f"알림 저장 실패(무시): {e}")
+
+
+@app.get("/api/notifications")
+async def get_notifications(limit: int = 30):
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, title, body, is_read, created_at FROM notifications "
+                "ORDER BY created_at DESC LIMIT $1", limit)
+            unread = await conn.fetchval(
+                "SELECT COUNT(*) FROM notifications WHERE is_read=FALSE")
+        return {"success": True, "unread": unread,
+                "data": [dict(r) | {"created_at": r["created_at"].isoformat()} for r in rows]}
+    except Exception as e:
+        return {"success": False, "error": str(e), "unread": 0, "data": []}
+
+
+@app.post("/api/notifications/read")
+async def mark_notifications_read():
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE notifications SET is_read=TRUE WHERE is_read=FALSE")
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 async def _send_telegram(text: str, chat_id: str = None, token: str = None):
-    """텔레그램 메시지 전송 (내부용)"""
+    """텔레그램 메시지 전송 (내부용) + 시스템 알림센터 저장"""
+    try:
+        await _store_notification(text)
+    except Exception:
+        pass
     _token = token or config.TELEGRAM_TOKEN
     cid = chat_id or config.TELEGRAM_CHAT_ID
     if not _token or not cid:

@@ -929,11 +929,13 @@ setInterval(checkConnection, 60000);
 .bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
-/* jarvis 채팅: 입력창을 탭바 위로 (겹침 방지) */
+/* jarvis 채팅: 메인 영역을 탭바 높이만큼 축소 → 입력창이 탭바 바로 위에 밀착 */
 @media (max-width: 768px) {
-  .input-area { margin-bottom:calc(56px + env(safe-area-inset-bottom)) !important; }
-  body.kb-open .input-area { margin-bottom:0 !important; }  /* 키보드 열리면 탭바 숨고 입력창 하단 밀착 */
-  body { padding-bottom:0 !important; }  /* jarvis는 flex 레이아웃이라 body 패딩 불필요 */
+  body { padding-bottom:0 !important; height:100dvh !important; }
+  .main { height:calc(100dvh - 56px - env(safe-area-inset-bottom)) !important;
+          padding-bottom:0 !important; }
+  .input-area { margin-bottom:0 !important; }
+  body.kb-open .main { height:100dvh !important; }  /* 키보드 시 탭바 숨음 → 전체 사용 */
 }
 </style>
 </body>

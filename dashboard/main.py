@@ -821,6 +821,7 @@ async def _jarvis_daily_plan():
                 "SELECT symbol, name, reason FROM watchlist WHERE is_active=TRUE LIMIT 20")
         wl_txt = "\n".join(f"- {r['name']}({r['symbol']}): {r['reason'] or ''}" for r in wl) or "(없음)"
         lessons = await _get_jarvis_lessons()
+        directives_txt = await _get_active_directives()
         now_str = datetime.now(KST).strftime("%m/%d")
 
         prompt = f"""너는 한국 주식 단타 전문 트레이더다. 오늘({now_str}) 장중 매매 작전을 수립하라.
@@ -830,6 +831,9 @@ async def _jarvis_daily_plan():
 
 [최근 복기 교훈]
 {lessons}
+
+[주인 지시사항 — 작전에 반드시 반영]
+{directives_txt or '(없음)'}
 
 
 [매매 규칙 — 반드시 준수]
@@ -3169,6 +3173,127 @@ async def _handle_trade_command(user_msg: str):
         return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error', '알 수 없음')}"
 
 
+async def _get_active_directives(limit: int = 10) -> str:
+    """활성 지시사항 텍스트 (판단·작전 프롬프트 주입용)"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE jarvis_memory ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+            rows = await conn.fetch("""
+                SELECT id, content FROM jarvis_memory
+                WHERE category='directive' AND is_active=TRUE
+                ORDER BY created_at DESC LIMIT $1""", limit)
+        if not rows:
+            return ""
+        return "\n".join(f"- (#{r['id']}) {r['content']}" for r in rows)
+    except Exception:
+        return ""
+
+
+async def _handle_directive_command(user_msg: str):
+    """지시사항 저장/목록/취소. 해당 없으면 None"""
+    import re as _re
+    msg = user_msg.strip()
+
+    # 목록
+    if msg in ("지시 목록", "지시목록", "지시사항 목록", "지시사항"):
+        txt = await _get_active_directives(20)
+        return f"📌 활성 지시사항:\n{txt}" if txt else "📌 활성 지시사항이 없습니다."
+
+    # 취소: "지시 취소 12" / "지시 삭제 12"
+    m = _re.match(r"지시\s*(취소|삭제)\s*#?(\d+)", msg)
+    if m:
+        did = int(m.group(2))
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE jarvis_memory SET is_active=FALSE WHERE id=$1 AND category='directive'", did)
+        return f"🗑️ 지시 #{did} 를 해제했습니다."
+
+    # 저장: "지시: ..." / "지시 ..." / "앞으로 ..." / "내일부터 ..."
+    directive = None
+    if msg.startswith("지시:"):
+        directive = msg[3:].strip()
+    elif msg.startswith("지시 ") and len(msg) > 4:
+        directive = msg[3:].strip()
+    elif msg.startswith(("앞으로 ", "내일부터 ", "오늘부터 ")):
+        directive = msg
+    if directive and len(directive) >= 4:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE jarvis_memory ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+            did = await conn.fetchval(
+                "INSERT INTO jarvis_memory (category, content, is_active) VALUES ('directive', $1, TRUE) RETURNING id",
+                directive[:300])
+        return (f"📌 지시 #{did} 저장 완료 — 다음 매매 판단부터 즉시 반영됩니다.\n"
+                f"\"{directive[:100]}\"\n(해제: '지시 취소 {did}')")
+    return None
+
+
+async def _handle_setting_command(user_msg: str):
+    """전략 설정 실시간 변경 (배포 없음). 해당 없으면 None"""
+    import re as _re
+    msg = user_msg.replace(",", "").strip()
+
+    # 패턴: 손절 -7% / 익절 3% / 매수금액 100만원(또는 1000000원) + 변경/바꿔/설정/해줘
+    if not _re.search(r"(변경|바꿔|바꾸|설정|해줘|올려|내려|조정)", msg):
+        return None
+    m_sl = _re.search(r"손절[을를]?\s*(-?\d+(?:\.\d+)?)\s*%", msg)
+    m_tp = _re.search(r"익절[을를]?\s*(\+?\d+(?:\.\d+)?)\s*%", msg)
+    m_amt = _re.search(r"매수\s*금액[을를]?\s*(\d+(?:\.\d+)?)\s*(만원|원)", msg)
+    if not (m_sl or m_tp or m_amt):
+        return None
+
+    changes = {}
+    if m_sl:
+        v = -abs(float(m_sl.group(1)))
+        if not (-15 <= v <= -0.5):
+            return f"⚠️ 손절 {v}%는 허용 범위(-0.5% ~ -15%)를 벗어나 적용하지 않았습니다."
+        changes["stop_loss"] = v
+    if m_tp:
+        v = abs(float(m_tp.group(1)))
+        if not (0.5 <= v <= 20):
+            return f"⚠️ 익절 {v}%는 허용 범위(0.5% ~ 20%)를 벗어나 적용하지 않았습니다."
+        changes["take_profit"] = v
+    if m_amt:
+        v = float(m_amt.group(1)) * (10000 if m_amt.group(2) == "만원" else 1)
+        if not (50000 <= v <= 5000000):
+            return f"⚠️ 매수금액 {v:,.0f}원은 허용 범위(5만~500만원)를 벗어나 적용하지 않았습니다."
+        changes["buy_amount"] = int(v)
+
+    applied = []
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, is_active, params FROM strategy_config WHERE bot='stock_trader'")
+        for r in rows:
+            params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
+            for k, v in changes.items():
+                # 기존 단위 관례 유지 (|기존값|<=1 이면 소수 단위로 저장)
+                old = params.get(k)
+                if k in ("stop_loss", "take_profit") and old is not None and abs(float(old)) <= 1:
+                    params[k] = v / 100.0
+                else:
+                    params[k] = v
+            await conn.execute(
+                "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
+                json.dumps(params), r["id"])
+            try:
+                await redis_client.publish("strategy:update", json.dumps({
+                    "bot": "stock_trader", "name": r["name"],
+                    "is_active": r["is_active"], "params": params}))
+            except Exception:
+                pass
+            applied.append(r["name"])
+
+    desc = " · ".join(
+        [f"손절 {changes['stop_loss']}%" if "stop_loss" in changes else "",
+         f"익절 {changes['take_profit']}%" if "take_profit" in changes else "",
+         f"매수금액 {changes['buy_amount']:,}원" if "buy_amount" in changes else ""])
+    desc = " · ".join([d for d in desc.split(" · ") if d])
+    await _send_telegram(f"⚙️ 전략 설정 변경 (채팅 지시)\n{desc}\n적용 전략: {', '.join(applied)}")
+    return (f"⚙️ 설정 변경 완료 — {desc}\n"
+            f"적용: {', '.join(applied)} (봇이 1분 내 자동 반영, 배포 없음)")
+
+
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
     """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
@@ -3179,6 +3304,16 @@ async def jarvis_chat(body: dict):
         return {"success": False, "error": "메시지가 없어요"}
 
     try:
+        # 지시사항 저장/목록/취소
+        directive_result = await _handle_directive_command(user_msg)
+        if directive_result:
+            return {"success": True, "reply": directive_result, "context_used": False}
+
+        # 전략 설정 실시간 변경 (손절/익절/매수금액)
+        setting_result = await _handle_setting_command(user_msg)
+        if setting_result:
+            return {"success": True, "reply": setting_result, "context_used": False}
+
         # 감시 종목 추가/삭제 명령 감지 (Open-WebUI 거치지 않고 직접 처리)
         action_result = await _handle_watchlist_command(user_msg)
         if action_result:
@@ -4171,6 +4306,9 @@ async def jarvis_signal(request: Request):
         except Exception:
             pass
 
+        # 1-1b. 주인 지시사항 (최우선)
+        directives = await _get_active_directives()
+
         # 1-2. 오늘 이 종목에 대한 내 판단 이력 (기회놓침 반복 방지)
         self_history = ""
         try:
@@ -4209,6 +4347,9 @@ async def jarvis_signal(request: Request):
 
 [오늘의 작전]
 {daily_plan or '(작전 없음 — 일반 기준으로 판단)'}
+
+[주인 지시사항 — 최우선 준수]
+{directives or '(없음)'}
 {self_history}
 [현재 포트폴리오 현황]
 {ctx}

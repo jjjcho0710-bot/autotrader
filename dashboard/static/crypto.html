@@ -327,5 +327,25 @@ loadAll();
 setInterval(loadPositions,10000);
 setInterval(loadWatchlist,5000);
 </script>
+
+<style id="unified-nav">
+.bottom-nav, .nav {
+  display:flex !important; position:fixed !important; bottom:0 !important;
+  left:0 !important; right:0 !important; z-index:50 !important;
+  background:#131920 !important; border-top:1px solid #232d3a !important;
+  padding:0 0 env(safe-area-inset-bottom) 0 !important; margin:0 !important;
+  height:calc(56px + env(safe-area-inset-bottom)) !important;
+}
+.bottom-nav a, .nav a, .bn-item {
+  flex:1 !important; display:flex !important; flex-direction:column !important;
+  align-items:center !important; justify-content:center !important;
+  gap:2px !important; padding:0 !important; margin:0 !important;
+  font-size:11px !important; font-weight:600 !important;
+  color:#7d8896 !important; text-decoration:none !important; line-height:1.2 !important;
+}
+.bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
+.bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
+body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
+</style>
 </body>
 </html>

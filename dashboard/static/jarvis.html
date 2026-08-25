@@ -566,8 +566,7 @@ function showTyping() {
   messages.scrollTop = messages.scrollHeight;
 }
 function hideTyping() {
-  const el = document.getElementById('typing-indicator');
-  if (el) el.remove();
+  document.querySelectorAll('#typing-indicator').forEach(el => el.remove());
 }
 
 // 메시지 전송
@@ -612,6 +611,7 @@ async function sendMessage(fromVoice = false) {
   input.value = '';
   input.style.height = 'auto';
   addMessage('user', text);
+  hideTyping();  // 이전 잔여 로딩 버블 제거 (안전장치)
   showTyping();
   isLoading = true;
   document.getElementById('send-btn').disabled = true;

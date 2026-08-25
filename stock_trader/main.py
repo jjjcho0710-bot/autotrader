@@ -312,6 +312,19 @@ class StockTrader:
                         if pnl_rate <= -3.0 or pnl_rate >= 7.0:
                             alert_cooldown[symbol] = now_ts
                             direction = "급락" if pnl_rate < 0 else "급등"
+                            if pnl_rate <= -3.0:
+                                # 손실 매도는 상의 원칙: 자동 매도 없이 알림만
+                                try:
+                                    from common.telegram import send_stock
+                                    nm = pos.get("name", symbol)
+                                    await send_stock(
+                                        f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
+                                        f"자동 매도하지 않습니다. 매도 원하시면 "
+                                        f"'{nm} 전량 매도' 지시해주세요."
+                                    )
+                                except Exception:
+                                    pass
+                                continue
                             logger.info(f"⚡ [{symbol}] {direction} 감지: {pnl_rate:+.1f}% → Jarvis 판단")
                             await self._jarvis_exit_check(
                                 symbol=symbol,
@@ -439,26 +452,30 @@ class StockTrader:
             pnl = (cur_price - avg_price) * qty
             pnl_rate = (cur_price - avg_price) / avg_price * 100
 
-            # 손절 체크
+            # 손절 체크 — 자동 실행 금지, 상의(알림) 후 수동 결정
             if default_strategy.check_stop_loss(avg_price, cur_price):
-                result = await self.trader.sell(symbol, cur_price, qty)
-                if result["success"]:
-                    await db.insert_trade(
-                        bot="stock_trader", asset_type="stock",
-                        symbol=symbol, side="SELL",
-                        price=cur_price, quantity=qty,
-                        amount=cur_price * qty,
-                        strategy=f"{strat_name}_손절", pnl=pnl,
-                    )
-                    await self._notify_trade(
-                        action="매도", symbol=symbol, name=pos.get("name", symbol),
-                        price=cur_price, qty=qty,
-                        pnl=pnl, pnl_rate=pnl_rate, strategy=f"{strat_name}_손절"
-                    )
-                    self.positions.pop(symbol, None)
+                try:
+                    alert_key = f"stopalert:{symbol}"
+                    prev = await cache.client.get(alert_key)
+                    prev_rate = float(prev) if prev else None
+                    # 첫 도달 또는 -2%p 추가 악화 시 재알림 (기본 30분 쿨다운)
+                    need_alert = prev_rate is None or (pnl_rate <= prev_rate - 2.0)
+                    if need_alert:
+                        await cache.client.setex(alert_key, 1800, str(pnl_rate))
+                        from common.telegram import send_stock
+                        nm = pos.get("name", symbol)
+                        await send_stock(
+                            f"⚠️ <b>{nm}({symbol}) 손절선 도달 {pnl_rate:+.1f}%</b>\n"
+                            f"평단 {avg_price:,.0f} → 현재 {cur_price:,.0f} (손실 {pnl:+,.0f}원)\n"
+                            f"자동 매도하지 않습니다. 매도하려면 자비스에게\n"
+                            f"'{nm} 전량 매도' 라고 지시하세요."
+                        )
+                        logger.info(f"⚠️ 손절 알림(자동매도 안함) [{symbol}] {pnl_rate:+.1f}%")
+                except Exception as e:
+                    logger.warning(f"손절 알림 실패 [{symbol}]: {e}")
                 continue
 
-            # 익절 체크
+            # 익절 체크 (자동 유지)
             if default_strategy.check_take_profit(avg_price, cur_price):
                 result = await self.trader.sell(symbol, cur_price, qty)
                 if result["success"]:

@@ -900,6 +900,17 @@ async function checkConnection() {
 refreshPanel();
 loadHistory();
 checkConnection();
+
+// 대화창 열면 항상 최신 메시지로 스크롤 (복원/히스토리 로드 타이밍 보정)
+function scrollBottom(){
+  const m = document.getElementById('messages');
+  if (m) m.scrollTop = m.scrollHeight;
+}
+scrollBottom();
+setTimeout(scrollBottom, 300);
+setTimeout(scrollBottom, 800);
+setTimeout(scrollBottom, 1500);
+window.addEventListener('pageshow', () => setTimeout(scrollBottom, 100));
 setInterval(refreshPanel, 10000);
 setInterval(checkConnection, 60000);
 </script>

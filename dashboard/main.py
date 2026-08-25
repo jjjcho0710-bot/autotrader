@@ -799,14 +799,15 @@ async def _get_jarvis_lessons(limit: int = 5) -> str:
     try:
         async with db_pool.acquire() as conn:
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS jarvis_memory (
+                CREATE TABLE IF NOT EXISTS jarvis_notes (
                     id SERIAL PRIMARY KEY,
                     category VARCHAR(30) DEFAULT 'note',
                     content TEXT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )""")
             rows = await conn.fetch(
-                "SELECT content FROM jarvis_memory WHERE category='lesson' ORDER BY created_at DESC LIMIT $1",
+                "SELECT content FROM jarvis_notes WHERE category='lesson' ORDER BY created_at DESC LIMIT $1",
                 limit)
         return "\n".join(f"- {r['content']}" for r in rows) if rows else "(아직 없음)"
     except Exception:
@@ -991,7 +992,7 @@ async def _jarvis_evening_review():
             lesson = review.strip()[:300]
             async with db_pool.acquire() as conn:
                 await conn.execute(
-                    "INSERT INTO jarvis_memory (category, content) VALUES ('lesson', $1)", lesson)
+                    "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)", lesson)
             await _send_telegram(f"🌙 자비스 복기\n{lesson}")
             logger.info("🌙 복기 교훈 저장 완료")
     except Exception as e:
@@ -3178,9 +3179,9 @@ async def _get_active_directives(limit: int = 10) -> str:
     try:
         async with db_pool.acquire() as conn:
             await conn.execute(
-                "ALTER TABLE jarvis_memory ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+                "ALTER TABLE jarvis_notes ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
             rows = await conn.fetch("""
-                SELECT id, content FROM jarvis_memory
+                SELECT id, content FROM jarvis_notes
                 WHERE category='directive' AND is_active=TRUE
                 ORDER BY created_at DESC LIMIT $1""", limit)
         if not rows:
@@ -3195,6 +3196,12 @@ async def _handle_directive_command(user_msg: str):
     import re as _re
     msg = user_msg.strip()
 
+    async with db_pool.acquire() as _c:
+        await _c.execute("""CREATE TABLE IF NOT EXISTS jarvis_notes (
+            id SERIAL PRIMARY KEY, category VARCHAR(30) DEFAULT 'note',
+            content TEXT NOT NULL, is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ DEFAULT NOW())""")
+
     # 목록
     if msg in ("지시 목록", "지시목록", "지시사항 목록", "지시사항"):
         txt = await _get_active_directives(20)
@@ -3206,7 +3213,7 @@ async def _handle_directive_command(user_msg: str):
         did = int(m.group(2))
         async with db_pool.acquire() as conn:
             await conn.execute(
-                "UPDATE jarvis_memory SET is_active=FALSE WHERE id=$1 AND category='directive'", did)
+                "UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1 AND category='directive'", did)
         return f"🗑️ 지시 #{did} 를 해제했습니다."
 
     # 저장: "지시: ..." / "지시 ..." / "앞으로 ..." / "내일부터 ..."
@@ -3220,9 +3227,9 @@ async def _handle_directive_command(user_msg: str):
     if directive and len(directive) >= 4:
         async with db_pool.acquire() as conn:
             await conn.execute(
-                "ALTER TABLE jarvis_memory ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+                "ALTER TABLE jarvis_notes ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
             did = await conn.fetchval(
-                "INSERT INTO jarvis_memory (category, content, is_active) VALUES ('directive', $1, TRUE) RETURNING id",
+                "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('directive', $1, TRUE) RETURNING id",
                 directive[:300])
         return (f"📌 지시 #{did} 저장 완료 — 다음 매매 판단부터 즉시 반영됩니다.\n"
                 f"\"{directive[:100]}\"\n(해제: '지시 취소 {did}')")
@@ -4218,7 +4225,7 @@ async def training_summary(days: int = 14):
     try:
         async with db_pool.acquire() as conn:
             lessons = await conn.fetch("""
-                SELECT content, created_at FROM jarvis_memory
+                SELECT content, created_at FROM jarvis_notes
                 WHERE category='lesson' ORDER BY created_at DESC LIMIT 20""")
             daily = await conn.fetch("""
                 SELECT DATE(ts AT TIME ZONE 'Asia/Seoul') AS d,

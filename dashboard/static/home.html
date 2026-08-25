@@ -134,9 +134,11 @@
     display: flex; background: var(--surface); border-top: 1px solid var(--border);
   }
   .nav a {
-    flex: 1; text-align: center; padding: 10px 0; font-size: 11px;
+    flex: 1; display:flex; flex-direction:column; align-items:center; gap:3px;
+    padding: 9px 0 7px; font-size: 11px; font-weight:600;
     color: var(--text-dim); text-decoration: none;
   }
+  .nav-ic { font-size: 21px; line-height:1; }
   .nav a.active { color: var(--accent); }
 </style>
 </head>
@@ -185,10 +187,11 @@
 </div>
 
 <div class="nav">
-  <a href="/" class="active">홈</a>
-  <a href="/strategy">전략</a>
-  <a href="/jarvis.html">자비스</a>
-  <a href="/logs">로그</a>
+  <a href="/" class="active"><span class="nav-ic">⊞</span>홈</a>
+  <a href="/strategy"><span class="nav-ic">⚙️</span>전략</a>
+  <a href="/jarvis.html"><span class="nav-ic">🤖</span>자비스</a>
+  <a href="/training"><span class="nav-ic">🎓</span>트레이닝</a>
+  <a href="/logs"><span class="nav-ic">📋</span>로그</a>
 </div>
 
 <script>

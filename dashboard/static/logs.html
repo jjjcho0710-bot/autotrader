@@ -187,6 +187,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--grotesk);font-size
     </div>
   </div>
 </div>
+<style>
+.bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:50;background:#131920;border-top:1px solid #232d3a;padding-bottom:env(safe-area-inset-bottom);}
+.bn-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0 6px;font-size:11px;font-weight:600;color:#7d8896;text-decoration:none;}
+.bn-item.active{color:#f0b90b;}
+.bn-icon{font-size:20px;line-height:1;}
+body{padding-bottom:70px;}
+</style><nav class="bottom-nav">
+  <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
+  <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략</a>
+  <a href="/jarvis.html" class="bn-item"><span class="bn-icon">🤖</span>자비스</a>
+  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>트레이닝</a>
+  <a href="/logs" class="bn-item active"><span class="bn-icon">📋</span>로그</a>
+</nav>
 </body>
 </html>
 

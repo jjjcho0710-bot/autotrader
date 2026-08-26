@@ -262,6 +262,17 @@ async def _auto_register_webhook():
         logger.warning(f"텔레그램 webhook 자동 등록 실패: {e}")
 
 
+async def _get_price_ceiling() -> int:
+    """활성 지시에서 'N만원 이하' 가격 상한 파싱 (없으면 0)"""
+    try:
+        import re as _re
+        txt = await _get_active_directives(20)
+        m = _re.search(r"(\d+)\s*만\s*원?\s*이하", txt or "")
+        return int(m.group(1)) * 10000 if m else 0
+    except Exception:
+        return 0
+
+
 async def _kis_scan_candidates() -> list:
     """KRX(pykrx) 차단 시 폴백: KIS 거래량순위 → KIS 일봉으로 스코어링"""
     import asyncio as _asyncio
@@ -314,6 +325,9 @@ async def _kis_scan_candidates() -> list:
         logger.info(f"🔍 KIS 폴백 유니버스: {len(universe)}종목")
 
         # 2) 각 종목 일봉 30개로 스코어링 (기존 pykrx 로직과 동일)
+        price_ceiling = await _get_price_ceiling()
+        if price_ceiling:
+            logger.info(f"🔍 지시 반영: 주당 {price_ceiling:,}원 이하만 스캔")
         from datetime import timedelta as _td
         end = datetime.now(KST).strftime("%Y%m%d")
         start = (datetime.now(KST) - _td(days=60)).strftime("%Y%m%d")
@@ -342,6 +356,8 @@ async def _kis_scan_candidates() -> list:
                 close = closes[-1]
                 if close < 1000:
                     continue
+                if price_ceiling and close > price_ceiling:
+                    continue  # 주인 지시: 가격 상한
                 vol, vol_avg = vols[-1], (sum(vols[-6:-1]) / 5 if len(vols) >= 6 else 0)
                 # 등락률: 마지막 서로 다른 두 종가 기준 (중복 캔들 0.0% 버그 방지)
                 change = 0.0
@@ -871,6 +887,14 @@ async def _score_journal() -> str:
                   AND bot='stock_trader' AND eval_at IS NULL AND price > 0
             """)
         if not rows:
+            # 오늘 판단 자체가 0건인지 확인 → 침묵 대신 명시 보고
+            async with db_pool.acquire() as conn:
+                total_today = await conn.fetchval("""
+                    SELECT COUNT(*) FROM trade_journal
+                    WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                      AND bot='stock_trader'""")
+            if not total_today:
+                await _send_telegram("📝 오늘 판단 채점: 기록 0건\n(전략 신호 미발생 — 매수 시도 자체가 없었음)")
             return ""
         token = await get_kis_token()
         if not token:
@@ -4653,12 +4677,22 @@ async def jarvis_signal(request: Request):
 [매매 규칙] 손절종목 재매수 금지(쿨다운은 시스템이 이미 체크함) · 당일 2회 손절 시 신규중단 · 약한 신호는 단타, 강한 복합신호만 스윙 관점
 
 오늘의 작전과 위 데이터 기준으로 이 {action_kr} 신호를 즉시 판단하라.
-반드시 EXECUTE 또는 SKIP 으로 시작해서 이유를 한 줄로 설명해줘."""
+반드시 다음 중 하나로 시작해서 이유를 한 줄로:
+- EXECUTE: 조건 대부분 충족, 강한 확신
+- EXECUTE_SMALL: 일부 조건(2~3개) 충족, 리스크 제한적 → 절반 금액 진입
+- SKIP: 근거 부족
+완벽하지 않다는 이유만으로 전부 SKIP하지 마라. 애매하면 EXECUTE_SMALL로 소액 검증하라."""
 
         # 3. Jarvis 판단 (+ AI 장애 시 ML 폴백)
         jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
         logger.info(f"🤖 Jarvis 판단 [{symbol}]: {jarvis_reply[:150]}")
+        is_small = jarvis_reply.upper().startswith("EXECUTE_SMALL")
         should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
+        if is_small and action in ["buy", "BUY"]:
+            try:
+                qty = max(1, int(float(qty) // 2))  # 절반 금액 진입
+            except Exception:
+                pass
 
         # 429/오류 폴백: AI 응답 불가 시 신호의 ML 확률로 규칙 판단 (봇 생존)
         ai_failed = (not jarvis_reply) or jarvis_reply.startswith("❌") or "429" in jarvis_reply[:200]
@@ -4766,7 +4800,8 @@ async def jarvis_signal(request: Request):
                     result="성공", reason=reason
                 )
                 await _log_journal(bot, symbol, name, action, strategy, reason,
-                                   "EXECUTE", jarvis_reply, True, True, price, qty)
+                                   "EXECUTE_SMALL" if is_small else "EXECUTE",
+                                   jarvis_reply, True, True, price, qty)
                 return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
             else:
                 await _send_telegram(
@@ -4774,7 +4809,8 @@ async def jarvis_signal(request: Request):
                     chat_id, token
                 )
                 await _log_journal(bot, symbol, name, action, strategy, reason,
-                                   "EXECUTE", jarvis_reply, True, False, price, qty)
+                                   "EXECUTE_SMALL" if is_small else "EXECUTE",
+                                   jarvis_reply, True, False, price, qty)
                 return {"success": False, "executed": False, "error": result.get("error")}
         else:
             # 4. 건너뜀 보고

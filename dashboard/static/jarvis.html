@@ -874,12 +874,13 @@ async function checkConnection() {
 // 대화 유지: localStorage 복원 + 변경 시 자동 저장 (탭 이동해도 대화 유지)
 (function(){
   const el = document.getElementById('messages');
+  try { localStorage.removeItem('jarvis_chat_html'); } catch(e){}
   try {
-    const saved = localStorage.getItem('jarvis_chat_html');
+    const saved = localStorage.getItem('jarvis_chat_html_v2');
     if (saved && el.children.length <= 1) { el.innerHTML = saved; el.scrollTop = el.scrollHeight; }
   } catch(e){}
   new MutationObserver(() => {
-    try { localStorage.setItem('jarvis_chat_html', el.innerHTML); } catch(e){}
+    try { localStorage.setItem('jarvis_chat_html_v2', el.innerHTML); } catch(e){}
   }).observe(el, {childList: true, subtree: true});
 })();
 
@@ -892,7 +893,12 @@ async function checkConnection() {
       document.body.classList.add('kb-open');
       setTimeout(() => { const m=document.getElementById('messages'); if(m) m.scrollTop=m.scrollHeight; }, 300);
     });
-    inp.addEventListener('blur', () => document.body.classList.remove('kb-open'));
+    inp.addEventListener('blur', () => {
+      document.body.classList.remove('kb-open');
+      // iOS 키보드 닫힘 후 남는 스크롤 오프셋 제거 (탭바 아래 빈공간 버그)
+      setTimeout(() => { window.scrollTo(0, 0); document.documentElement.scrollTop = 0; }, 50);
+      setTimeout(() => { window.scrollTo(0, 0); }, 300);
+    });
   }
 })();
 

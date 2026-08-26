@@ -3475,7 +3475,10 @@ async def jarvis_chat(body: dict):
                     "전략 설정 변경(손절%/익절%/매수금액)이 담겨 있으면, 자연스러운 답변 후 마지막 줄에 딱 한 줄로:\n"
                     '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}}\n'
                     "형식으로 출력하라. settings 키는 stop_loss/take_profit/buy_amount만 가능. "
-                    "해당 없으면 [[ACTION]] 줄을 출력하지 마라. 일회성 질문·잡담엔 절대 출력 금지.")
+                    "해당 없으면 [[ACTION]] 줄을 출력하지 마라. 일회성 질문·잡담엔 절대 출력 금지.\n"
+                    "[응답 형식 — 반드시 준수] 최종 결론만 출력하라. 최대 4문장. "
+                    "사고 과정, 규칙/지시 인용, 검토 중얼거림, '~라고 답변해야 한다' 류 초안, 같은 내용 반복을 절대 출력하지 마라. "
+                    "근거는 핵심 1~2개만 짧게.")
 
         # Open-WebUI 통해서 호출 (텔레그램과 같은 경로)
         reply = await _ask_openwebui(full_msg, session_id=session_id)

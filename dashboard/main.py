@@ -1071,6 +1071,53 @@ async def run_daily_report_now():
         return {"success": False, "error": str(e)}
 
 
+async def _intraday_scan():
+    """장중 감시종목 보충: 그 시점 거래량 상위에서 조건 통과 종목 추가
+    (아침 종목 유지, 신규만 추가 — 기준 동일: score≥4, 스팩/칼날 제외)"""
+    try:
+        now_kst = datetime.now(KST)
+        logger.info("🔍 장중 보충 스캔 시작 [%s]", now_kst.strftime("%H:%M"))
+        candidates = await _kis_scan_candidates()
+        if not candidates:
+            logger.info("🔍 장중 스캔: 신규 후보 없음")
+            return
+        added = []
+        async with db_pool.acquire() as conn:
+            existing = {r["symbol"] for r in await conn.fetch(
+                "SELECT symbol FROM watchlist WHERE is_active=TRUE")}
+            for c in candidates:
+                if c["symbol"] in existing:
+                    continue
+                reason = (f"[장중{now_kst.strftime('%H:%M')}] 거래량{c['vol_ratio']:.1f}배 "
+                          f"등락{c['change']:+.1f}% RSI{c.get('rsi',50):.0f} score{c['score']}")
+                await conn.execute("""
+                    INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
+                    VALUES ($1, $2, 'jarvis_scanner', $3, TRUE)
+                    ON CONFLICT (symbol) DO UPDATE
+                    SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
+                """, c["symbol"], c["name"], reason)
+                added.append(f"· {c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%")
+        if added:
+            await _send_telegram(
+                f"🔍 장중 보충 스캔 [{now_kst.strftime('%H:%M')}]\n"
+                f"신규 감시 {len(added)}종목:\n" + "\n".join(added[:8]))
+            logger.info("🔍 장중 스캔: %d종목 추가", len(added))
+        else:
+            logger.info("🔍 장중 스캔: 전부 기존 감시 중")
+    except Exception as e:
+        logger.error(f"장중 스캔 오류: {e}")
+
+
+@app.api_route("/api/scan/intraday", methods=["GET", "POST"])
+async def run_intraday_scan_now():
+    """장중 보충 스캔 수동 실행"""
+    try:
+        await _intraday_scan()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -1079,6 +1126,8 @@ async def _jarvis_scheduler():
     last_morning = None
     last_closing = None
     last_daily_report = None
+    last_scan_1030 = None
+    last_scan_1300 = None
 
     while True:
         await asyncio.sleep(60)
@@ -1096,6 +1145,14 @@ async def _jarvis_scheduler():
 
         if now.weekday() >= 5:
             continue
+
+        # 장중 보충 스캔 (10:30 / 13:00) — 새 거래량 상위 종목 감시 추가
+        if dtime(10, 30) <= cur_time <= dtime(10, 35) and last_scan_1030 != today:
+            last_scan_1030 = today
+            asyncio.create_task(_intraday_scan())
+        if dtime(13, 0) <= cur_time <= dtime(13, 5) and last_scan_1300 != today:
+            last_scan_1300 = today
+            asyncio.create_task(_intraday_scan())
 
         if dtime(8, 30) <= cur_time <= dtime(8, 35) and last_morning != today:
             last_morning = today

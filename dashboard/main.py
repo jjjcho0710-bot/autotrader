@@ -3867,6 +3867,10 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
             "messages": messages,  # Open-WebUI 모델 프롬프트 사용 (중복 제거)
             "stream": False,
         }
+        # 사고과정(THINK) 유출 차단: 최종답변 표식 프로토콜
+        message = (message + "\n\n[출력 프로토콜] 사고 과정이 필요하면 내부적으로만 하라. "
+                   "출력의 맨 마지막에 [[FINAL]] 표식 뒤에 최종 답변만 써라. "
+                   "[[FINAL]] 이전의 모든 내용은 사용자에게 표시되지 않는다.")
         data = None
         last_err = None
         for _attempt in range(2):  # 1회 재시도
@@ -3890,6 +3894,14 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
         if True:
             if True:
                 reply = data["choices"][0]["message"]["content"]
+                # [[FINAL]] 이후만 사용 (사고과정 제거)
+                if "[[FINAL]]" in reply:
+                    reply = reply.split("[[FINAL]]")[-1].strip()
+                elif reply.strip().upper().startswith("THINK"):
+                    # FINAL 누락 + THINK 유출 시: 마지막 문단을 답으로 사용
+                    parts = [p_.strip() for p_ in reply.split("\n\n") if p_.strip()]
+                    if len(parts) > 1:
+                        reply = parts[-1]
 
                 # 대화 히스토리 저장
                 await _save_chat_history(session_id, "user", message)
@@ -4686,8 +4698,11 @@ async def jarvis_signal(request: Request):
         # 3. Jarvis 판단 (+ AI 장애 시 ML 폴백)
         jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
         logger.info(f"🤖 Jarvis 판단 [{symbol}]: {jarvis_reply[:150]}")
-        is_small = jarvis_reply.upper().startswith("EXECUTE_SMALL")
-        should_execute = jarvis_reply.upper().startswith("EXECUTE") or "실행" in jarvis_reply[:30]
+        import re as _re2
+        _m = _re2.search(r"\b(EXECUTE_SMALL|EXECUTE|SKIP)\b", jarvis_reply.upper())
+        _verdict = _m.group(1) if _m else ""
+        is_small = _verdict == "EXECUTE_SMALL"
+        should_execute = _verdict in ("EXECUTE", "EXECUTE_SMALL")
         if is_small and action in ["buy", "BUY"]:
             try:
                 qty = max(1, int(float(qty) // 2))  # 절반 금액 진입

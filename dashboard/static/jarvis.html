@@ -946,16 +946,15 @@ setInterval(checkConnection, 60000);
 .bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
-/* jarvis 채팅: 뷰포트 계산(dvh) 미사용 — 입력창 내부 하단여백으로 탭바 공간 확보
-   (iOS PWA에서 dvh가 키보드 후 축소값으로 굳는 버그 회피) */
+/* jarvis 채팅: 입력창 마진으로 탭바 공간 확보 (08:59 정상 확인 버전) */
 @media (max-width: 768px) {
   body { padding-bottom:0 !important; }
-  .main { height:100% !important; padding-bottom:0 !important; }
+  .main { padding-bottom:0 !important; }
   .input-area {
-    margin-bottom:0 !important;
-    padding-bottom:calc(14px + 56px + env(safe-area-inset-bottom)) !important;
+    margin-bottom:calc(56px + env(safe-area-inset-bottom)) !important;
+    padding-bottom:14px !important;
   }
-  body.kb-open .input-area { padding-bottom:14px !important; }  /* 키보드 시 탭바 숨음 */
+  body.kb-open .input-area { margin-bottom:0 !important; }
 }
 </style>
 </body>

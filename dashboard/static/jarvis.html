@@ -907,6 +907,21 @@ refreshPanel();
 loadHistory();
 checkConnection();
 
+// PWA(standalone): 100vh가 실제 화면과 어긋나 탭바 아래 공백 발생
+// → body 높이를 실측값(innerHeight)으로 고정 (Safari 브라우저 모드엔 영향 없음)
+(function(){
+  const isPWA = window.matchMedia('(display-mode: standalone)').matches
+                || window.navigator.standalone === true;
+  if (!isPWA) return;
+  function fixH(){
+    document.body.style.height = window.innerHeight + 'px';
+  }
+  fixH();
+  window.addEventListener('resize', fixH);
+  window.addEventListener('orientationchange', () => setTimeout(fixH, 100));
+  window.addEventListener('pageshow', () => setTimeout(fixH, 50));
+})();
+
 // iOS PWA: 키보드 닫힘 후 visual viewport 미원복으로 fixed 요소(탭바)가
 // 위로 밀린 채 고정되는 버그 → viewport 복원 감지 시 강제 리셋
 (function(){

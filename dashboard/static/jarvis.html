@@ -949,7 +949,7 @@ body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 /* jarvis 채팅: 입력창 마진으로 탭바 공간 확보 (08:59 정상 확인 버전) */
 @media (max-width: 768px) {
   body { padding-bottom:0 !important; }
-  .main { padding-bottom:0 !important; }
+  .main { padding-bottom:0 !important; padding-top:env(safe-area-inset-top) !important; }
   .input-area {
     margin-bottom:calc(56px + env(safe-area-inset-bottom)) !important;
     padding-bottom:14px !important;

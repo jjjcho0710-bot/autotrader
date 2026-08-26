@@ -3897,11 +3897,17 @@ async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
                 # [[FINAL]] 이후만 사용 (사고과정 제거)
                 if "[[FINAL]]" in reply:
                     reply = reply.split("[[FINAL]]")[-1].strip()
-                elif reply.strip().upper().startswith("THINK"):
-                    # FINAL 누락 + THINK 유출 시: 마지막 문단을 답으로 사용
-                    parts = [p_.strip() for p_ in reply.split("\n\n") if p_.strip()]
-                    if len(parts) > 1:
-                        reply = parts[-1]
+                else:
+                    # 메타 유출 감지: THINK / [최종 답변 구성] / "규칙을 지킨다" 등
+                    _head = reply.strip()[:300]
+                    _meta_markers = ("THINK", "[최종", "답변 구성", "라고 답변", "규칙을 지킨")
+                    if any(m in _head for m in _meta_markers):
+                        parts = [p_.strip() for p_ in reply.replace("\r","").split("\n\n") if p_.strip()]
+                        # 뒤에서부터 메타 아닌 첫 문단 선택
+                        for cand in reversed(parts):
+                            if not any(m in cand[:80] for m in _meta_markers) and not cand.startswith('"'):
+                                reply = cand
+                                break
 
                 # 대화 히스토리 저장
                 await _save_chat_history(session_id, "user", message)

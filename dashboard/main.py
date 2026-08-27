@@ -357,11 +357,11 @@ async def _analyze_chart(symbol: str, name: str = "") -> str:
              else "혼조/횡보")
     pos_in_range = (cur - support) / max(1, resistance - support) * 100
     pattern = _candle_pattern(rows)
-    return (f"[차트 리서치] {name or symbol}
-"
-            f"- 추세: {trend} (현재 {cur:,} / 5일선 {ma5:,.0f} / 20일선 {ma20:,.0f})
-"
-            f"- 지지 {support:,} / 저항 {resistance:,} (박스 내 위치 {pos_in_range:.0f}%)
+    return (f"[차트 리서치] {name or symbol}\n"
+            f"- 추세: {trend} (현재 {cur:,} / 5일선 {ma5:,.0f} / 20일선 {ma20:,.0f})\n"
+            f"- 지지 {support:,} / 저항 {resistance:,} (박스 내 위치 {pos_in_range:.0f}%)\n"
+            f"- 캔들: {pattern}\n"
+            f"- 거래량: 최근3일이 평소의 {vol_ratio:.1f}배")
 "
             f"- 캔들: {pattern}
 "

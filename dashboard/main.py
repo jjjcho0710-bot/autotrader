@@ -362,11 +362,6 @@ async def _analyze_chart(symbol: str, name: str = "") -> str:
             f"- 지지 {support:,} / 저항 {resistance:,} (박스 내 위치 {pos_in_range:.0f}%)\n"
             f"- 캔들: {pattern}\n"
             f"- 거래량: 최근3일이 평소의 {vol_ratio:.1f}배")
-"
-            f"- 캔들: {pattern}
-"
-            f"- 거래량: 최근3일이 평소의 {vol_ratio:.1f}배")
-
 
 async def _get_price_ceiling() -> int:
     """활성 지시에서 'N만원 이하' 가격 상한 파싱 (없으면 0)"""

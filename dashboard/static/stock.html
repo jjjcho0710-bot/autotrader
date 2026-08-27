@@ -341,8 +341,11 @@ async function fetchPositions(){
           <div class="pos-gi"><span class="pos-gi-label">현재가</span><span class="pos-gi-val ${cls}">${fmt(p.cur_price)}</span></div>
           <div class="pos-gi"><span class="pos-gi-label">평가손익</span><span class="pos-gi-val ${cls}">${rate>=0?'+':''}${fmt(Math.round(p.pnl||0))}원</span></div>
         </div>
+        <canvas class="spark" data-sym="${p.symbol}" width="600" height="60"
+                style="width:100%;height:34px;margin-top:8px;"></canvas>
       </div>`;
     }).join('');
+    drawSparks();
   }catch(e){}
 }
 

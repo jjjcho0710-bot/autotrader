@@ -4703,6 +4703,17 @@ async def training_page():
         return f.read()
 
 
+@app.get("/api/chart/{symbol}")
+async def get_chart_data(symbol: str, days: int = 30):
+    """미니차트용 일봉 종가 시계열"""
+    try:
+        rows = await _fetch_daily_ohlcv(symbol, days)
+        return {"success": True,
+                "data": [{"d": r["date"], "c": r["close"]} for r in rows]}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+
 @app.get("/api/journal")
 async def get_journal(days: int = 7):
     """매매일지 조회 + 요약 (EXECUTE율, 체결수, SKIP수)"""

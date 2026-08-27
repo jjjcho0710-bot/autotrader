@@ -86,19 +86,28 @@ redis_client: Optional[aioredis.Redis] = None
 import aiohttp as _aiohttp
 _kis_token_cache: dict = {"token": "", "expires": 0}
 
-async def get_kis_token() -> str:
-    """KIS 액세스 토큰 — Redis 캐시 우선 (재시작해도 재사용)"""
+async def get_kis_token(force_new: bool = False) -> str:
+    """KIS 액세스 토큰 — Redis 캐시 우선 (force_new=True면 강제 재발급)"""
     import time
     now = time.time()
+
+    redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
+    if force_new:
+        _kis_token_cache["token"] = None
+        _kis_token_cache["expires"] = 0
+        try:
+            if redis_client:
+                await redis_client.delete(redis_key)
+        except Exception:
+            pass
 
     # 1. 메모리 캐시 확인
     if _kis_token_cache["token"] and now < _kis_token_cache["expires"]:
         return _kis_token_cache["token"]
 
     # 2. Redis 캐시 확인 (모의투자/실전 구분)
-    redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
     try:
-        if redis_client:
+        if redis_client and not force_new:
             cached = await redis_client.get(redis_key)
             if cached:
                 token = cached if isinstance(cached, str) else cached.decode('utf-8')
@@ -3114,9 +3123,10 @@ async def _handle_watchlist_command(msg: str) -> str | None:
     return None  # 일반 채팅으로 처리
 
 
-async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool) -> dict:
-    """KIS 주식 주문 (dashboard 내장 — stock_trader 모듈 불필요)"""
-    token = await get_kis_token()
+async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
+                            _retry: bool = False) -> dict:
+    """KIS 주식 주문 (dashboard 내장) — 토큰 만료 시 1회 자동 재발급·재시도"""
+    token = await get_kis_token(force_new=_retry)
     if not token:
         return {"success": False, "error": "KIS 토큰 없음"}
     acct = (config.KIS_ACCOUNT_NO or "").split("-")
@@ -3141,7 +3151,12 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool) -> d
                 data = await resp.json()
         if data.get("rt_cd") == "0":
             return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
-        return {"success": False, "error": data.get("msg1", "주문 실패")}
+        err = data.get("msg1", "주문 실패")
+        # 토큰 만료 → 강제 재발급 후 1회 재시도
+        if not _retry and ("token" in err.lower() or "만료" in err):
+            logger.warning(f"토큰 만료 감지 → 재발급 후 재주문 [{symbol}]")
+            return await _kis_stock_order(symbol, price, qty, is_buy, _retry=True)
+        return {"success": False, "error": err}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

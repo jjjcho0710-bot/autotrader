@@ -291,18 +291,26 @@ async function loadSummary() {
         const pnlv = p.pnl ?? 0;
         const cur  = p.cur_price ?? 0;
         const avg  = p.avg_price ?? 0;
+        const isStock = !(p.symbol || "").includes("KRW-");
+        const spark = isStock
+          ? `<canvas class="spark" data-sym="${p.symbol}" width="600" height="60"
+               style="width:100%;height:30px;margin-top:6px;display:block;"></canvas>` : "";
         return `
-          <div class="pos">
-            <div class="pos-left">
-              <div class="name">${name}</div>
-              <div class="sub mono">${p.qty}주 · 평단 ${won(avg)}</div>
+          <div class="pos" style="display:block;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="pos-left">
+                <div class="name">${name}</div>
+                <div class="sub mono">${p.qty}주 · 평단 ${won(avg)}</div>
+              </div>
+              <div class="pos-right">
+                <div class="amt mono">${won(cur)}</div>
+                <div class="rate mono ${cls(pnlv)}">${won(pnlv)} ${pct(rate)}</div>
+              </div>
             </div>
-            <div class="pos-right">
-              <div class="amt mono">${won(cur)}</div>
-              <div class="rate mono ${cls(pnlv)}">${won(pnlv)} ${pct(rate)}</div>
-            </div>
+            ${spark}
           </div>`;
       }).join("");
+      drawSparks();
     }
   } catch (e) {
     document.getElementById("statusDot").classList.add("off");
@@ -391,6 +399,37 @@ async function toggleNoti(){
 }
 pollNoti();
 setInterval(pollNoti, 15000);
+
+// ── 보유종목 30일 미니차트 ──
+const _sparkCache = {};
+async function drawSparks(){
+  document.querySelectorAll('canvas.spark').forEach(async cv=>{
+    const sym = cv.dataset.sym;
+    try{
+      if(!_sparkCache[sym]){
+        const r = await fetch(`/api/chart/${sym}?days=30`);
+        const j = await r.json();
+        _sparkCache[sym] = (j.data||[]).map(x=>x.c);
+      }
+      const cs = _sparkCache[sym];
+      if(!cs || cs.length < 2) return;
+      const ctx = cv.getContext('2d');
+      const W = cv.width, H = cv.height, pad = 4;
+      ctx.clearRect(0,0,W,H);
+      const mn = Math.min(...cs), mx = Math.max(...cs);
+      const up = cs[cs.length-1] >= cs[0];
+      ctx.strokeStyle = up ? '#f6465d' : '#2f8fff';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      cs.forEach((c,i)=>{
+        const x = pad + i*(W-pad*2)/(cs.length-1);
+        const y = H-pad - (c-mn)/(mx-mn||1)*(H-pad*2);
+        i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+      });
+      ctx.stroke();
+    }catch(e){}
+  });
+}
 </script>
 
 <style id="unified-nav">

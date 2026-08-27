@@ -195,6 +195,12 @@
   </div>
 </div>
 
+<!-- 감시 종목 (주식 탭) -->
+<div class="section" id="watchSection" style="display:none;">
+  <div class="section-title">감시 종목 <span class="badge" id="watchCount">0</span></div>
+  <div id="watchList"><div class="empty">불러오는 중...</div></div>
+</div>
+
 <!-- 보유 종목 -->
 <div class="section">
   <div class="section-title">
@@ -399,6 +405,37 @@ async function toggleNoti(){
 }
 pollNoti();
 setInterval(pollNoti, 15000);
+
+// ── 감시 종목 위젯 ──
+async function loadWatchlist(){
+  const sec = document.getElementById('watchSection');
+  if (currentTab !== 'stock') { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  try{
+    const r = await fetch('/api/prices/stock');
+    const j = await r.json();
+    const items = Object.values(j.data || j.prices || {});
+    document.getElementById('watchCount').textContent = items.length;
+    const el = document.getElementById('watchList');
+    if(!items.length){ el.innerHTML = '<div class="empty">감시 종목 없음</div>'; return; }
+    el.innerHTML = items.map(p=>{
+      const chg = Number(p.change_rate ?? p.change ?? 0);
+      const c = chg > 0 ? 'up' : chg < 0 ? 'down' : '';
+      return `<div class="pos" style="padding:10px 0;">
+        <div class="pos-left">
+          <div class="name" style="font-size:13px;">${p.name || p.symbol}</div>
+          <div class="sub mono">${p.symbol}</div>
+        </div>
+        <div class="pos-right">
+          <div class="amt mono" style="font-size:13px;">${won(Number(p.price||0))}</div>
+          <div class="rate mono ${c}">${pct(chg)}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
+loadWatchlist();
+setInterval(loadWatchlist, 15000);
 
 // ── 보유종목 30일 미니차트 ──
 const _sparkCache = {};

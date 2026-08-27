@@ -2747,9 +2747,40 @@ async def _get_watchlist_prices_context() -> str:
         return ""
 
 
+async def _get_market_index_ctx() -> str:
+    """코스피/코스닥 지수 컨텍스트 (60초 캐시) — 코스피 -1.5% 룰 실데이터 연동"""
+    try:
+        cached = await redis_client.get("ctx:market_index")
+        if cached:
+            return cached if isinstance(cached, str) else cached.decode()
+    except Exception:
+        pass
+    try:
+        res = await get_market_index()
+        d = res.get("data", {}) if isinstance(res, dict) else {}
+        ks, kq = d.get("kospi", {}), d.get("kosdaq", {})
+        if not ks.get("price"):
+            return ""
+        txt = (f"[시장 지수] 코스피 {ks.get('price'):,.2f} ({ks.get('change_rate', 0):+.2f}%) · "
+               f"코스닥 {kq.get('price', 0):,.2f} ({kq.get('change_rate', 0):+.2f}%)")
+        try:
+            await redis_client.setex("ctx:market_index", 60, txt)
+        except Exception:
+            pass
+        return txt
+    except Exception:
+        return ""
+
+
 async def get_portfolio_context() -> str:
     """현재 포트폴리오 데이터를 Gemini 컨텍스트로 변환"""
     ctx_parts = []
+    try:
+        _mi = await _get_market_index_ctx()
+        if _mi:
+            ctx_parts.append(_mi)
+    except Exception:
+        pass
     _now = datetime.now(KST)
     _wd = ["월", "화", "수", "목", "금", "토", "일"][_now.weekday()]
     _t = _now.time()

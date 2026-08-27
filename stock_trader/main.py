@@ -475,23 +475,69 @@ class StockTrader:
                     logger.warning(f"손절 알림 실패 [{symbol}]: {e}")
                 continue
 
-            # 익절 체크 (자동 유지)
-            if default_strategy.check_take_profit(avg_price, cur_price):
-                result = await self.trader.sell(symbol, cur_price, qty)
-                if result["success"]:
-                    await db.insert_trade(
-                        bot="stock_trader", asset_type="stock",
-                        symbol=symbol, side="SELL",
-                        price=cur_price, quantity=qty,
-                        amount=cur_price * qty,
-                        strategy=f"{strat_name}_익절", pnl=pnl,
-                    )
-                    await self._notify_trade(
-                        action="매도", symbol=symbol, name=pos.get("name", symbol),
-                        price=cur_price, qty=qty,
-                        pnl=pnl, pnl_rate=pnl_rate, strategy=f"{strat_name}_익절"
-                    )
-                    self.positions.pop(symbol, None)
+            # 익절: 상의 모드 + 트레일링 수익보호
+            # ① 익절선 도달 → 자동매도 안함, 알림(홀딩/매도 판단 요청) + 고점 추적 시작
+            # ② 고점 대비 -2% 반락 → 그때만 자동 매도 (수익 확보)
+            if default_strategy.check_take_profit(avg_price, cur_price) or \
+               await cache.client.get(f"tp:armed:{symbol}"):
+                high_key = f"pos:high:{symbol}"
+                armed_key = f"tp:armed:{symbol}"
+                prev_high = float(await cache.client.get(high_key) or 0)
+                high = max(prev_high, cur_price)
+                await cache.client.setex(high_key, 86400, str(high))
+
+                first_arm = not await cache.client.get(armed_key)
+                await cache.client.setex(armed_key, 86400, "1")
+
+                drop_from_high = (cur_price - high) / high * 100 if high > 0 else 0
+
+                if drop_from_high <= -2.0:
+                    # 트레일링 발동: 수익 보호 자동 매도
+                    result = await self.trader.sell(symbol, cur_price, qty)
+                    if result["success"]:
+                        await db.insert_trade(
+                            bot="stock_trader", asset_type="stock",
+                            symbol=symbol, side="SELL",
+                            price=cur_price, quantity=qty,
+                            amount=cur_price * qty,
+                            strategy=f"{strat_name}_트레일링익절", pnl=pnl,
+                        )
+                        await self._notify_trade(
+                            action="매도", symbol=symbol, name=pos.get("name", symbol),
+                            price=cur_price, qty=qty,
+                            pnl=pnl, pnl_rate=pnl_rate,
+                            strategy=f"{strat_name}_트레일링익절(고점-2%)"
+                        )
+                        self.positions.pop(symbol, None)
+                        # 익절 후 당일 재매수 금지
+                        try:
+                            from datetime import datetime as _dt
+                            _now = _dt.now()
+                            _eod = _now.replace(hour=23, minute=59, second=0)
+                            await cache.client.setex(
+                                f"rebuy_block:{symbol}",
+                                max(60, int((_eod - _now).total_seconds())), "tp")
+                        except Exception:
+                            pass
+                        await cache.client.delete(high_key)
+                        await cache.client.delete(armed_key)
+                elif first_arm:
+                    # 첫 도달: 상의 알림
+                    try:
+                        from common.telegram import send_stock
+                        nm = pos.get("name", symbol)
+                        trend = ("상승 지속 중 — 홀딩 관찰 추천"
+                                 if cur_price >= high * 0.995 else "상승 둔화 — 매도 검토 추천")
+                        await send_stock(
+                            f"🔔 <b>{nm}({symbol}) 익절선 도달 {pnl_rate:+.1f}%</b>\n"
+                            f"{trend}\n"
+                            f"자동 매도하지 않습니다. 고점 대비 -2% 반락 시에만 "
+                            f"수익보호 자동매도 됩니다.\n"
+                            f"즉시 매도: '{nm} 전량 매도' 지시"
+                        )
+                        logger.info(f"🔔 익절 상의 알림 [{symbol}] {pnl_rate:+.1f}%")
+                    except Exception as e:
+                        logger.warning(f"익절 알림 실패 [{symbol}]: {e}")
                 continue
 
         # ② 신규 진입 신호 체크
@@ -640,6 +686,10 @@ class StockTrader:
                 skip_key = f"jarvis:skip:{symbol}"
                 if await cache.client.get(skip_key):
                     logger.debug(f"⏸️ [{symbol}] SKIP 쿨다운 중 → 판단 생략")
+                    continue
+                # 익절 매도 후 당일 재매수 금지
+                if await cache.client.get(f"rebuy_block:{symbol}"):
+                    logger.debug(f"🚫 [{symbol}] 익절 후 당일 재매수 금지")
                     continue
             except Exception:
                 pass

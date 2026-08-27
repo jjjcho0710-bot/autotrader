@@ -941,7 +941,7 @@ async def _score_journal() -> str:
                 """, float(close), round(rate, 2), r["id"])
                 dec = r["jarvis_decision"]
                 nm = r["name"] or r["symbol"]
-                if dec == "EXECUTE" and r["action"] == "buy":
+                if dec in ("EXECUTE", "EXECUTE_SMALL") and r["action"] == "buy":
                     if rate >= 0.5: scored["exec_hit"] += 1; tag = "✅적중"
                     else: scored["exec_miss"] += 1; tag = "❌빗나감"
                     lines.append(f"매수 {nm}: 신호가 대비 {rate:+.1f}% {tag}")
@@ -1048,7 +1048,7 @@ async def _jarvis_unified_daily_report():
                 ORDER BY created_at""", today)
             journal = await conn.fetchrow("""
                 SELECT COUNT(*) AS total,
-                       COUNT(*) FILTER (WHERE jarvis_decision='EXECUTE') AS ex,
+                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL')) AS ex,
                        COUNT(*) FILTER (WHERE jarvis_decision='SKIP') AS sk
                 FROM trade_journal
                 WHERE DATE(ts AT TIME ZONE 'Asia/Seoul')=$1""", today)
@@ -4575,8 +4575,8 @@ async def training_summary(days: int = 14):
                 WHERE category='lesson' ORDER BY created_at DESC LIMIT 20""")
             daily = await conn.fetch("""
                 SELECT DATE(ts AT TIME ZONE 'Asia/Seoul') AS d,
-                       COUNT(*) FILTER (WHERE jarvis_decision='EXECUTE' AND eval_pnl_rate >= 0.5)  AS exec_hit,
-                       COUNT(*) FILTER (WHERE jarvis_decision='EXECUTE' AND eval_pnl_rate < 0.5)   AS exec_miss,
+                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL') AND eval_pnl_rate >= 0.5)  AS exec_hit,
+                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL') AND eval_pnl_rate < 0.5)   AS exec_miss,
                        COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0)     AS skip_missed,
                        COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate < 1.0)      AS skip_good,
                        COUNT(*) AS total

@@ -294,6 +294,8 @@ async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
                 timeout=_aiohttp.ClientTimeout(total=8))
             data = await r.json()
         rows = data.get("output2", []) or []
+        if not rows:
+            logger.warning(f"일봉 빈응답 [{symbol}] rt_cd={data.get('rt_cd')} msg={data.get('msg1','')[:60]}")
         out = []
         for it in rows:
             try:
@@ -4701,6 +4703,35 @@ async def training_summary(days: int = 14):
 async def training_page():
     with open("static/training.html", encoding="utf-8") as f:
         return f.read()
+
+
+@app.get("/api/chart/raw/{symbol}")
+async def get_chart_raw(symbol: str):
+    """차트 API 디버그: KIS 원응답 요약"""
+    try:
+        token = await get_kis_token()
+        import ssl as _ssl
+        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+        from datetime import timedelta as _td
+        end = datetime.now(KST).strftime("%Y%m%d")
+        start = (datetime.now(KST) - _td(days=60)).strftime("%Y%m%d")
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            r = await sess.get(
+                f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                         "appsecret": config.kis_app_secret,
+                         "tr_id": "FHKST03010100", "custtype": "P"},
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
+                        "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
+                        "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+                timeout=_aiohttp.ClientTimeout(total=8))
+            data = await r.json()
+        o2 = data.get("output2") or []
+        return {"rt_cd": data.get("rt_cd"), "msg1": data.get("msg1"),
+                "count": len(o2),
+                "first": {k: o2[0].get(k) for k in list(o2[0].keys())[:8]} if o2 else None}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/chart/{symbol}")

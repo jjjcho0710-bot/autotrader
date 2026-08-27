@@ -271,6 +271,103 @@ async def _auto_register_webhook():
         logger.warning(f"텔레그램 webhook 자동 등록 실패: {e}")
 
 
+async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
+    """KIS 일봉 조회 → [{date,open,high,low,close,vol}] 오래된→최신"""
+    try:
+        token = await get_kis_token()
+        if not token:
+            return []
+        import ssl as _ssl
+        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+        from datetime import timedelta as _td
+        end = datetime.now(KST).strftime("%Y%m%d")
+        start = (datetime.now(KST) - _td(days=days * 2)).strftime("%Y%m%d")
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            r = await sess.get(
+                f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                         "appsecret": config.kis_app_secret,
+                         "tr_id": "FHKST03010100", "custtype": "P"},
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
+                        "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
+                        "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+                timeout=_aiohttp.ClientTimeout(total=8))
+            data = await r.json()
+        rows = data.get("output2", []) or []
+        out = []
+        for it in rows:
+            try:
+                out.append({
+                    "date": it.get("stck_bsop_date", ""),
+                    "open": int(it.get("stck_oprc", 0) or 0),
+                    "high": int(it.get("stck_hgpr", 0) or 0),
+                    "low": int(it.get("stck_lwpr", 0) or 0),
+                    "close": int(it.get("stck_clpr", 0) or 0),
+                    "vol": int(it.get("acml_vol", 0) or 0),
+                })
+            except Exception:
+                pass
+        out = [o for o in out if o["close"] > 0]
+        out.sort(key=lambda x: x["date"])
+        return out[-days:]
+    except Exception as e:
+        logger.debug(f"일봉 조회 실패 [{symbol}]: {e}")
+        return []
+
+
+def _candle_pattern(rows: list) -> str:
+    """최근 1~2봉 캔들 패턴 해석"""
+    if len(rows) < 2:
+        return ""
+    a, b = rows[-2], rows[-1]  # 전일, 당일
+    body = abs(b["close"] - b["open"])
+    rng = max(1, b["high"] - b["low"])
+    lower_wick = min(b["open"], b["close"]) - b["low"]
+    upper_wick = b["high"] - max(b["open"], b["close"])
+    pats = []
+    if b["close"] > b["open"] and a["close"] < a["open"] and        b["close"] >= a["open"] and b["open"] <= a["close"]:
+        pats.append("상승장악형(강세반전)")
+    if b["close"] < b["open"] and a["close"] > a["open"] and        b["open"] >= a["close"] and b["close"] <= a["open"]:
+        pats.append("하락장악형(약세반전)")
+    if lower_wick > body * 2 and upper_wick < body:
+        pats.append("망치형(지지시도)")
+    if upper_wick > body * 2 and lower_wick < body:
+        pats.append("역망치/유성형(저항압력)")
+    if body < rng * 0.1:
+        pats.append("도지(방향모색)")
+    return ", ".join(pats) if pats else ("양봉" if b["close"] > b["open"] else "음봉")
+
+
+async def _analyze_chart(symbol: str, name: str = "") -> str:
+    """차트 리서치: 추세·지지/저항·캔들·거래량 → 판단용 요약 텍스트"""
+    rows = await _fetch_daily_ohlcv(symbol, 40)
+    if len(rows) < 21:
+        return ""
+    closes = [r["close"] for r in rows]
+    cur = closes[-1]
+    ma5 = sum(closes[-5:]) / 5
+    ma20 = sum(closes[-20:]) / 20
+    support = min(r["low"] for r in rows[-10:])
+    resistance = max(r["high"] for r in rows[-10:])
+    vol_recent = sum(r["vol"] for r in rows[-3:]) / 3
+    vol_base = max(1, sum(r["vol"] for r in rows[-13:-3]) / 10)
+    vol_ratio = vol_recent / vol_base
+    trend = ("정배열 상승(현재가>5일선>20일선)" if cur > ma5 > ma20
+             else "역배열 하락(현재가<5일선<20일선)" if cur < ma5 < ma20
+             else "혼조/횡보")
+    pos_in_range = (cur - support) / max(1, resistance - support) * 100
+    pattern = _candle_pattern(rows)
+    return (f"[차트 리서치] {name or symbol}
+"
+            f"- 추세: {trend} (현재 {cur:,} / 5일선 {ma5:,.0f} / 20일선 {ma20:,.0f})
+"
+            f"- 지지 {support:,} / 저항 {resistance:,} (박스 내 위치 {pos_in_range:.0f}%)
+"
+            f"- 캔들: {pattern}
+"
+            f"- 거래량: 최근3일이 평소의 {vol_ratio:.1f}배")
+
+
 async def _get_price_ceiling() -> int:
     """활성 지시에서 'N만원 이하' 가격 상한 파싱 (없으면 0)"""
     try:
@@ -1159,6 +1256,7 @@ async def _jarvis_scheduler():
     last_morning = None
     last_closing = None
     last_daily_report = None
+    last_scan_0930 = None
     last_scan_1030 = None
     last_scan_1300 = None
 
@@ -1179,7 +1277,10 @@ async def _jarvis_scheduler():
         if now.weekday() >= 5:
             continue
 
-        # 장중 보충 스캔 (10:30 / 13:00) — 새 거래량 상위 종목 감시 추가
+        # 장중 보충 스캔 (09:30 / 10:30 / 13:00) — 새 거래량 상위 종목 감시 추가
+        if dtime(9, 30) <= cur_time <= dtime(9, 35) and last_scan_0930 != today:
+            last_scan_0930 = today
+            asyncio.create_task(_intraday_scan())
         if dtime(10, 30) <= cur_time <= dtime(10, 35) and last_scan_1030 != today:
             last_scan_1030 = today
             asyncio.create_task(_intraday_scan())
@@ -3538,6 +3639,15 @@ async def jarvis_chat(body: dict):
         if action_result:
             return {"success": True, "reply": action_result, "context_used": False}
 
+        # 차트 리서치 명령: "차트 OO" / "OO 차트 어때"
+        if "차트" in user_msg:
+            _sym, _nm = await _resolve_stock_symbol(user_msg)
+            if _sym:
+                chart_txt = await _analyze_chart(_sym, _nm)
+                if chart_txt:
+                    return {"success": True, "reply": chart_txt, "context_used": False}
+                return {"success": True, "reply": f"⚠️ {_nm}({_sym}) 차트 데이터를 가져오지 못했어요.", "context_used": False}
+
         # 매매 지시 감지 → 실제 KIS 주문 실행 (자비스 경유 X)
         trade_result = await _handle_trade_command(user_msg)
         if trade_result:
@@ -4662,6 +4772,13 @@ async def jarvis_signal(request: Request):
         # 1-1b. 주인 지시사항 (최우선)
         directives = await _get_active_directives()
 
+        # 1-1c. 차트 리서치 (지지/저항·추세·캔들·거래량)
+        chart_ctx = ""
+        try:
+            chart_ctx = await _analyze_chart(symbol, name)
+        except Exception:
+            pass
+
         # 1-2. 오늘 이 종목에 대한 내 판단 이력 (기회놓침 반복 방지)
         self_history = ""
         try:
@@ -4703,6 +4820,8 @@ async def jarvis_signal(request: Request):
 
 [주인 지시사항 — 최우선 준수]
 {directives or '(없음)'}
+
+{chart_ctx or ''}
 {self_history}
 [현재 포트폴리오 현황]
 {ctx}

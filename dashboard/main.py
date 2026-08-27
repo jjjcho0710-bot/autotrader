@@ -2758,7 +2758,7 @@ async def _get_market_index_ctx() -> str:
     try:
         res = await get_market_index()
         d = res.get("data", {}) if isinstance(res, dict) else {}
-        ks, kq = d.get("kospi", {}), d.get("kosdaq", {})
+        ks, kq = d.get("KOSPI", {}), d.get("KOSDAQ", {})
         if not ks.get("price"):
             return ""
         txt = (f"[시장 지수] 코스피 {ks.get('price'):,.2f} ({ks.get('change_rate', 0):+.2f}%) · "

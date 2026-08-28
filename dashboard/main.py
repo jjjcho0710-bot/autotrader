@@ -4736,6 +4736,36 @@ async def training_page():
         return f.read()
 
 
+@app.get("/desk", response_class=HTMLResponse)
+async def desk_page():
+    with open("static/desk.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/api/jarvis/plan")
+async def get_jarvis_plan():
+    try:
+        cached = await redis_client.get("jarvis:daily_plan")
+        plan = cached if isinstance(cached, str) else (cached or b"").decode()
+        return {"success": True, "plan": plan or ""}
+    except Exception as e:
+        return {"success": False, "error": str(e), "plan": ""}
+
+
+@app.get("/api/account/stock")
+async def account_stock_summary():
+    """데스크 헤더용 계좌 요약"""
+    try:
+        res = await get_stock_positions()
+        acct = res.get("account", {}) if isinstance(res, dict) else {}
+        return {"success": True, "data": {
+            "total_eval": acct.get("total_eval", 0),
+            "pnl": acct.get("pnl", acct.get("total_pnl", 0)),
+            "cash": acct.get("cash", 0)}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/chart/raw/{symbol}")
 async def get_chart_raw(symbol: str):
     """차트 API 디버그: KIS 원응답 요약"""

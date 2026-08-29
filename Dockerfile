@@ -13,3 +13,4 @@ ENV PYTHONPATH=/app
 WORKDIR /app/dashboard
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 # force-redeploy 1787664332
+# force-redeploy 1787967242

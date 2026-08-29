@@ -155,6 +155,18 @@ class StockTrader:
             cur_time = now.time().replace(tzinfo=None)
             today = now.date()
 
+            # 주말(토·일): 신호 감지 완전 중단, 하트비트만
+            if now.weekday() >= 5:
+                try:
+                    await cache.set_bot_status("stock_trader", {
+                        "status": "running", "last_cycle": datetime.now().isoformat(),
+                        "positions": len(self.positions), "strategy": "주말휴장",
+                    })
+                except Exception:
+                    pass
+                await asyncio.sleep(300)  # 5분마다만 체크
+                continue
+
             # 장 마감 후 ML 자동 학습 (15:40, 하루 1회, 평일만)
             if (cur_time >= ML_TRAIN_TIME
                     and self.ml_trained_date != today

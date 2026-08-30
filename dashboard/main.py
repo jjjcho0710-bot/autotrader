@@ -1079,14 +1079,26 @@ async def _jarvis_evening_review():
                 WHERE bot='stock_trader'
                   AND DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
                 ORDER BY created_at""", today)
-        if not trades:
-            logger.info("🌙 복기: 오늘 매매 없음 — 스킵")
+        # 판단 기록 (SKIP 포함) — 체결 없는 날도 교훈의 재료
+        async with db_pool.acquire() as conn:
+            jdg = await conn.fetch("""
+                SELECT symbol, name, jarvis_decision, eval_pnl_rate
+                FROM trade_journal
+                WHERE bot='stock_trader'
+                  AND DATE(ts AT TIME ZONE 'Asia/Seoul') = $1
+                ORDER BY ts""", today)
+        if not trades and not jdg:
+            logger.info("🌙 복기: 오늘 매매·판단 모두 없음 — 스킵")
             return
+        j_txt = "\n".join(
+            f"- {r['jarvis_decision']} {r['name'] or r['symbol']}"
+            + (f" (이후 {float(r['eval_pnl_rate']):+.1f}%)" if r['eval_pnl_rate'] is not None else "")
+            for r in jdg[:20]) or "(판단 없음)"
         t_txt = "\n".join(
             f"- {t['side']} {t['symbol']} {float(t['amount']):,.0f}원"
             + (f" 손익 {float(t['pnl'] or 0):+,.0f}원" if t['pnl'] is not None else "")
-            + f" ({t['strategy']})" for t in trades)
-        total_pnl = sum(float(t['pnl'] or 0) for t in trades)
+            + f" ({t['strategy']})" for t in trades) if trades else ""
+        total_pnl = sum(float(t['pnl'] or 0) for t in trades) if trades else 0
         plan = ""
         try:
             cached = await redis_client.get("jarvis:daily_plan")
@@ -1107,7 +1119,10 @@ async def _jarvis_evening_review():
 {plan or '(없음)'}
 
 [오늘 매매 기록] (총 손익 {total_pnl:+,.0f}원)
-{t_txt}
+{t_txt or '(체결 없음)'}
+
+[오늘 판단 기록 — SKIP 포함]
+{j_txt}
 
 [오늘 판단 채점표]
 {score_txt or '(채점 없음)'}
@@ -1116,7 +1131,13 @@ async def _jarvis_evening_review():
 
         review = await _ask_openwebui(prompt, session_id="daily_plan")
         if review and not review.startswith("❌"):
-            lesson = review.strip()[:300]
+            lesson = review.strip()
+            # '교훈:' 포함 줄 우선 추출
+            for line in lesson.split("\n"):
+                if "교훈" in line:
+                    lesson = line.strip()
+                    break
+            lesson = lesson[:300]
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)", lesson)
@@ -4764,6 +4785,16 @@ async def desk_page():
         return f.read()
 
 
+@app.api_route("/api/jarvis/review/run", methods=["GET", "POST"])
+async def run_review_now():
+    """복기 수동 실행 (교훈 생성 테스트)"""
+    try:
+        await _jarvis_evening_review()
+        return {"success": True, "note": "복기 실행됨 — 트레이닝 페이지에서 교훈 확인"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/jarvis/plan")
 async def get_jarvis_plan():
     try:
@@ -5007,6 +5038,13 @@ async def jarvis_signal(request: Request):
         # 1-1b. 주인 지시사항 (최우선)
         directives = await _get_active_directives()
 
+        # 1-1b2. 최근 복기 교훈 (자비스가 배운 것)
+        lessons_txt = ""
+        try:
+            lessons_txt = await _get_jarvis_lessons(3)
+        except Exception:
+            pass
+
         # 1-1c. 차트 리서치 (지지/저항·추세·캔들·거래량)
         chart_ctx = ""
         try:
@@ -5055,6 +5093,9 @@ async def jarvis_signal(request: Request):
 
 [주인 지시사항 — 최우선 준수]
 {directives or '(없음)'}
+
+[최근 교훈 — 같은 실수 반복 금지]
+{lessons_txt or '(없음)'}
 
 {chart_ctx or ''}
 {self_history}

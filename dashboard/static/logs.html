@@ -62,9 +62,12 @@ async function load(){
     el.innerHTML = j.data.map(n=>{
       const t = new Date(n.created_at);
       const ts = `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
+      let body=(n.body||'');
+      const title=(n.title||'');
+      if(body.startsWith(title)) body=body.slice(title.length).trim();
       return `<div class="item ${n.is_read?'':'unread'}">
-        <div class="t">${(n.title||'').replace(/</g,'&lt;')}</div>
-        <div class="b">${(n.body||'').replace(/</g,'&lt;')}</div>
+        <div class="t">${title.replace(/</g,'&lt;')}</div>
+        ${body?`<div class="b">${body.replace(/</g,'&lt;')}</div>`:''}
         <div class="ts">${ts}</div></div>`;
     }).join('');
     fetch('/api/notifications/read',{method:'POST'}).catch(()=>{});

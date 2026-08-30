@@ -942,6 +942,12 @@ async def _jarvis_daily_plan():
         wl_txt = "\n".join(f"- {r['name']}({r['symbol']}): {r['reason'] or ''}" for r in wl) or "(없음)"
         lessons = await _get_jarvis_lessons()
         directives_txt = await _get_active_directives()
+        weekly_plan = ""
+        try:
+            wp = await redis_client.get("jarvis:weekly_plan")
+            weekly_plan = (wp if isinstance(wp, str) else (wp or b"").decode())[:600]
+        except Exception:
+            pass
         now_str = datetime.now(KST).strftime("%m/%d")
 
         prompt = f"""너는 한국 주식 단타 전문 트레이더다. 오늘({now_str}) 장중 매매 작전을 수립하라.
@@ -951,6 +957,9 @@ async def _jarvis_daily_plan():
 
 [최근 복기 교훈]
 {lessons}
+
+[주말 예습 — 다음주 작전 초안]
+{weekly_plan or '(없음)'}
 
 [주인 지시사항 — 작전에 반드시 반영]
 {directives_txt or '(없음)'}
@@ -1266,6 +1275,117 @@ async def run_intraday_scan_now():
         return {"success": False, "error": str(e)}
 
 
+async def _jarvis_weekly_review():
+    """토 10:00 — 주간 복습: 일주일 판단 전수 분석 → 주간 교훈 저장"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT symbol, name, jarvis_decision, eval_pnl_rate, strategy,
+                       DATE(ts AT TIME ZONE 'Asia/Seoul') AS d
+                FROM trade_journal
+                WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'
+                ORDER BY ts""")
+            trades = await conn.fetch("""
+                SELECT symbol, side, pnl, strategy FROM trade_history
+                WHERE bot='stock_trader' AND created_at > NOW() - INTERVAL '7 days'""")
+        if not rows:
+            logger.info("📚 주간 복습: 판단 기록 없음 — 스킵")
+            return
+        # 종목별 SKIP-상승 반복 패턴
+        from collections import defaultdict
+        miss = defaultdict(list)
+        for r in rows:
+            if r["jarvis_decision"] == "SKIP" and r["eval_pnl_rate"] is not None:
+                miss[r["name"] or r["symbol"]].append(float(r["eval_pnl_rate"]))
+        rep = [f"- {k}: SKIP {len(v)}회, 이후 평균 {sum(v)/len(v):+.1f}%"
+               for k, v in sorted(miss.items(), key=lambda x: -len(x[1]))[:5]]
+        j_txt = "\n".join(
+            f"- [{r['d']}] {r['jarvis_decision']} {r['name'] or r['symbol']}"
+            + (f" → {float(r['eval_pnl_rate']):+.1f}%" if r['eval_pnl_rate'] is not None else "")
+            for r in rows[-40:])
+        t_pnl = sum(float(t['pnl'] or 0) for t in trades)
+        prompt = f"""너는 한국 주식 트레이더다. 지난 일주일 판단을 심층 복습하라.
+
+[일주일 판단 기록 최근 40건]
+{j_txt}
+
+[종목별 SKIP 반복 패턴]
+{chr(10).join(rep) or '(없음)'}
+
+[주간 실현 손익] {t_pnl:+,.0f}원
+
+반복된 실수·놓친 패턴·잘한 습관을 분석해 다음 주에 적용할
+"주간 교훈"을 정확히 3줄로 작성하라. 각 줄은 "주간 교훈: "으로 시작."""
+        review = await _ask_openwebui(prompt, session_id="daily_plan")
+        saved = 0
+        if review and not review.startswith("❌"):
+            async with db_pool.acquire() as conn:
+                for line in review.split("\n"):
+                    line = line.strip()
+                    if "교훈" in line and len(line) > 10 and saved < 3:
+                        await conn.execute(
+                            "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)",
+                            f"[주간] {line[:280]}")
+                        saved += 1
+            await _send_telegram(f"📚 자비스 주간 복습 완료 — 교훈 {saved}건 저장\n{review[:600]}")
+        logger.info(f"📚 주간 복습 완료: 교훈 {saved}건")
+    except Exception as e:
+        logger.error(f"주간 복습 오류: {e}")
+
+
+async def _jarvis_weekly_preview():
+    """일 20:00 — 다음주 예습: 보유 차트 분석 + 다음주 작전 초안"""
+    try:
+        pos_txt = ""
+        try:
+            res = await get_stock_positions()
+            for p_ in (res.get("data") or [])[:6]:
+                ana = await _analyze_chart(p_["symbol"], p_.get("name", ""))
+                pos_txt += f"\n{ana}\n(보유 {p_['qty']}주, 평단 {p_['avg_price']:,}, 손익 {p_.get('pnl_rate',0):+.1f}%)\n"
+        except Exception:
+            pass
+        lessons = await _get_jarvis_lessons(6)
+        directives = await _get_active_directives()
+        prompt = f"""너는 한국 주식 트레이더다. 다음 주 매매를 예습하라.
+
+[보유 종목 차트 분석]
+{pos_txt or '(보유 없음)'}
+
+[누적 교훈]
+{lessons or '(없음)'}
+
+[주인 지시사항]
+{directives or '(없음)'}
+
+다음 주 작전 초안을 작성하라:
+① 보유종목별 대응 (지지/저항 기준 홀딩·익절·손절 라인)
+② 다음 주 주목 섹터/조건
+③ 이번 주 교훈에서 바꿀 행동 1가지
+500자 이내."""
+        preview = await _ask_openwebui(prompt, session_id="daily_plan")
+        if preview and not preview.startswith("❌"):
+            try:
+                await redis_client.setex("jarvis:weekly_plan", 86400 * 7, preview[:800])
+            except Exception:
+                pass
+            await _send_telegram(f"🗓️ 자비스 다음주 예습 브리핑\n{preview[:900]}")
+        logger.info("🗓️ 주간 예습 완료")
+    except Exception as e:
+        logger.error(f"주간 예습 오류: {e}")
+
+
+@app.api_route("/api/jarvis/weekly/review/run", methods=["GET", "POST"])
+async def run_weekly_review():
+    await _jarvis_weekly_review()
+    return {"success": True}
+
+
+@app.api_route("/api/jarvis/weekly/preview/run", methods=["GET", "POST"])
+async def run_weekly_preview():
+    await _jarvis_weekly_preview()
+    return {"success": True}
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -1277,6 +1397,8 @@ async def _jarvis_scheduler():
     last_scan_0930 = None
     last_scan_1030 = None
     last_scan_1300 = None
+    last_wk_review = None
+    last_wk_preview = None
 
     while True:
         await asyncio.sleep(60)
@@ -1293,6 +1415,13 @@ async def _jarvis_scheduler():
             asyncio.create_task(_summarize_old_chats())  # 장기 기억 이관 (하루 1일치)
 
         if now.weekday() >= 5:
+            # 주말 스터디: 토 10:00 주간복습 / 일 20:00 다음주예습
+            if now.weekday() == 5 and dtime(10, 0) <= cur_time <= dtime(10, 5)                     and last_wk_review != today:
+                last_wk_review = today
+                asyncio.create_task(_jarvis_weekly_review())
+            if now.weekday() == 6 and dtime(20, 0) <= cur_time <= dtime(20, 5)                     and last_wk_preview != today:
+                last_wk_preview = today
+                asyncio.create_task(_jarvis_weekly_preview())
             continue
 
         # 장중 보충 스캔 (09:30 / 10:30 / 13:00) — 새 거래량 상위 종목 감시 추가

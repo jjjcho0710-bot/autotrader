@@ -1068,10 +1068,10 @@ async def _score_then_review():
     await _jarvis_evening_review()
 
 
-async def _jarvis_evening_review():
-    """저녁 복기 → 교훈을 jarvis_memory에 저장 (내일 작전에 반영)"""
+async def _jarvis_evening_review(target_date=None):
+    """저녁 복기 → 교훈 저장 (target_date 미지정 시 오늘)"""
     try:
-        today = datetime.now(KST).date()
+        today = target_date or datetime.now(KST).date()
         async with db_pool.acquire() as conn:
             trades = await conn.fetch("""
                 SELECT symbol, side, amount, pnl, strategy
@@ -4789,8 +4789,14 @@ async def desk_page():
 async def run_review_now():
     """복기 수동 실행 (교훈 생성 테스트)"""
     try:
-        await _jarvis_evening_review()
-        return {"success": True, "note": "복기 실행됨 — 트레이닝 페이지에서 교훈 확인"}
+        async with db_pool.acquire() as conn:
+            latest = await conn.fetchval("""
+                SELECT DATE(ts AT TIME ZONE 'Asia/Seoul') FROM trade_journal
+                WHERE bot='stock_trader'
+                ORDER BY ts DESC LIMIT 1""")
+        await _jarvis_evening_review(latest)
+        return {"success": True, "reviewed_date": str(latest),
+                "note": "복기 실행됨 — 트레이닝 페이지에서 교훈 확인"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

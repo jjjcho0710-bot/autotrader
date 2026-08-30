@@ -815,6 +815,19 @@ function hideWake() {
 
 function toggleMic() {
   const btn = document.getElementById('mic-btn');
+  // iOS(아이폰/아이패드)는 웹 음성인식 미지원 → 키보드 받아쓰기 안내
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  if (isIOS) {
+    addMessage('jarvis',
+      '📱 아이폰에서는 브라우저 음성인식이 지원되지 않아요.\n' +
+      '대신 이렇게 해주세요:\n' +
+      '① 입력창을 탭하고 → 키보드의 🎤(받아쓰기)로 말씀하세요\n' +
+      '② 옆의 🔊 스피커를 켜두시면 제 답변을 음성으로 읽어드려요');
+    const inp = document.getElementById('user-input') ||
+                document.querySelector('.input-area input, .input-area textarea');
+    if (inp) inp.focus();
+    return;
+  }
   if (!recognition) recognition = initSpeech();
   if (!recognition) { alert('음성 인식을 지원하지 않는 브라우저예요.'); return; }
 

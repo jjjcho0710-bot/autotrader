@@ -1425,7 +1425,13 @@ async def run_scan_now():
         return {"success": False, "error": str(e)}
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
+async def root(request: Request):
+    """기기 자동 감지: PC → /pc 화면, 모바일 → 모바일 홈"""
+    ua = (request.headers.get("user-agent") or "").lower()
+    is_mobile = any(k in ua for k in ("iphone", "android", "mobile", "ipad"))
+    if not is_mobile:
+        with open("static/pc/index.html", encoding="utf-8") as f:
+            return f.read()
     with open("static/home.html", encoding="utf-8") as f:
         return f.read()
 

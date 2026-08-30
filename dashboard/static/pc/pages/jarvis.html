@@ -48,6 +48,9 @@
     </div>
     <div class="jin">
       <textarea id="jin" placeholder="자비스에게 무엇이든... (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+      <button id="micBtn" onclick="toggleMic()" title="음성으로 말하기"
+        style="background:var(--p2);border:1px solid var(--bd);border-radius:14px;
+        padding:0 16px;font-size:18px;">🎤</button>
       <button onclick="jsend()">전송</button>
     </div>
   </div>
@@ -63,6 +66,38 @@
 <script>
 (function(){
 const won=n=>Number(n||0).toLocaleString()+"원";
+// ── 음성 (STT/TTS) ──
+let voiceMode=false, rec=null, listening=false;
+function speak(txt){
+  try{
+    speechSynthesis.cancel();
+    const clean=(txt||'').replace(/[📌⚙️🔔📈📉💰🤖🧭📝❌✅⚠️#*_`\[\]]/g,' ').slice(0,500);
+    const u=new SpeechSynthesisUtterance(clean);
+    u.lang='ko-KR';u.rate=1.05;
+    const v=speechSynthesis.getVoices().find(v=>v.lang.startsWith('ko'));
+    if(v)u.voice=v;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
+window.toggleMic=function(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){addB('j','이 브라우저는 음성 인식을 지원하지 않아요 (Chrome 권장)');return;}
+  if(listening){rec.stop();return;}
+  rec=new SR();rec.lang='ko-KR';rec.interimResults=true;rec.continuous=false;
+  const btn=document.getElementById('micBtn');
+  rec.onstart=()=>{listening=true;btn.style.background='var(--up)';btn.textContent='⏺';};
+  rec.onend=()=>{listening=false;btn.style.background='var(--p2)';btn.textContent='🎤';};
+  rec.onresult=e=>{
+    const t=Array.from(e.results).map(r=>r[0].transcript).join('');
+    jin.value=t;
+    if(e.results[e.results.length-1].isFinal){
+      voiceMode=true;  // 음성 질문 → 음성 답변
+      jsend();
+    }
+  };
+  rec.onerror=()=>{listening=false;btn.style.background='var(--p2)';btn.textContent='🎤';};
+  rec.start();
+};
 const pct=n=>(n>=0?"+":"")+Number(n||0).toFixed(2)+"%";
 const cls=n=>n>0?"up":n<0?"dn":"";
 const jm=document.getElementById('jmsgs'),jin=document.getElementById('jin'),
@@ -75,7 +110,10 @@ window.jsend=async function(){
   try{const r=await fetch('/api/jarvis/chat',{method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({message:t,session_id:'pc'})});
-    const j=await r.json();addB('j',j.reply||('❌ '+(j.error||'오류')));
+    const j=await r.json();
+    const reply=j.reply||('❌ '+(j.error||'오류'));
+    addB('j',reply);
+    if(voiceMode){speak(reply);voiceMode=false;}
   }catch(e){addB('j','❌ 연결 오류');}
   jt.style.display='none';
 };

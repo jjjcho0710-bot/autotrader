@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>A안 — 커맨드 센터</title>
+<style>
+:root{--bg:#0a0e14;--p:#131920;--p2:#1a222c;--bd:#232d3a;--tx:#c9d4e0;--br:#e6edf3;--dim:#7d8896;--up:#f6465d;--dn:#2f8fff;--gd:#f0b90b;--gr:#16c784;--pu:#a78bfa;}
+*{margin:0;padding:0;box-sizing:border-box;}body{background:var(--bg);color:var(--tx);font-family:-apple-system,"Segoe UI",sans-serif;font-size:13px;height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+.ticker{background:#000;padding:8px 0;overflow:hidden;white-space:nowrap;border-bottom:1px solid var(--bd);}
+.ticker span{display:inline-block;padding:0 24px;font-weight:700;animation:roll 30s linear infinite;}
+@keyframes roll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.up{color:var(--up)}.dn{color:var(--dn)}
+.kpis{display:flex;gap:12px;padding:14px 20px;background:var(--p);border-bottom:1px solid var(--bd);}
+.kpi{flex:1;background:var(--p2);border:1px solid var(--bd);border-radius:12px;padding:14px 16px;}
+.kl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;}
+.kv{font-size:22px;font-weight:800;color:var(--br);margin-top:4px;}
+.grid{flex:1;display:grid;grid-template-columns:300px 1fr 400px;gap:1px;background:var(--bd);overflow:hidden;}
+.col{background:var(--bg);padding:14px;overflow-y:auto;}
+.card{background:var(--p);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px;}
+.ct{font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;margin-bottom:10px;}
+.wr{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bd);}
+.pc{background:var(--p);border:1px solid var(--bd);border-radius:14px;padding:18px;margin-bottom:12px;}
+.gauge{height:10px;background:var(--p2);border-radius:5px;margin-top:12px;position:relative;}
+.gauge>div{position:absolute;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--dn),var(--gd));width:35%;}
+.gauge i{position:absolute;top:-4px;width:3px;height:18px;background:#fff;left:35%;}
+.spark{height:60px;background:linear-gradient(180deg,rgba(246,70,93,.12),transparent);border-radius:8px;margin-top:12px;position:relative;overflow:hidden;}
+.spark svg{position:absolute;inset:0;}
+tr.exec{background:rgba(22,199,132,.07);}tr.small{background:rgba(240,185,11,.07);}
+table{width:100%;border-collapse:collapse;font-size:12px;}th{color:var(--dim);text-align:left;padding:6px;font-size:10px;border-bottom:1px solid var(--bd);}td{padding:8px 6px;border-bottom:1px solid var(--bd);}
+.jc{display:flex;flex-direction:column;padding:0;}
+.jh{padding:14px 16px;background:var(--p);border-bottom:1px solid var(--bd);font-weight:800;color:var(--br);}
+.jq{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--bd);}
+.jq button{background:var(--p2);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;}
+.jm{flex:1;padding:14px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;}
+.b{max-width:88%;padding:10px 13px;border-radius:11px;font-size:12.5px;line-height:1.6;}
+.b.u{align-self:flex-end;background:rgba(59,130,246,.28);border:1px solid rgba(59,130,246,.5);color:#fff;}
+.b.j{align-self:flex-start;background:var(--p2);border:1px solid var(--bd);border-left:3px solid var(--pu);color:var(--br);}
+.ji{display:flex;gap:8px;padding:12px;border-top:1px solid var(--bd);background:var(--p);}
+.ji input{flex:1;background:var(--bg);border:1px solid var(--bd);border-radius:9px;color:var(--br);padding:11px;}
+.ji button{background:var(--pu);border:none;border-radius:9px;color:#fff;padding:0 18px;font-weight:700;}
+.badge{position:fixed;top:10px;right:14px;background:var(--gd);color:#000;font-weight:800;padding:4px 12px;border-radius:20px;font-size:12px;z-index:99;}
+</style></head><body>
+<div class="badge">A안 · 커맨드 센터</div>
+<div class="ticker"><span>코스피 6,696.96 <b class="up">▲0.52%</b> &nbsp;·&nbsp; 코스닥 813.33 <b class="dn">▼0.21%</b> &nbsp;·&nbsp; BTC 92,150,000 <b class="up">▲1.2%</b> &nbsp;·&nbsp; 환율 1,342 &nbsp;·&nbsp; 코스피 6,696.96 <b class="up">▲0.52%</b> &nbsp;·&nbsp; 코스닥 813.33 <b class="dn">▼0.21%</b> &nbsp;·&nbsp; BTC 92,150,000 <b class="up">▲1.2%</b> &nbsp;·&nbsp; 환율 1,342</span></div>
+<div class="kpis">
+<div class="kpi"><div class="kl">총 평가금액</div><div class="kv">5,082,900원</div></div>
+<div class="kpi"><div class="kl">오늘 손익</div><div class="kv up">+12,550원</div></div>
+<div class="kpi"><div class="kl">예수금 D+2</div><div class="kv">4,629,300원</div></div>
+<div class="kpi"><div class="kl">이번주 승률</div><div class="kv">66.7%</div></div>
+<div class="kpi"><div class="kl">봇 상태</div><div class="kv" style="color:var(--gr)">●●● 정상</div></div>
+</div>
+<div class="grid">
+<div class="col">
+<div class="card"><div class="ct">감시 종목 · 6</div>
+<div class="wr"><b style="color:var(--br)">대한항공</b><span class="mono">28,200 <b class="dn">-1.57%</b></span></div>
+<div class="wr"><b style="color:var(--br)">보성파워텍</b><span>4,215 <b class="up">+2.31%</b></span></div>
+<div class="wr"><b style="color:var(--br)">KT</b><span>22,450 <b class="up">+1.10%</b></span></div>
+<div class="wr"><b style="color:var(--br)">제주반도체</b><span>18,900 <b class="up">+0.85%</b></span></div>
+</div>
+<div class="card"><div class="ct">오늘의 작전</div>
+<div style="font-size:12px;line-height:1.8">① 스탠스: <b class="up">공격적</b><br>② 우선: 보성파워텍·KT<br>③ 회피: 5만원 초과<br>④ 한도: 종목당 100만</div></div>
+</div>
+<div class="col">
+<div class="pc"><div style="display:flex;justify-content:space-between;align-items:baseline;">
+<div><span style="font-size:17px;font-weight:800;color:var(--br)">대한항공</span> <span style="color:var(--dim);font-size:11px">8주 · 평단 28,650</span></div>
+<div class="dn" style="font-size:16px;font-weight:800">-3,600원 (-1.57%)</div></div>
+<div class="gauge"><div></div><i></i></div>
+<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-top:4px;"><span>손절 -7%</span><span>평단</span><span>익절 +5%</span></div>
+<div class="spark"><svg viewBox="0 0 400 60" preserveAspectRatio="none"><polyline points="0,45 40,40 80,42 120,30 160,35 200,25 240,28 280,15 320,22 360,18 400,26" fill="none" stroke="#f6465d" stroke-width="2.5"/></svg></div></div>
+<div class="card"><div class="ct">오늘 판단 일지</div>
+<table><thead><tr><th>시각</th><th>종목</th><th>판정</th><th>사유 요약</th></tr></thead><tbody>
+<tr class="exec"><td>09:34</td><td><b>대한항공</b></td><td style="color:var(--gr)">EXECUTE</td><td>골든크로스+거래량 2.1배</td></tr>
+<tr class="small"><td>09:43</td><td><b>한미글로벌</b></td><td style="color:var(--gd)">SMALL</td><td>모멘텀 양호, ML 보통</td></tr>
+<tr><td>10:12</td><td>KT</td><td style="color:var(--dim)">SKIP</td><td>지지선 이탈 우려</td></tr>
+</tbody></table></div>
+</div>
+<div class="col jc">
+<div class="jh">🤖 Jarvis — 총괄 관리자</div>
+<div class="jq"><button>📊 포트폴리오</button><button>📈 차트</button><button>🧭 작전</button><button>📝 채점</button></div>
+<div class="jm">
+<div class="b j">주인님, 코스피가 -1.79% 하락 중이라 오전은 보수적으로 접근하고 있습니다.</div>
+<div class="b u">차트 대한항공</div>
+<div class="b j">[차트 리서치] 대한항공
+- 추세: 혼조 (현재 28,200 / 5일선 28,540)
+- 지지 27,800 / 저항 29,400 (박스 35%)
+- 캔들: 망치형(지지 시도)
+- 거래량: 평소의 1.3배</div>
+</div>
+<div class="ji"><input placeholder="자비스에게 지시/질문..."><button>전송</button></div>
+</div>
+</div></body></html>

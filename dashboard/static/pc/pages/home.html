@@ -113,7 +113,9 @@ async function loadPos(){
     posMeta.innerHTML=`<span>${p.qty}주 · 평단 <b style="color:var(--br)">${won(p.avg_price)}</b></span>
       <span>현재 <b style="color:var(--br)">${won(p.cur_price)}</b></span>
       <span class="${cls(p.pnl)}"><b>${won(p.pnl)} (${pct(rate)})</b></span>
-      <span style="color:var(--dim)">손절 -7% 상의 · 익절 +5% 트레일링</span>`;
+      <span style="color:var(--dim)">손절 -7% 상의 · 익절 +5% 트레일링</span>
+      <button onclick="openChart('${p.symbol}','${(p.name||p.symbol).replace(/'/g,"")}',${p.avg_price||0})"
+        style="background:var(--bd);border:1px solid var(--bd);color:var(--gd);border-radius:8px;padding:5px 12px;font-size:11px;">📈 차트 크게</button>`;
     await drawBigFor(activeSym, p.avg_price);
   }catch(e){}
 }
@@ -159,7 +161,8 @@ async function loadWatch(){
     wCnt.textContent=items.length+'종목';
     wl.innerHTML=items.length?items.slice(0,10).map(p=>{
       const c=Number(p.change_rate??p.change??0);
-      return `<div class="wr"><b style="color:var(--br)">${p.name||p.symbol}</b>
+      return `<div class="wr" style="cursor:pointer" onclick="openChart('${p.symbol}','${(p.name||p.symbol).replace(/'/g,"")}')">
+        <b style="color:var(--br)">${p.name||p.symbol} <span style="color:var(--dim);font-size:10px">📈</span></b>
         <span class="mono">${won(p.price)} <b class="${cls(c)}">${pct(c)}</b></span></div>`;
     }).join(''):'<div class="empty">감시 없음</div>';
   }catch(e){}
@@ -205,5 +208,110 @@ async function loadBars(){
 function all(){loadKpi();loadPos();loadWatch();loadTl();}
 all();loadPlan();loadBars();
 window.regInterval(all, 15000);
+})();
+</script>
+<!-- ── 차트 모달 ── -->
+<div id="cm" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.7);
+     align-items:center;justify-content:center;" onclick="if(event.target===this)closeChart()">
+  <div style="width:min(1000px,92vw);max-height:92vh;overflow-y:auto;background:var(--p);
+       border:1px solid var(--bd);border-radius:18px;padding:22px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div style="font-size:17px;font-weight:800;color:var(--br);" id="cmTitle">-</div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <div id="cmPeriods" style="display:flex;gap:6px;"></div>
+        <button onclick="closeChart()" style="background:var(--bd);border:none;color:var(--tx);
+          border-radius:8px;padding:7px 13px;font-size:13px;">✕</button>
+      </div>
+    </div>
+    <div id="cmChart" style="height:380px;"></div>
+    <div id="cmVol" style="height:90px;margin-top:4px;"></div>
+    <div class="card" style="margin-top:14px;background:var(--p2);">
+      <div class="ct">🤖 자비스 차트 리서치</div>
+      <div id="cmAna" style="font-size:12.5px;line-height:1.9;white-space:pre-wrap;color:var(--tx);">분석 중...</div>
+      <button onclick="askJarvis()" style="margin-top:12px;background:linear-gradient(145deg,var(--pu),#6d5fe0);
+        border:none;border-radius:10px;color:#fff;padding:10px 18px;font-weight:700;">💬 자비스에게 더 물어보기</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+let lwLoaded=false, cmSym=null, cmName='', cmAvg=0, cmPeriod='D', chart=null, volChart=null;
+function loadLW(cb){
+  if(window.LightweightCharts){lwLoaded=true;cb();return;}
+  const s=document.createElement('script');
+  s.src='https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js';
+  s.onload=()=>{lwLoaded=true;cb();};
+  document.head.appendChild(s);
+}
+window.openChart=function(sym,name,avg){
+  cmSym=sym;cmName=name;cmAvg=avg||0;cmPeriod='D';
+  document.getElementById('cm').style.display='flex';
+  document.getElementById('cmTitle').textContent=`📈 ${name} (${sym})`;
+  renderPeriods();
+  loadLW(()=>drawCm());
+  fetch(`/api/chart/analysis/${sym}`).then(r=>r.json()).then(j=>{
+    document.getElementById('cmAna').textContent=j.analysis||'분석 실패';
+  }).catch(()=>{});
+};
+window.closeChart=function(){
+  document.getElementById('cm').style.display='none';
+  if(chart){chart.remove();chart=null;}
+  if(volChart){volChart.remove();volChart=null;}
+};
+function renderPeriods(){
+  const P={'D':'일봉','W':'주봉','M':'월봉'};
+  document.getElementById('cmPeriods').innerHTML=Object.entries(P).map(([k,v])=>
+    `<button onclick="setPeriod('${k}')" style="background:${k===cmPeriod?'var(--gd)':'var(--bd)'};
+     color:${k===cmPeriod?'#000':'var(--tx)'};border:none;border-radius:8px;padding:7px 13px;
+     font-size:12px;font-weight:700;">${v}</button>`).join('');
+}
+window.setPeriod=function(pd){cmPeriod=pd;renderPeriods();drawCm();};
+function ma(data,n){
+  const out=[];for(let i=n-1;i<data.length;i++){
+    let s=0;for(let k=i-n+1;k<=i;k++)s+=data[k].close;
+    out.push({time:data[i].time,value:s/n});}
+  return out;
+}
+async function drawCm(){
+  const days=cmPeriod==='D'?120:cmPeriod==='W'?350:600;
+  let rows=[];
+  try{const r=await fetch(`/api/chart/${cmSym}?period=${cmPeriod}&days=${days}`);
+    const j=await r.json();rows=j.data||[];}catch(e){}
+  if(chart){chart.remove();chart=null;}
+  if(volChart){volChart.remove();volChart=null;}
+  if(!rows.length)return;
+  const fmt=d=>`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+  const cd=rows.map(r=>({time:fmt(r.d),open:r.o,high:r.h,low:r.l,close:r.c}));
+  const vd=rows.map(r=>({time:fmt(r.d),value:r.v,
+    color:r.c>=r.o?'rgba(246,70,93,.55)':'rgba(56,139,253,.55)'}));
+  const opt={layout:{background:{color:'transparent'},textColor:'#8b949e'},
+    grid:{vertLines:{color:'#1c2129'},horzLines:{color:'#1c2129'}},
+    crosshair:{mode:0},timeScale:{borderColor:'#21262d'},
+    rightPriceScale:{borderColor:'#21262d'}};
+  chart=LightweightCharts.createChart(document.getElementById('cmChart'),
+    {...opt,height:380});
+  const cs=chart.addCandlestickSeries({upColor:'#f6465d',downColor:'#388bfd',
+    borderUpColor:'#f6465d',borderDownColor:'#388bfd',
+    wickUpColor:'#f6465d',wickDownColor:'#388bfd'});
+  cs.setData(cd);
+  chart.addLineSeries({color:'#e3b341',lineWidth:1.5,priceLineVisible:false,
+    lastValueVisible:false}).setData(ma(cd,5));
+  chart.addLineSeries({color:'#bc8cff',lineWidth:1.5,priceLineVisible:false,
+    lastValueVisible:false}).setData(ma(cd,20));
+  if(cmAvg>0)cs.createPriceLine({price:cmAvg,color:'#8b949e',lineStyle:2,
+    axisLabelVisible:true,title:'평단'});
+  volChart=LightweightCharts.createChart(document.getElementById('cmVol'),
+    {...opt,height:90,timeScale:{visible:false}});
+  volChart.addHistogramSeries({priceFormat:{type:'volume'}}).setData(vd);
+  chart.timeScale().fitContent();
+  volChart.timeScale().fitContent();
+  // 시간축 동기화
+  chart.timeScale().subscribeVisibleLogicalRangeChange(r=>{
+    if(r&&volChart)volChart.timeScale().setVisibleLogicalRange(r);});
+}
+window.askJarvis=function(){
+  sessionStorage.setItem('jarvis_prefill',`${cmName} 차트 분석 더 자세히 해줘. 매수 타이밍인가?`);
+  closeChart();go('jarvis');
+};
 })();
 </script>

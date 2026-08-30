@@ -112,5 +112,10 @@ async function rail(){
 }
 rail();
 window.regInterval(rail, 15000);
+// 차트 모달에서 넘어온 질문 자동 입력
+try{
+  const pre=sessionStorage.getItem('jarvis_prefill');
+  if(pre){sessionStorage.removeItem('jarvis_prefill');jin.value=pre;jin.focus();}
+}catch(e){}
 })();
 </script>

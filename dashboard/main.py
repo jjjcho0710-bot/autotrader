@@ -4811,13 +4811,57 @@ async def get_chart_raw(symbol: str):
         return {"error": str(e)}
 
 
-@app.get("/api/chart/{symbol}")
-async def get_chart_data(symbol: str, days: int = 30):
-    """미니차트용 일봉 종가 시계열"""
+def _resample_ohlcv(rows: list, period: str) -> list:
+    """일봉 → 주봉(W)/월봉(M) 합성"""
+    if period == "D" or not rows:
+        return rows
+    out, bucket, key = [], [], None
+    from datetime import datetime as _dt
+    for r in rows:
+        d = _dt.strptime(r["date"], "%Y%m%d")
+        k = f"{d.isocalendar()[0]}-{d.isocalendar()[1]}" if period == "W" else d.strftime("%Y%m")
+        if k != key and bucket:
+            out.append({"date": bucket[-1]["date"],
+                        "open": bucket[0]["open"], "high": max(b["high"] for b in bucket),
+                        "low": min(b["low"] for b in bucket), "close": bucket[-1]["close"],
+                        "vol": sum(b["vol"] for b in bucket)})
+            bucket = []
+        key = k
+        bucket.append(r)
+    if bucket:
+        out.append({"date": bucket[-1]["date"],
+                    "open": bucket[0]["open"], "high": max(b["high"] for b in bucket),
+                    "low": min(b["low"] for b in bucket), "close": bucket[-1]["close"],
+                    "vol": sum(b["vol"] for b in bucket)})
+    return out
+
+
+@app.get("/api/chart/analysis/{symbol}")
+async def get_chart_analysis(symbol: str):
+    """자비스 차트 리서치 텍스트"""
     try:
-        rows = await _fetch_daily_ohlcv(symbol, days)
-        return {"success": True,
-                "data": [{"d": r["date"], "c": r["close"]} for r in rows]}
+        name = ""
+        try:
+            async with db_pool.acquire() as conn:
+                name = await conn.fetchval("SELECT name FROM watchlist WHERE symbol=$1", symbol) or ""
+        except Exception:
+            pass
+        txt = await _analyze_chart(symbol, name)
+        return {"success": bool(txt), "analysis": txt or "차트 데이터 부족"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/chart/{symbol}")
+async def get_chart_data(symbol: str, days: int = 30, period: str = "D"):
+    """차트 데이터: OHLCV 전체 (period=D/W/M, 스파크라인 호환 c 키 유지)"""
+    try:
+        fetch_days = days if period == "D" else min(600, days * (7 if period == "W" else 30))
+        rows = await _fetch_daily_ohlcv(symbol, min(600, fetch_days))
+        rows = _resample_ohlcv(rows, period.upper())
+        return {"success": True, "data": [
+            {"d": r["date"], "o": r["open"], "h": r["high"],
+             "l": r["low"], "c": r["close"], "v": r["vol"]} for r in rows]}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 

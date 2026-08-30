@@ -274,6 +274,13 @@ async function loadBars(){
 
 function all(){loadKpi();loadPos();loadWatch();loadTl();}
 all();loadPlan();loadBars();
+// 자비스 화면에서 예약한 차트 자동 오픈
+try{
+  const q=sessionStorage.getItem('open_chart_on_home');
+  if(q){sessionStorage.removeItem('open_chart_on_home');
+    const {sym,name,avg}=JSON.parse(q);
+    setTimeout(()=>openChart(sym,name,avg), 400);}
+}catch(e){}
 window.regInterval(all, 15000);
 })();
 </script>

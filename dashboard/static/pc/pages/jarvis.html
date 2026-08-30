@@ -92,8 +92,10 @@ async function rail(){
   try{const r=await fetch('/api/positions/stock');const j=await r.json();const ps=j.data||[];
     rPos.innerHTML=ps.length?ps.map(p=>{
       const rate=p.pnl_rate??0;
-      return `<div class="pmini"><div style="display:flex;justify-content:space-between;">
-        <b style="color:var(--br)">${p.name||p.symbol}</b>
+      return `<div class="pmini" style="cursor:pointer"
+        onclick="jOpenChart('${p.symbol}','${(p.name||p.symbol).replace(/'/g,"")}',${p.avg_price||0})">
+        <div style="display:flex;justify-content:space-between;">
+        <b style="color:var(--br)">${p.name||p.symbol} <span style="font-size:10px;color:var(--dim)">📈</span></b>
         <b class="${cls(rate)}">${pct(rate)}</b></div>
         <div style="color:var(--dim);font-size:11px;">${p.qty}주 · ${won(p.pnl)}</div></div>`;
     }).join(''):'<div class="empty">보유 없음</div>';
@@ -112,6 +114,13 @@ async function rail(){
 }
 rail();
 window.regInterval(rail, 15000);
+window.jOpenChart=function(sym,name,avg){
+  if(window.openChart){window.openChart(sym,name,avg);return;}
+  // home 미방문 시: 대시보드로 이동 후 자동 오픈
+  sessionStorage.setItem('open_chart_on_home', JSON.stringify({sym,name,avg}));
+  go('home');
+};
+
 // 차트 모달에서 넘어온 질문 자동 입력
 try{
   const pre=sessionStorage.getItem('jarvis_prefill');

@@ -125,7 +125,7 @@ window.selPos=async s=>{activeSym=s;await loadPos();};
 
 let mainPeriod='D', mChart=null, mVol=null;
 function renderMainPeriods(){
-  const P={'D':'일','W':'주','M':'월'};
+  const P={'1m':'1분','5m':'5분','30m':'30분','D':'일','W':'주','M':'월'};
   document.getElementById('mainPeriods').innerHTML=Object.entries(P).map(([k,v])=>
     `<button onclick="setMainPeriod('${k}')" style="background:${k===mainPeriod?'var(--gd)':'var(--bd)'};
      color:${k===mainPeriod?'#000':'var(--tx)'};border:none;border-radius:7px;padding:5px 11px;
@@ -147,13 +147,32 @@ function ma2(data,n){
     out.push({time:data[i].time,value:s/n});}
   return out;
 }
+function toTime(r, isMin){
+  if(isMin){
+    // KST 분봉 → epoch (lightweight-charts는 UTC 기준이라 KST 보정)
+    const d=r.d, t=(r.t||'000000');
+    const dt=Date.UTC(+d.slice(0,4), +d.slice(4,6)-1, +d.slice(6,8),
+                      +t.slice(0,2), +t.slice(2,4)) / 1000;
+    return dt;
+  }
+  return `${r.d.slice(0,4)}-${r.d.slice(4,6)}-${r.d.slice(6,8)}`;
+}
+async function fetchChart(sym, period){
+  const isMin=period.endsWith('m');
+  const days=period==='D'?90:period==='W'?300:600;
+  try{const r=await fetch(`/api/chart/${sym}?period=${period}&days=${days}`);
+    const j=await r.json();return j.data||[];}catch(e){return [];}
+}
 async function drawBigFor(sym, avg){
   loadLW2(async()=>{
-    const days=mainPeriod==='D'?90:mainPeriod==='W'?300:600;
+    const isMin=mainPeriod.endsWith('m');
     const ck=`${sym}:${mainPeriod}`;
-    if(!chartCache[ck]){
-      try{const r=await fetch(`/api/chart/${sym}?period=${mainPeriod}&days=${days}`);
-        const j=await r.json();chartCache[ck]=j.data||[];}catch(e){chartCache[ck]=[];}}
+    // 분봉은 캐시 안함(실시간), 일/주/월만 캐시
+    if(isMin || !chartCache[ck]){
+      const d=await fetchChart(sym, mainPeriod);
+      if(!isMin) chartCache[ck]=d;
+      else chartCache[ck]=d;
+    }
     const rows=chartCache[ck];
     if(mChart){mChart.remove();mChart=null;}
     if(mVol){mVol.remove();mVol=null;}
@@ -161,13 +180,13 @@ async function drawBigFor(sym, avg){
     if(!el)return;
     if(!rows.length){el.innerHTML='<div class="empty">차트 데이터 없음</div>';return;}
     el.innerHTML='';
-    const fmt=d=>`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
-    const cd=rows.map(r=>({time:fmt(r.d),open:r.o,high:r.h,low:r.l,close:r.c}));
-    const vd=rows.map(r=>({time:fmt(r.d),value:r.v,
+    const cd=rows.map(r=>({time:toTime(r,isMin),open:r.o,high:r.h,low:r.l,close:r.c}));
+    const vd=rows.map(r=>({time:toTime(r,isMin),value:r.v,
       color:r.c>=r.o?'rgba(246,70,93,.5)':'rgba(56,139,253,.5)'}));
     const opt={layout:{background:{color:'transparent'},textColor:'#8b949e',fontSize:11},
       grid:{vertLines:{color:'#1c2129'},horzLines:{color:'#1c2129'}},
-      crosshair:{mode:0},timeScale:{borderColor:'#21262d'},
+      crosshair:{mode:0},
+      timeScale:{borderColor:'#21262d',timeVisible:isMin,secondsVisible:false},
       rightPriceScale:{borderColor:'#21262d'}};
     mChart=LightweightCharts.createChart(el,{...opt,height:300});
     const cs=mChart.addCandlestickSeries({upColor:'#f6465d',downColor:'#388bfd',
@@ -186,6 +205,19 @@ async function drawBigFor(sym, avg){
     mChart.timeScale().fitContent();mVol.timeScale().fitContent();
     mChart.timeScale().subscribeVisibleLogicalRangeChange(r=>{
       if(r&&mVol)mVol.timeScale().setVisibleLogicalRange(r);});
+    // 실시간 갱신: 마지막 봉 업데이트
+    if(window._liveT)clearInterval(window._liveT);
+    window._liveT=setInterval(async()=>{
+      if(document.hidden)return;
+      const fresh=await fetchChart(sym, mainPeriod);
+      if(!fresh.length||!mChart)return;
+      chartCache[ck]=fresh;
+      const last=fresh[fresh.length-1];
+      try{
+        cs.update({time:toTime(last,isMin),open:last.o,high:last.h,low:last.l,close:last.c});
+      }catch(e){}
+    }, isMin?10000:30000);
+    timers.push(window._liveT);
   });
 }
 renderMainPeriods();
@@ -294,7 +326,7 @@ window.closeChart=function(){
   if(volChart){volChart.remove();volChart=null;}
 };
 function renderPeriods(){
-  const P={'D':'일봉','W':'주봉','M':'월봉'};
+  const P={'1m':'1분','5m':'5분','D':'일봉','W':'주봉','M':'월봉'};
   document.getElementById('cmPeriods').innerHTML=Object.entries(P).map(([k,v])=>
     `<button onclick="setPeriod('${k}')" style="background:${k===cmPeriod?'var(--gd)':'var(--bd)'};
      color:${k===cmPeriod?'#000':'var(--tx)'};border:none;border-radius:8px;padding:7px 13px;

@@ -37,9 +37,11 @@ td{padding:9px 6px;border-bottom:1px solid var(--bd);}
   <div class="hgrid">
     <div>
       <div class="card mb-8">
-        <div class="ct">보유 포지션 <small id="posCnt"></small></div>
+        <div class="ct">보유 포지션 <small id="posCnt"></small>
+          <span id="mainPeriods" style="display:flex;gap:6px;"></span></div>
         <div class="tabs" id="posTabs"></div>
-        <div class="bigchart"><canvas id="bigCv" width="1200" height="420"></canvas></div>
+        <div id="mainChart" style="height:300px;"></div>
+        <div id="mainVol" style="height:70px;"></div>
         <div class="posmeta" id="posMeta"></div>
       </div>
       <div class="card">
@@ -121,39 +123,72 @@ async function loadPos(){
 }
 window.selPos=async s=>{activeSym=s;await loadPos();};
 
+let mainPeriod='D', mChart=null, mVol=null;
+function renderMainPeriods(){
+  const P={'D':'일','W':'주','M':'월'};
+  document.getElementById('mainPeriods').innerHTML=Object.entries(P).map(([k,v])=>
+    `<button onclick="setMainPeriod('${k}')" style="background:${k===mainPeriod?'var(--gd)':'var(--bd)'};
+     color:${k===mainPeriod?'#000':'var(--tx)'};border:none;border-radius:7px;padding:5px 11px;
+     font-size:11px;font-weight:700;cursor:pointer;">${v}봉</button>`).join('');
+}
+window.setMainPeriod=function(pd){mainPeriod=pd;renderMainPeriods();
+  const p=positions.find(x=>x.symbol===activeSym);
+  if(p)drawBigFor(activeSym,p.avg_price);};
+
+function loadLW2(cb){
+  if(window.LightweightCharts){cb();return;}
+  const s=document.createElement('script');
+  s.src='https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js';
+  s.onload=cb;document.head.appendChild(s);
+}
+function ma2(data,n){
+  const out=[];for(let i=n-1;i<data.length;i++){
+    let s=0;for(let k=i-n+1;k<=i;k++)s+=data[k].close;
+    out.push({time:data[i].time,value:s/n});}
+  return out;
+}
 async function drawBigFor(sym, avg){
-  if(!chartCache[sym]){
-    try{const r=await fetch(`/api/chart/${sym}?days=30`);const j=await r.json();
-      chartCache[sym]=(j.data||[]).map(x=>x.c);}catch(e){chartCache[sym]=[];}}
-  drawBig(chartCache[sym], avg);
+  loadLW2(async()=>{
+    const days=mainPeriod==='D'?90:mainPeriod==='W'?300:600;
+    const ck=`${sym}:${mainPeriod}`;
+    if(!chartCache[ck]){
+      try{const r=await fetch(`/api/chart/${sym}?period=${mainPeriod}&days=${days}`);
+        const j=await r.json();chartCache[ck]=j.data||[];}catch(e){chartCache[ck]=[];}}
+    const rows=chartCache[ck];
+    if(mChart){mChart.remove();mChart=null;}
+    if(mVol){mVol.remove();mVol=null;}
+    const el=document.getElementById('mainChart');
+    if(!el)return;
+    if(!rows.length){el.innerHTML='<div class="empty">차트 데이터 없음</div>';return;}
+    el.innerHTML='';
+    const fmt=d=>`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+    const cd=rows.map(r=>({time:fmt(r.d),open:r.o,high:r.h,low:r.l,close:r.c}));
+    const vd=rows.map(r=>({time:fmt(r.d),value:r.v,
+      color:r.c>=r.o?'rgba(246,70,93,.5)':'rgba(56,139,253,.5)'}));
+    const opt={layout:{background:{color:'transparent'},textColor:'#8b949e',fontSize:11},
+      grid:{vertLines:{color:'#1c2129'},horzLines:{color:'#1c2129'}},
+      crosshair:{mode:0},timeScale:{borderColor:'#21262d'},
+      rightPriceScale:{borderColor:'#21262d'}};
+    mChart=LightweightCharts.createChart(el,{...opt,height:300});
+    const cs=mChart.addCandlestickSeries({upColor:'#f6465d',downColor:'#388bfd',
+      borderUpColor:'#f6465d',borderDownColor:'#388bfd',
+      wickUpColor:'#f6465d',wickDownColor:'#388bfd'});
+    cs.setData(cd);
+    mChart.addLineSeries({color:'#e3b341',lineWidth:1,priceLineVisible:false,
+      lastValueVisible:false}).setData(ma2(cd,5));
+    mChart.addLineSeries({color:'#bc8cff',lineWidth:1,priceLineVisible:false,
+      lastValueVisible:false}).setData(ma2(cd,20));
+    if(avg>0)cs.createPriceLine({price:avg,color:'#8b949e',lineStyle:2,
+      axisLabelVisible:true,title:'평단'});
+    mVol=LightweightCharts.createChart(document.getElementById('mainVol'),
+      {...opt,height:70,timeScale:{visible:false}});
+    mVol.addHistogramSeries({priceFormat:{type:'volume'}}).setData(vd);
+    mChart.timeScale().fitContent();mVol.timeScale().fitContent();
+    mChart.timeScale().subscribeVisibleLogicalRangeChange(r=>{
+      if(r&&mVol)mVol.timeScale().setVisibleLogicalRange(r);});
+  });
 }
-function drawBig(cs, avg){
-  const cv=document.getElementById('bigCv');if(!cv)return;
-  const ctx=cv.getContext('2d'),W=cv.width,H=cv.height,pad=14;
-  ctx.clearRect(0,0,W,H);
-  if(!cs||cs.length<2){ctx.fillStyle='#8b949e';ctx.font='24px sans-serif';
-    ctx.fillText('차트 데이터 없음',W/2-90,H/2);return;}
-  const mn=Math.min(...cs,avg||Infinity),mx=Math.max(...cs,avg||0);
-  const y=v=>H-pad-(v-mn)/(mx-mn||1)*(H-pad*2);
-  const up=cs[cs.length-1]>=cs[0];
-  // 평단선
-  if(avg){ctx.strokeStyle='#8b949e';ctx.setLineDash([6,6]);ctx.beginPath();
-    ctx.moveTo(0,y(avg));ctx.lineTo(W,y(avg));ctx.stroke();ctx.setLineDash([]);}
-  // 영역
-  const grad=ctx.createLinearGradient(0,0,0,H);
-  grad.addColorStop(0,up?'rgba(246,70,93,.25)':'rgba(56,139,253,.25)');
-  grad.addColorStop(1,'transparent');
-  ctx.beginPath();
-  cs.forEach((c,i)=>{const x=pad+i*(W-pad*2)/(cs.length-1);
-    i?ctx.lineTo(x,y(c)):ctx.moveTo(x,y(c));});
-  ctx.lineTo(W-pad,H);ctx.lineTo(pad,H);ctx.closePath();
-  ctx.fillStyle=grad;ctx.fill();
-  // 라인
-  ctx.beginPath();
-  cs.forEach((c,i)=>{const x=pad+i*(W-pad*2)/(cs.length-1);
-    i?ctx.lineTo(x,y(c)):ctx.moveTo(x,y(c));});
-  ctx.strokeStyle=up?'#f6465d':'#388bfd';ctx.lineWidth=4;ctx.stroke();
-}
+renderMainPeriods();
 
 async function loadWatch(){
   try{const r=await fetch('/api/prices/stock');const j=await r.json();

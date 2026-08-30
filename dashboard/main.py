@@ -4852,10 +4852,81 @@ async def get_chart_analysis(symbol: str):
         return {"success": False, "error": str(e)}
 
 
+async def _fetch_minute_ohlcv(symbol: str, unit: int = 1) -> list:
+    """KIS 당일 분봉 (unit: 1/5/30분). 최근 ~120봉"""
+    try:
+        token = await get_kis_token()
+        if not token:
+            return []
+        import ssl as _ssl
+        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+        now_hm = datetime.now(KST).strftime("%H%M%S")
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            r = await sess.get(
+                f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+                headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                         "appsecret": config.kis_app_secret,
+                         "tr_id": "FHKST03010200", "custtype": "P"},
+                params={"FID_ETC_CLS_CODE": "", "FID_COND_MRKT_DIV_CODE": "J",
+                        "FID_INPUT_ISCD": symbol, "FID_INPUT_HOUR_1": now_hm,
+                        "FID_PW_DATA_INCU_YN": "Y"},
+                timeout=_aiohttp.ClientTimeout(total=8))
+            data = await r.json()
+        if data.get("rt_cd") != "0":
+            logger.warning(f"분봉 실패 [{symbol}] {data.get('msg1','')[:50]}")
+            return []
+        rows = data.get("output2", []) or []
+        out = []
+        for it in rows:
+            try:
+                out.append({"date": it.get("stck_bsop_date","") ,
+                            "time": it.get("stck_cntg_hour",""),
+                            "open": int(it.get("stck_oprc",0) or 0),
+                            "high": int(it.get("stck_hgpr",0) or 0),
+                            "low": int(it.get("stck_lwpr",0) or 0),
+                            "close": int(it.get("stck_prpr",0) or 0),
+                            "vol": int(it.get("cntg_vol",0) or 0)})
+            except Exception:
+                pass
+        out = [o for o in out if o["close"] > 0]
+        out.sort(key=lambda x: x["date"] + x["time"])
+        # 1분봉 원본 → unit 분봉 합성
+        if unit > 1 and out:
+            merged, bucket, key = [], [], None
+            for r_ in out:
+                hm = r_["time"][:4]
+                k = f"{r_['date']}{int(hm[:2]):02d}{(int(hm[2:4])//unit)*unit:02d}"
+                if k != key and bucket:
+                    merged.append({"date": bucket[-1]["date"], "time": bucket[-1]["time"],
+                        "open": bucket[0]["open"], "high": max(b["high"] for b in bucket),
+                        "low": min(b["low"] for b in bucket), "close": bucket[-1]["close"],
+                        "vol": sum(b["vol"] for b in bucket)})
+                    bucket = []
+                key = k
+                bucket.append(r_)
+            if bucket:
+                merged.append({"date": bucket[-1]["date"], "time": bucket[-1]["time"],
+                    "open": bucket[0]["open"], "high": max(b["high"] for b in bucket),
+                    "low": min(b["low"] for b in bucket), "close": bucket[-1]["close"],
+                    "vol": sum(b["vol"] for b in bucket)})
+            out = merged
+        return out
+    except Exception as e:
+        logger.debug(f"분봉 조회 오류 [{symbol}]: {e}")
+        return []
+
+
 @app.get("/api/chart/{symbol}")
 async def get_chart_data(symbol: str, days: int = 30, period: str = "D"):
     """차트 데이터: OHLCV 전체 (period=D/W/M, 스파크라인 호환 c 키 유지)"""
     try:
+        pu = period.lower()
+        if pu in ("1m", "5m", "30m"):
+            unit = int(pu[:-1])
+            rows = await _fetch_minute_ohlcv(symbol, unit)
+            return {"success": True, "minute": True, "data": [
+                {"d": r["date"], "t": r["time"], "o": r["open"], "h": r["high"],
+                 "l": r["low"], "c": r["close"], "v": r["vol"]} for r in rows]}
         fetch_days = days if period == "D" else min(600, days * (7 if period == "W" else 30))
         rows = await _fetch_daily_ohlcv(symbol, min(600, fetch_days))
         rows = _resample_ohlcv(rows, period.upper())

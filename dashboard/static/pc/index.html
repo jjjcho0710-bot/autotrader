@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTrader — PC</title>
+<link rel="stylesheet" href="/static/pc/pc-common.css">
+<style>
+body{height:100vh;display:flex;overflow:hidden;}
+/* 사이드바 */
+.side{width:216px;flex-shrink:0;background:var(--p);border-right:1px solid var(--bd);
+      display:flex;flex-direction:column;padding:18px 12px;}
+.logo{font-size:17px;font-weight:800;color:var(--br);padding:0 10px 18px;}
+.logo span{color:var(--gd);}
+.jbtn{display:flex;align-items:center;gap:12px;padding:13px 12px;border-radius:14px;
+      background:linear-gradient(145deg,rgba(188,140,255,.14),rgba(188,140,255,.05));
+      border:1px solid rgba(188,140,255,.3);cursor:pointer;margin-bottom:16px;}
+.jbtn.on{background:linear-gradient(145deg,rgba(188,140,255,.3),rgba(188,140,255,.12));}
+.jav{width:38px;height:38px;border-radius:50%;background:linear-gradient(145deg,var(--pu),#7c5fe0);
+     display:flex;align-items:center;justify-content:center;font-size:19px;
+     box-shadow:0 0 18px rgba(188,140,255,.35);}
+.jname{font-weight:800;color:var(--br);font-size:14px;}
+.jst{font-size:10px;color:var(--gr);}
+.navlbl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;padding:6px 12px;}
+.nav-item{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:11px;
+          color:var(--dim);cursor:pointer;font-weight:600;font-size:13px;margin-bottom:2px;}
+.nav-item:hover{background:var(--p2);color:var(--tx);}
+.nav-item.on{background:var(--p2);color:var(--gd);}
+.nav-item .ic{font-size:17px;width:22px;text-align:center;}
+.side-foot{margin-top:auto;padding:10px 12px;font-size:10px;color:var(--dim);}
+.side-foot a{color:var(--dim);}
+/* 메인 */
+.main{flex:1;overflow-y:auto;position:relative;}
+#page{min-height:100%;}
+.loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+         color:var(--dim);background:var(--bg);}
+@media(max-width:900px){
+  body::before{content:"PC 전용 화면입니다. 모바일은 홈으로 이동해주세요.";
+    position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;
+    align-items:center;justify-content:center;padding:30px;text-align:center;color:var(--gd);font-weight:700;}
+}
+</style>
+</head>
+<body>
+<aside class="side">
+  <div class="logo">Auto<span>Trader</span></div>
+  <div class="jbtn" id="nav-jarvis" onclick="go('jarvis')">
+    <div class="jav">🤖</div>
+    <div><div class="jname">Jarvis</div><div class="jst" id="jstatus">● 온라인</div></div>
+  </div>
+  <div class="navlbl">메뉴</div>
+  <div class="nav-item on" id="nav-home" onclick="go('home')"><span class="ic">⊞</span>대시보드</div>
+  <div class="nav-item" id="nav-strategy" onclick="go('strategy')"><span class="ic">⚙️</span>전략</div>
+  <div class="nav-item" id="nav-training" onclick="go('training')"><span class="ic">🎓</span>트레이닝</div>
+  <div class="nav-item" id="nav-logs" onclick="go('logs')"><span class="ic">📋</span>로그</div>
+  <div class="side-foot">v1.0 · <a href="/">모바일 버전</a></div>
+</aside>
+<main class="main"><div id="page"><div class="loading">불러오는 중...</div></div></main>
+<script>
+let cur = null;
+const timers = [];
+function clearTimers(){ while(timers.length) clearInterval(timers.pop()); }
+window.addTimer = fn_ms => { /* pages register intervals */ };
+window.regInterval = (fn, ms) => { const t = setInterval(fn, ms); timers.push(t); return t; };
+
+async function go(name){
+  if (cur === name) return;
+  cur = name;
+  clearTimers();
+  document.querySelectorAll('.nav-item,.jbtn').forEach(e=>e.classList.remove('on'));
+  const btn = document.getElementById('nav-'+name);
+  if (btn) btn.classList.add('on');
+  const pg = document.getElementById('page');
+  pg.innerHTML = '<div class="loading">불러오는 중...</div>';
+  try{
+    const r = await fetch(`/static/pc/pages/${name}.html?v=${Date.now()}`);
+    const html = await r.text();
+    pg.innerHTML = html;
+    // innerHTML 스크립트는 실행 안 되므로 재생성
+    pg.querySelectorAll('script').forEach(old=>{
+      const s = document.createElement('script');
+      if (old.src) s.src = old.src; else s.textContent = old.textContent;
+      old.replaceWith(s);
+    });
+  }catch(e){
+    pg.innerHTML = '<div class="loading">페이지 로드 실패</div>';
+  }
+}
+go('home');
+// 자비스 상태 점검
+setInterval(async()=>{
+  try{const r=await fetch('/api/status');const j=await r.json();
+    const s=j.data||j; const b=typeof s.stock_trader==='string'?JSON.parse(s.stock_trader):s.stock_trader;
+    document.getElementById('jstatus').textContent = b&&b.status==='running'?'● 온라인 · 봇 관리 중':'● 온라인';
+  }catch(e){}
+}, 30000);
+</script>
+</body>
+</html>

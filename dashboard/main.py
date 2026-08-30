@@ -4746,6 +4746,12 @@ async def training_page():
         return f.read()
 
 
+@app.get("/pc", response_class=HTMLResponse)
+async def pc_page():
+    with open("static/pc/index.html", encoding="utf-8") as f:
+        return f.read()
+
+
 @app.get("/desk", response_class=HTMLResponse)
 async def desk_page():
     with open("static/desk.html", encoding="utf-8") as f:

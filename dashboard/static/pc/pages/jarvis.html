@@ -1,0 +1,116 @@
+<style>
+.jp{display:flex;height:100vh;overflow:hidden;}
+.jmain{flex:1.6;display:flex;flex-direction:column;border-right:1px solid var(--bd);
+       background:radial-gradient(ellipse at top,#191927,var(--bg));}
+.jh{padding:20px 28px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--bd);}
+.jav2{width:46px;height:46px;border-radius:50%;background:linear-gradient(145deg,var(--pu),#7c5fe0);
+      display:flex;align-items:center;justify-content:center;font-size:22px;
+      box-shadow:0 0 24px rgba(188,140,255,.4);}
+.jt2{font-size:17px;font-weight:800;color:var(--br);}
+.js2{font-size:11px;color:var(--gr);}
+.jmsgs{flex:1;overflow-y:auto;padding:24px 28px;display:flex;flex-direction:column;gap:14px;}
+.b{max-width:78%;padding:13px 17px;border-radius:14px;font-size:13.5px;line-height:1.7;
+   white-space:pre-wrap;word-break:break-word;}
+.b.u{align-self:flex-end;background:linear-gradient(145deg,#2650b8,#1c3d8f);color:#fff;
+     border-bottom-right-radius:4px;}
+.b.j{align-self:flex-start;background:var(--p2);border:1px solid var(--bd);
+     border-bottom-left-radius:4px;color:var(--br);box-shadow:0 2px 12px rgba(0,0,0,.3);}
+.jtyping{padding:0 28px 8px;color:var(--dim);font-size:12px;display:none;}
+.jquick{display:flex;gap:8px;padding:0 28px 14px;flex-wrap:wrap;}
+.jquick button{background:var(--p2);border:1px solid var(--bd);color:var(--tx);
+               border-radius:20px;padding:8px 15px;font-size:12px;}
+.jin{display:flex;gap:10px;padding:18px 28px 24px;border-top:1px solid var(--bd);}
+.jin textarea{flex:1;background:var(--p);border:1px solid var(--bd);border-radius:14px;
+  color:var(--br);padding:14px 17px;font-size:14px;resize:none;height:52px;font-family:inherit;}
+.jin button{background:linear-gradient(145deg,var(--pu),#6d5fe0);border:none;
+  border-radius:14px;color:#fff;padding:0 26px;font-weight:800;font-size:14px;}
+.rail{flex:1;overflow-y:auto;padding:20px;}
+.rc{background:var(--p);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:14px;}
+.rt{font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;margin-bottom:12px;}
+.big2{font-size:24px;font-weight:800;color:var(--br);}
+.rrow{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bd);font-size:12.5px;}
+.rrow:last-child{border:none;}
+.pmini{padding:11px;background:var(--p2);border-radius:10px;margin-bottom:8px;font-size:12px;}
+</style>
+<div class="jp">
+  <div class="jmain">
+    <div class="jh"><div class="jav2">🤖</div>
+      <div><div class="jt2">Jarvis</div><div class="js2" id="jst2">● 온라인 · 총괄 관리자</div></div></div>
+    <div class="jmsgs" id="jmsgs">
+      <div class="b j">주인님, PC 데스크에 오신 것을 환영합니다. 매매 지시·차트 분석·전략 논의 무엇이든 말씀해주세요.</div>
+    </div>
+    <div class="jtyping" id="jtyping">자비스 생각 중...</div>
+    <div class="jquick">
+      <button onclick="jq('포트폴리오 분석해줘')">📊 포트폴리오</button>
+      <button onclick="jq('오늘의 작전 알려줘')">🧭 오늘 작전</button>
+      <button onclick="jq('지시 목록')">📌 지시 목록</button>
+      <button onclick="jq('오늘 판단 채점 결과 어때?')">📝 채점</button>
+    </div>
+    <div class="jin">
+      <textarea id="jin" placeholder="자비스에게 무엇이든... (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+      <button onclick="jsend()">전송</button>
+    </div>
+  </div>
+  <div class="rail">
+    <div class="rc"><div class="rt">계좌</div><div class="big2 mono" id="rTotal">-</div>
+      <div style="margin-top:6px;" id="rPnl"></div>
+      <div style="color:var(--dim);font-size:11px;margin-top:4px;" id="rCash"></div></div>
+    <div class="rc"><div class="rt">보유 포지션</div><div id="rPos"><div class="empty">로딩...</div></div></div>
+    <div class="rc"><div class="rt">시장</div><div id="rMkt"><div class="empty">로딩...</div></div></div>
+    <div class="rc"><div class="rt">오늘 자비스 활동</div><div id="rAct"><div class="empty">로딩...</div></div></div>
+  </div>
+</div>
+<script>
+(function(){
+const won=n=>Number(n||0).toLocaleString()+"원";
+const pct=n=>(n>=0?"+":"")+Number(n||0).toFixed(2)+"%";
+const cls=n=>n>0?"up":n<0?"dn":"";
+const jm=document.getElementById('jmsgs'),jin=document.getElementById('jin'),
+      jt=document.getElementById('jtyping');
+function addB(role,txt){const d=document.createElement('div');
+  d.className='b '+role;d.textContent=txt;jm.appendChild(d);jm.scrollTop=jm.scrollHeight;}
+window.jsend=async function(){
+  const t=jin.value.trim();if(!t)return;
+  jin.value='';addB('u',t);jt.style.display='block';
+  try{const r=await fetch('/api/jarvis/chat',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({message:t,session_id:'pc'})});
+    const j=await r.json();addB('j',j.reply||('❌ '+(j.error||'오류')));
+  }catch(e){addB('j','❌ 연결 오류');}
+  jt.style.display='none';
+};
+window.jq=t=>{jin.value=t;jsend();};
+jin.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();jsend();}});
+
+async function rail(){
+  try{const r=await fetch('/api/account/stock');const j=await r.json();const a=j.data||{};
+    rTotal.textContent=won(a.total_eval);
+    rPnl.innerHTML=`<b class="${cls(a.pnl)}">${won(a.pnl)}</b> 평가손익`;
+    rCash.textContent=`예수금 ${won(a.cash)}`;
+  }catch(e){}
+  try{const r=await fetch('/api/positions/stock');const j=await r.json();const ps=j.data||[];
+    rPos.innerHTML=ps.length?ps.map(p=>{
+      const rate=p.pnl_rate??0;
+      return `<div class="pmini"><div style="display:flex;justify-content:space-between;">
+        <b style="color:var(--br)">${p.name||p.symbol}</b>
+        <b class="${cls(rate)}">${pct(rate)}</b></div>
+        <div style="color:var(--dim);font-size:11px;">${p.qty}주 · ${won(p.pnl)}</div></div>`;
+    }).join(''):'<div class="empty">보유 없음</div>';
+  }catch(e){}
+  try{const r=await fetch('/api/market/index');const j=await r.json();const d=j.data||{};
+    let h='';
+    if(d.KOSPI)h+=`<div class="rrow"><span>코스피</span><b class="${cls(d.KOSPI.change_rate)} mono">${d.KOSPI.price.toLocaleString()} ${pct(d.KOSPI.change_rate)}</b></div>`;
+    if(d.KOSDAQ)h+=`<div class="rrow"><span>코스닥</span><b class="${cls(d.KOSDAQ.change_rate)} mono">${d.KOSDAQ.price.toLocaleString()} ${pct(d.KOSDAQ.change_rate)}</b></div>`;
+    rMkt.innerHTML=h||'<div class="empty">-</div>';
+  }catch(e){}
+  try{const r=await fetch('/api/journal?days=1');const j=await r.json();const s=j.summary||{};
+    rAct.innerHTML=`<div class="rrow"><span>판단</span><b style="color:var(--br)">${s.total_signals||0}건</b></div>
+      <div class="rrow"><span>실행</span><b style="color:var(--br)">${s.executes||0}건</b></div>
+      <div class="rrow"><span>체결</span><b style="color:var(--br)">${s.fills||0}건</b></div>`;
+  }catch(e){}
+}
+rail();
+window.regInterval(rail, 15000);
+})();
+</script>

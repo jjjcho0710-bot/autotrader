@@ -1,0 +1,209 @@
+<style>
+.hp{padding:26px 34px 40px;}
+.htitle{font-size:19px;color:var(--br);font-weight:800;margin-bottom:4px;}
+.hsub{font-size:12px;color:var(--dim);margin-bottom:22px;}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:22px;}
+.kpi{background:linear-gradient(145deg,var(--p),var(--p2));border:1px solid var(--bd);border-radius:16px;padding:17px;}
+.kl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;}
+.kv{font-size:19px;font-weight:800;color:var(--br);margin-top:6px;}
+.ks{font-size:11px;margin-top:4px;color:var(--dim);}
+.hgrid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;}
+.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+.tab{padding:6px 14px;border-radius:20px;background:var(--bd);font-size:11px;cursor:pointer;color:var(--tx);}
+.tab.on{background:var(--gd);color:#000;font-weight:700;}
+.bigchart{height:210px;position:relative;}
+.bigchart canvas{width:100%;height:100%;}
+.posmeta{display:flex;gap:22px;margin-top:12px;font-size:12px;flex-wrap:wrap;}
+.wr{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--bd);font-size:12.5px;}
+.wr:last-child{border:none;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{color:var(--dim);text-align:left;padding:7px 6px;font-size:10px;text-transform:uppercase;border-bottom:1px solid var(--bd);}
+td{padding:9px 6px;border-bottom:1px solid var(--bd);}
+.bars{display:flex;align-items:flex-end;gap:8px;height:76px;}
+.bars>div{flex:1;border-radius:4px;min-height:4px;}
+.mb-8{margin-bottom:16px;}
+</style>
+<div class="hp">
+  <div class="htitle">대시보드</div>
+  <div class="hsub" id="hdate">-</div>
+  <div class="kpis">
+    <div class="kpi"><div class="kl">총 자산</div><div class="kv mono" id="kTotal">-</div><div class="ks" id="kTotalS"></div></div>
+    <div class="kpi"><div class="kl">평가 손익</div><div class="kv mono" id="kPnl">-</div><div class="ks" id="kPnlS"></div></div>
+    <div class="kpi"><div class="kl">예수금 D+2</div><div class="kv mono" id="kCash">-</div><div class="ks">출금 가능</div></div>
+    <div class="kpi"><div class="kl">코스피</div><div class="kv mono" id="kKospi">-</div><div class="ks mono" id="kKospiS"></div></div>
+    <div class="kpi"><div class="kl">오늘 판단</div><div class="kv mono" id="kJdg">-</div><div class="ks" id="kJdgS"></div></div>
+    <div class="kpi"><div class="kl">시스템</div><div class="kv" id="kSys">-</div><div class="ks" id="kSysS"></div></div>
+  </div>
+  <div class="hgrid">
+    <div>
+      <div class="card mb-8">
+        <div class="ct">보유 포지션 <small id="posCnt"></small></div>
+        <div class="tabs" id="posTabs"></div>
+        <div class="bigchart"><canvas id="bigCv" width="1200" height="420"></canvas></div>
+        <div class="posmeta" id="posMeta"></div>
+      </div>
+      <div class="card">
+        <div class="ct">오늘 판단 타임라인</div>
+        <table><thead><tr><th>시각</th><th>종목</th><th>판정</th><th>전략</th><th>채점</th></tr></thead>
+        <tbody id="tl"><tr><td colspan="5" class="empty">로딩...</td></tr></tbody></table>
+      </div>
+    </div>
+    <div>
+      <div class="card mb-8">
+        <div class="ct">감시 종목 <small id="wCnt"></small></div>
+        <div id="wl"><div class="empty">로딩...</div></div>
+      </div>
+      <div class="card mb-8">
+        <div class="ct">오늘의 작전</div>
+        <div id="plan" style="font-size:12px;line-height:1.9;white-space:pre-wrap;color:var(--tx);">로딩...</div>
+      </div>
+      <div class="card">
+        <div class="ct">최근 14일 채점</div>
+        <div class="bars" id="bars"><div class="empty">데이터 없음</div></div>
+        <div style="display:flex;gap:14px;font-size:10px;color:var(--dim);margin-top:8px;">
+          <span>🟩 적중/잘거름</span><span>🟥 빗나감/놓침</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+const won=n=>Number(n||0).toLocaleString()+"원";
+const pct=n=>(n>=0?"+":"")+Number(n||0).toFixed(2)+"%";
+const cls=n=>n>0?"up":n<0?"dn":"";
+document.getElementById('hdate').textContent =
+  new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
+
+let positions=[], activeSym=null;
+const chartCache={};
+
+async function loadKpi(){
+  try{const r=await fetch('/api/account/stock');const j=await r.json();const a=j.data||{};
+    kTotal.textContent=won(a.total_eval); kCash.textContent=won(a.cash);
+    kPnl.textContent=won(a.pnl); kPnl.className='kv mono '+cls(a.pnl);
+  }catch(e){}
+  try{const r=await fetch('/api/market/index');const j=await r.json();const d=j.data||{};
+    if(d.KOSPI){kKospi.textContent=d.KOSPI.price.toLocaleString();
+      kKospiS.textContent=pct(d.KOSPI.change_rate);kKospiS.className='ks mono '+cls(d.KOSPI.change_rate);}
+  }catch(e){}
+  try{const r=await fetch('/api/journal?days=1');const j=await r.json();
+    const s=j.summary||{};kJdg.textContent=(s.total_signals||0)+'건';
+    kJdgS.textContent=`실행 ${s.executes||0} · 보류 ${s.skips||0}`;
+  }catch(e){}
+  try{const r=await fetch('/api/status');const j=await r.json();const s=j.data||j;
+    const cnt=['stock_trader','crypto_trader','data_collector'].filter(k=>{
+      try{const b=typeof s[k]==='string'?JSON.parse(s[k]):s[k];return b&&b.status==='running';}catch(e){return false;}}).length;
+    kSys.textContent=cnt===3?'정상':cnt+'/3';
+    kSys.style.color=cnt===3?'var(--gr)':'var(--gd)';
+    kSysS.textContent=`봇 ${cnt}/3 가동`;
+  }catch(e){}
+}
+
+async function loadPos(){
+  try{const r=await fetch('/api/positions/stock');const j=await r.json();
+    positions=j.data||[];
+    posCnt.textContent=positions.length+'종목';
+    if(!positions.length){posTabs.innerHTML='';posMeta.innerHTML='<span class="empty">보유 없음</span>';
+      drawBig([]);return;}
+    if(!activeSym||!positions.find(p=>p.symbol===activeSym)) activeSym=positions[0].symbol;
+    posTabs.innerHTML=positions.map(p=>
+      `<div class="tab ${p.symbol===activeSym?'on':''}" onclick="selPos('${p.symbol}')">${p.name||p.symbol}</div>`).join('');
+    const p=positions.find(x=>x.symbol===activeSym);
+    const rate=p.pnl_rate??0;
+    posMeta.innerHTML=`<span>${p.qty}주 · 평단 <b style="color:var(--br)">${won(p.avg_price)}</b></span>
+      <span>현재 <b style="color:var(--br)">${won(p.cur_price)}</b></span>
+      <span class="${cls(p.pnl)}"><b>${won(p.pnl)} (${pct(rate)})</b></span>
+      <span style="color:var(--dim)">손절 -7% 상의 · 익절 +5% 트레일링</span>`;
+    await drawBigFor(activeSym, p.avg_price);
+  }catch(e){}
+}
+window.selPos=async s=>{activeSym=s;await loadPos();};
+
+async function drawBigFor(sym, avg){
+  if(!chartCache[sym]){
+    try{const r=await fetch(`/api/chart/${sym}?days=30`);const j=await r.json();
+      chartCache[sym]=(j.data||[]).map(x=>x.c);}catch(e){chartCache[sym]=[];}}
+  drawBig(chartCache[sym], avg);
+}
+function drawBig(cs, avg){
+  const cv=document.getElementById('bigCv');if(!cv)return;
+  const ctx=cv.getContext('2d'),W=cv.width,H=cv.height,pad=14;
+  ctx.clearRect(0,0,W,H);
+  if(!cs||cs.length<2){ctx.fillStyle='#8b949e';ctx.font='24px sans-serif';
+    ctx.fillText('차트 데이터 없음',W/2-90,H/2);return;}
+  const mn=Math.min(...cs,avg||Infinity),mx=Math.max(...cs,avg||0);
+  const y=v=>H-pad-(v-mn)/(mx-mn||1)*(H-pad*2);
+  const up=cs[cs.length-1]>=cs[0];
+  // 평단선
+  if(avg){ctx.strokeStyle='#8b949e';ctx.setLineDash([6,6]);ctx.beginPath();
+    ctx.moveTo(0,y(avg));ctx.lineTo(W,y(avg));ctx.stroke();ctx.setLineDash([]);}
+  // 영역
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,up?'rgba(246,70,93,.25)':'rgba(56,139,253,.25)');
+  grad.addColorStop(1,'transparent');
+  ctx.beginPath();
+  cs.forEach((c,i)=>{const x=pad+i*(W-pad*2)/(cs.length-1);
+    i?ctx.lineTo(x,y(c)):ctx.moveTo(x,y(c));});
+  ctx.lineTo(W-pad,H);ctx.lineTo(pad,H);ctx.closePath();
+  ctx.fillStyle=grad;ctx.fill();
+  // 라인
+  ctx.beginPath();
+  cs.forEach((c,i)=>{const x=pad+i*(W-pad*2)/(cs.length-1);
+    i?ctx.lineTo(x,y(c)):ctx.moveTo(x,y(c));});
+  ctx.strokeStyle=up?'#f6465d':'#388bfd';ctx.lineWidth=4;ctx.stroke();
+}
+
+async function loadWatch(){
+  try{const r=await fetch('/api/prices/stock');const j=await r.json();
+    const items=Object.values(j.data||j.prices||{});
+    wCnt.textContent=items.length+'종목';
+    wl.innerHTML=items.length?items.slice(0,10).map(p=>{
+      const c=Number(p.change_rate??p.change??0);
+      return `<div class="wr"><b style="color:var(--br)">${p.name||p.symbol}</b>
+        <span class="mono">${won(p.price)} <b class="${cls(c)}">${pct(c)}</b></span></div>`;
+    }).join(''):'<div class="empty">감시 없음</div>';
+  }catch(e){}
+}
+
+async function loadPlan(){
+  try{const r=await fetch('/api/jarvis/plan');const j=await r.json();
+    document.getElementById('plan').textContent=(j.plan||'작전 없음 (08:30 자동 수립)').slice(0,700);
+  }catch(e){}
+}
+
+async function loadTl(){
+  try{const r=await fetch('/api/journal?days=1');const j=await r.json();const d=j.data||[];
+    tl.innerHTML=d.length?d.slice(0,15).map(x=>{
+      const t=new Date(x.ts);
+      const pill=x.source==='chat'?'<span class="pill pm">수동</span>'
+        :x.jarvis_decision==='SKIP'?'<span class="pill ps">SKIP</span>'
+        :x.jarvis_decision==='EXECUTE_SMALL'?'<span class="pill pm">SMALL</span>'
+        :'<span class="pill pe">EXECUTE</span>';
+      const ev=(x.eval_pnl_rate!=null)?`<b class="${cls(x.eval_pnl_rate)}">${pct(x.eval_pnl_rate)}</b>`:'-';
+      return `<tr><td class="mono">${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}</td>
+        <td><b style="color:var(--br)">${x.name||x.symbol}</b></td><td>${pill}</td>
+        <td style="color:var(--dim)">${x.strategy||''}</td><td>${ev}</td></tr>`;
+    }).join(''):'<tr><td colspan="5" class="empty">오늘 판단 없음</td></tr>';
+  }catch(e){}
+}
+
+async function loadBars(){
+  try{const r=await fetch('/api/training/summary');const j=await r.json();
+    const d=(j.daily||[]).slice(0,10).reverse();
+    if(!d.length)return;
+    const mx=Math.max(...d.map(x=>x.total),1);
+    bars.innerHTML=d.map(x=>{
+      const good=x.exec_hit+x.skip_good, bad=x.exec_miss+x.skip_missed;
+      const gr=good/(good+bad||1);
+      return `<div title="${x.date}: 좋음${good}/나쁨${bad}"
+        style="height:${Math.max(8,x.total/mx*100)}%;
+        background:linear-gradient(180deg,#3fb950 ${gr*100}%,#f6465d ${gr*100}%);"></div>`;
+    }).join('');
+  }catch(e){}
+}
+
+function all(){loadKpi();loadPos();loadWatch();loadTl();}
+all();loadPlan();loadBars();
+window.regInterval(all, 15000);
+})();
+</script>

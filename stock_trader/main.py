@@ -487,6 +487,48 @@ class StockTrader:
                     logger.warning(f"손절 알림 실패 [{symbol}]: {e}")
                 continue
 
+            # 지시 #5: +3% 도달 시 절반 익절 (지시 활성 시, 종목당 1회)
+            try:
+                if pnl_rate >= 3.0 and qty >= 2 and \
+                   not await cache.client.get(f"half_tp:{symbol}"):
+                    _half_on = False
+                    try:
+                        async with db.pool.acquire() as _conn:
+                            _half_on = bool(await _conn.fetchval(
+                                "SELECT 1 FROM jarvis_notes WHERE category='directive' "
+                                "AND is_active=TRUE AND content LIKE '%절반%' LIMIT 1"))
+                    except Exception:
+                        pass
+                    if _half_on:
+                        half_qty = qty // 2
+                        result = await self.trader.sell(symbol, cur_price, half_qty)
+                        if result["success"]:
+                            half_pnl = int((cur_price - avg_price) * half_qty)
+                            await db.insert_trade(
+                                bot="stock_trader", asset_type="stock",
+                                symbol=symbol, side="SELL",
+                                price=cur_price, quantity=half_qty,
+                                amount=cur_price * half_qty,
+                                strategy=f"{strat_name}_절반익절", pnl=half_pnl,
+                            )
+                            await cache.client.setex(f"half_tp:{symbol}", 86400, "1")
+                            try:
+                                from common.telegram import send_stock
+                                await send_stock(
+                                    f"💰 <b>{pos.get('name', symbol)} 절반 익절 실현</b>\n"
+                                    f"{half_qty}주 매도 @ {cur_price:,}원 "
+                                    f"(+{pnl_rate:.1f}%, 수익 {half_pnl:+,}원)\n"
+                                    f"잔여 {qty - half_qty}주는 트레일링으로 계속 관리합니다. "
+                                    f"(지시 #5: 3% 절반 챙기기)")
+                            except Exception:
+                                pass
+                            # 보유 수량 갱신 후 다음 종목으로
+                            pos["qty"] = qty - half_qty
+                            self.positions[symbol] = pos
+                            continue
+            except Exception as e:
+                logger.warning(f"절반 익절 처리 오류 [{symbol}]: {e}")
+
             # 익절: 상의 모드 + 트레일링 수익보호
             # ① 익절선 도달 → 자동매도 안함, 알림(홀딩/매도 판단 요청) + 고점 추적 시작
             # ② 고점 대비 -2% 반락 → 그때만 자동 매도 (수익 확보)

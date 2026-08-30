@@ -3893,6 +3893,16 @@ async def mark_notifications_read():
 
 async def _send_telegram(text: str, chat_id: str = None, token: str = None):
     """텔레그램 메시지 전송 (내부용) + 시스템 알림센터 저장"""
+    # 주말 매매 신호 알림 차단 (일일보고·복기·코인은 허용)
+    try:
+        from datetime import datetime as _dt
+        if _dt.now().weekday() >= 5:
+            _signal_keywords = ("매수 신호 건너뜀", "Jarvis 판단: SKIP", "매수 신호 감지",
+                                "익절선 도달", "손절선 도달", "급락", "급등")
+            if any(kw in (text or "") for kw in _signal_keywords):
+                return  # 주말엔 매매 신호 알림 무음
+    except Exception:
+        pass
     try:
         await _store_notification(text)
     except Exception:

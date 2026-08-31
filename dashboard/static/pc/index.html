@@ -72,7 +72,7 @@ async function go(name){
   const pg = document.getElementById('page');
   pg.innerHTML = '<div class="loading">불러오는 중...</div>';
   try{
-    const r = await fetch(`/static/pc/pages/${name}.html?v=${Date.now()}`);
+    const r = await fetch(`/static/pc/pages/${name}.html?v=20260831`);
     const html = await r.text();
     pg.innerHTML = html;
     // innerHTML 스크립트는 실행 안 되므로 재생성

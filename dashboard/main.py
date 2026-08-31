@@ -2040,8 +2040,34 @@ async def get_single_price(symbol: str):
         return {"success": False, "error": str(e)}
 
 
+
+def ttl_for(period: str) -> int:
+    return 10 if str(period).lower().endswith("m") else 300
+
+
+async def _rcache(key: str, ttl: int, fn):
+    """Redis JSON 캐시: 히트 시 즉시 반환, 미스 시 fn() 실행 후 저장"""
+    try:
+        if redis_client:
+            c = await redis_client.get(key)
+            if c:
+                return json.loads(c if isinstance(c, str) else c.decode())
+    except Exception:
+        pass
+    res = await fn()
+    try:
+        if redis_client and isinstance(res, dict) and res.get("success", True):
+            await redis_client.setex(key, ttl, json.dumps(res, default=str))
+    except Exception:
+        pass
+    return res
+
 @app.get("/api/market/index")
 async def get_market_index():
+    return await _rcache("cache:market:index", 15, lambda: _get_market_index_raw())
+
+
+async def _get_market_index_raw():
     """코스피/코스닥 지수 조회 (KIS API)"""
     try:
         import aiohttp as http
@@ -2118,6 +2144,10 @@ async def get_market_index():
 
 @app.get("/api/prices/stock")
 async def get_stock_prices():
+    return await _rcache("cache:prices:stock", 5, lambda: _get_stock_prices_raw())
+
+
+async def _get_stock_prices_raw():
     """주식 실시간 시세 (Redis) — watchlist 기준"""
     try:
         # watchlist에서 종목 조회
@@ -4466,6 +4496,10 @@ async def debug_stock_account():
 
 @app.get("/api/positions/stock")
 async def get_stock_positions():
+    return await _rcache("cache:positions:stock", 10, lambda: _get_stock_positions_raw())
+
+
+async def _get_stock_positions_raw():
     """KIS API - 주식 보유 포지션 실시간 조회"""
     try:
         import aiohttp as http
@@ -5014,6 +5048,10 @@ def _resample_ohlcv(rows: list, period: str) -> list:
 
 @app.get("/api/chart/analysis/{symbol}")
 async def get_chart_analysis(symbol: str):
+    return await _rcache(f"cache:chart:ana:{symbol}", 300, lambda: _get_chart_analysis_raw(symbol))
+
+
+async def _get_chart_analysis_raw(symbol: str):
     """자비스 차트 리서치 텍스트"""
     try:
         name = ""
@@ -5097,6 +5135,10 @@ async def _fetch_minute_ohlcv(symbol: str, unit: int = 1) -> list:
 
 @app.get("/api/chart/{symbol}")
 async def get_chart_data(symbol: str, days: int = 30, period: str = "D"):
+    return await _rcache(f"cache:chart:{symbol}:{period}:{days}", ttl_for(period), lambda: _get_chart_data_raw(symbol, days, period))
+
+
+async def _get_chart_data_raw(symbol: str, days: int = 30, period: str = "D"):
     """차트 데이터: OHLCV 전체 (period=D/W/M, 스파크라인 호환 c 키 유지)"""
     try:
         pu = period.lower()
@@ -5118,6 +5160,10 @@ async def get_chart_data(symbol: str, days: int = 30, period: str = "D"):
 
 @app.get("/api/journal")
 async def get_journal(days: int = 7):
+    return await _rcache(f"cache:journal:{days}", 10, lambda: _get_journal_raw(days))
+
+
+async def _get_journal_raw(days: int = 7):
     """매매일지 조회 + 요약 (EXECUTE율, 체결수, SKIP수)"""
     try:
         async with db_pool.acquire() as conn:

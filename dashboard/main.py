@@ -3909,7 +3909,7 @@ async def jarvis_chat(body: dict):
                     if raw:
                         target = json.loads(raw if isinstance(raw, str) else raw.decode())
                 if not target:
-                    return {"success": True, "reply": "대기 중인 매수 제안이 없어요.", "context_used": False}
+                    raise StopIteration  # 대기 제안 없음 → 일반 대화로 진행
                 if _re_reject.search(_um):
                     await redis_client.delete(f"proposal:{target['symbol']}")
                     return {"success": True, "reply": f"❌ {target['name']} 매수 제안 거절 처리했어요.", "context_used": False}
@@ -3926,6 +3926,8 @@ async def jarvis_chat(body: dict):
                     await _send_telegram(msg)
                     return {"success": True, "reply": msg.replace("<b>", "").replace("</b>", ""), "context_used": False}
                 return {"success": True, "reply": f"❌ 매수 실패: {order.get('error')}", "context_used": False}
+            except StopIteration:
+                pass
             except Exception as pe:
                 logger.warning(f"제안 승인 처리 오류: {pe}")
 

@@ -298,6 +298,12 @@ class StockTrader:
 
         while self.running:
             try:
+                # 장중(평일 09:00~15:30)에만 감시 — 장외엔 캐시 가격으로 오알림 방지
+                _now = datetime.now()
+                _ct = _now.time().replace(tzinfo=None)
+                if _now.weekday() >= 5 or not (MARKET_OPEN <= _ct <= MARKET_CLOSE):
+                    await asyncio.sleep(60)
+                    continue
                 if self.positions:
                     for symbol, pos in list(self.positions.items()):
                         avg_price = pos.get("avg_price", 0)

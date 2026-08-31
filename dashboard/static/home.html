@@ -63,6 +63,12 @@
   .noti-body { font-size:12px; color:var(--text-dim); margin-top:3px; white-space:pre-wrap;
     max-height:60px; overflow:hidden; }
   .noti-time { font-size:10px; color:var(--text-dim); margin-top:4px; }
+.act-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.act-btn{border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
+.act-btn.ok{background:#16c784;color:#000;}.act-btn.no{background:#3a2a2a;color:#f6465d;border:1px solid #5a3a3a;}
+.act-btn:disabled{opacity:.5;}
+.act-done{font-size:11px;color:#7d8896;}
+
 
   /* ── 요약 카드 ── */
   .summary {
@@ -367,6 +373,30 @@ loadAll();
 setInterval(loadSummary, 10000);  // 10초마다 갱신
 setInterval(loadTrades, 30000);   // 30초마다 갱신
 
+
+// ── 승인 버튼 공용 ──
+function renderActions(actions, sid){
+  if(!actions||!actions.length) return '';
+  return '<div class="act-row">'+actions.map(a=>a.alive
+    ? `<button class="act-btn ${a.data.includes(':ok:')?'ok':'no'}" onclick="doAction('${a.data}',this,'${sid||''}')">${a.label}</button>`
+    : `<span class="act-done">${a.label.replace(/[✅❌]\s*/,'')} · 처리/만료</span>`).join('')+'</div>';
+}
+async function doAction(data, btn, sid){
+  if(!confirm((data.includes(':ok:')?'승인':'거절')+' 하시겠어요?')) return;
+  const row = btn.closest('.act-row'); if(row) row.querySelectorAll('button').forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch('/api/jarvis/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({data, session_id: sid||'web'})});
+    const j=await r.json();
+    if(row) row.innerHTML='<span class="act-done">'+(j.reply||'처리됨').replace(/</g,'&lt;').slice(0,160)+'</span>';
+  }catch(e){ if(row) row.innerHTML='<span class="act-done">❌ 처리 실패</span>'; }
+}
+function renderBtnMarkers(text, sid){
+  // [[BTN:data|label]] 마커 → 버튼
+  const acts=[]; const clean=text.replace(/\[\[BTN:([^|\]]+)\|([^\]]+)\]\]/g,(m,d,l)=>{acts.push({data:d,label:l,alive:true});return '';});
+  return {text:clean.trim(), html:renderActions(acts, sid)};
+}
+
 // ── 알림센터 + 배지 ──
 async function pollNoti(){
   try{
@@ -390,6 +420,7 @@ function renderNoti(){
     return `<div class="noti-item ${n.is_read?'':'unread'}">
       <div class="noti-title">${n.title||''}</div>
       <div class="noti-body">${(n.body||'').replace(/</g,'&lt;')}</div>
+      ${renderActions(n.actions,'web')}
       <div class="noti-time">${ts}</div></div>`;
   }).join('');
 }

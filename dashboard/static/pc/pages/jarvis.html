@@ -31,6 +31,12 @@
 .rrow{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bd);font-size:12.5px;}
 .rrow:last-child{border:none;}
 .pmini{padding:11px;background:var(--p2);border-radius:10px;margin-bottom:8px;font-size:12px;}
+
+.act-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.act-btn{border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
+.act-btn.ok{background:#16c784;color:#000;}.act-btn.no{background:#3a2a2a;color:#f6465d;border:1px solid #5a3a3a;}
+.act-btn:disabled{opacity:.5;}
+.act-done{font-size:11px;color:#7d8896;}
 </style>
 <div class="jp">
   <div class="jmain">
@@ -66,6 +72,29 @@
 <script>
 (function(){
 const won=n=>Number(n||0).toLocaleString()+"원";
+// ── 승인 버튼 공용 ──
+window.renderActions=function renderActions(actions, sid){
+  if(!actions||!actions.length) return '';
+  return '<div class="act-row">'+actions.map(a=>a.alive
+    ? `<button class="act-btn ${a.data.includes(':ok:')?'ok':'no'}" onclick="doAction('${a.data}',this,'${sid||''}')">${a.label}</button>`
+    : `<span class="act-done">${a.label.replace(/[✅❌]\s*/,'')} · 처리/만료</span>`).join('')+'</div>';
+}
+window.doAction=async function doAction(data, btn, sid){
+  if(!confirm((data.includes(':ok:')?'승인':'거절')+' 하시겠어요?')) return;
+  const row = btn.closest('.act-row'); if(row) row.querySelectorAll('button').forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch('/api/jarvis/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({data, session_id: sid||'web'})});
+    const j=await r.json();
+    if(row) row.innerHTML='<span class="act-done">'+(j.reply||'처리됨').replace(/</g,'&lt;').slice(0,160)+'</span>';
+  }catch(e){ if(row) row.innerHTML='<span class="act-done">❌ 처리 실패</span>'; }
+}
+window.renderBtnMarkers=function renderBtnMarkers(text, sid){
+  // [[BTN:data|label]] 마커 → 버튼
+  const acts=[]; const clean=text.replace(/\[\[BTN:([^|\]]+)\|([^\]]+)\]\]/g,(m,d,l)=>{acts.push({data:d,label:l,alive:true});return '';});
+  return {text:clean.trim(), html:renderActions(acts, sid)};
+}
+
 // ── 음성 (STT/TTS) ──
 let voiceMode=false, rec=null, listening=false;
 function speak(txt){
@@ -103,7 +132,11 @@ const cls=n=>n>0?"up":n<0?"dn":"";
 const jm=document.getElementById('jmsgs'),jin=document.getElementById('jin'),
       jt=document.getElementById('jtyping');
 function addB(role,txt){const d=document.createElement('div');
-  d.className='b '+role;d.textContent=txt;jm.appendChild(d);jm.scrollTop=jm.scrollHeight;}
+  d.className='b '+role;
+  if(role!=='u' && String(txt).includes('[[BTN:')){const r=renderBtnMarkers(txt,'pc');
+    d.textContent=r.text; d.insertAdjacentHTML('beforeend', r.html);}
+  else d.textContent=txt;
+  jm.appendChild(d);jm.scrollTop=jm.scrollHeight;}
 window.jsend=async function(){
   const t=jin.value.trim();if(!t)return;
   jin.value='';addB('u',t);jt.style.display='block';

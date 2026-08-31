@@ -323,6 +323,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
   * { max-width: 100% !important; box-sizing: border-box; }
   .msg-bubble { max-width: 90% !important; word-break: break-word !important; }
 }
+
+.act-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.act-btn{border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
+.act-btn.ok{background:#16c784;color:#000;}.act-btn.no{background:#3a2a2a;color:#f6465d;border:1px solid #5a3a3a;}
+.act-btn:disabled{opacity:.5;}
+.act-done{font-size:11px;color:#7d8896;}
 </style>
   <link rel="stylesheet" href="/static/mobile.css">
 </head>
@@ -513,6 +519,11 @@ async function refreshPanel() {
 
 // 메시지 추가
 function addMessage(role, text) {
+  // 제안 카드 버튼 마커 처리
+  if (role !== 'user' && typeof text==='string' && text.includes('[[BTN:')) {
+    const _r = renderBtnMarkers(text, 'jarvis_main');
+    text = _r.text + '\u0000BTN\u0000' + _r.html;
+  }
   const messages = document.getElementById('messages');
   const now = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
   const isJarvis = role === 'jarvis';
@@ -915,6 +926,38 @@ async function checkConnection() {
   }
 })();
 
+
+// ── 승인 버튼 공용 ──
+function renderActions(actions, sid){
+  if(!actions||!actions.length) return '';
+  return '<div class="act-row">'+actions.map(a=>a.alive
+    ? `<button class="act-btn ${a.data.includes(':ok:')?'ok':'no'}" onclick="doAction('${a.data}',this,'${sid||''}')">${a.label}</button>`
+    : `<span class="act-done">${a.label.replace(/[✅❌]\s*/,'')} · 처리/만료</span>`).join('')+'</div>';
+}
+async function doAction(data, btn, sid){
+  if(!confirm((data.includes(':ok:')?'승인':'거절')+' 하시겠어요?')) return;
+  const row = btn.closest('.act-row'); if(row) row.querySelectorAll('button').forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch('/api/jarvis/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({data, session_id: sid||'web'})});
+    const j=await r.json();
+    if(row) row.innerHTML='<span class="act-done">'+(j.reply||'처리됨').replace(/</g,'&lt;').slice(0,160)+'</span>';
+  }catch(e){ if(row) row.innerHTML='<span class="act-done">❌ 처리 실패</span>'; }
+}
+function renderBtnMarkers(text, sid){
+  // [[BTN:data|label]] 마커 → 버튼
+  const acts=[]; const clean=text.replace(/\[\[BTN:([^|\]]+)\|([^\]]+)\]\]/g,(m,d,l)=>{acts.push({data:d,label:l,alive:true});return '';});
+  return {text:clean.trim(), html:renderActions(acts, sid)};
+}
+
+// 버튼 마커 후처리: 텍스트 노드 안의 BTN 구분자를 HTML로 치환
+new MutationObserver(()=>{
+  document.querySelectorAll('.message .bubble, .msg-bubble, .message-content').forEach(el=>{
+    if(el.dataset.btnDone) return;
+    const t=el.innerHTML; const i=t.indexOf('\u0000BTN\u0000');
+    if(i>=0){ el.innerHTML = t.slice(0,i) + t.slice(i+5); el.dataset.btnDone='1'; }
+  });
+}).observe(document.body,{childList:true,subtree:true});
 // 초기 로드
 refreshPanel();
 loadHistory();

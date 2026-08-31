@@ -32,6 +32,12 @@ h1{font-size:17px;}
   padding:8px 0 6px;font-size:11px;font-weight:600;color:var(--dim);text-decoration:none;}
 .bn-item.active{color:var(--gold);}
 .bn-icon{font-size:20px;line-height:1;}
+.act-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.act-btn{border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
+.act-btn.ok{background:#16c784;color:#000;}.act-btn.no{background:#3a2a2a;color:#f6465d;border:1px solid #5a3a3a;}
+.act-btn:disabled{opacity:.5;}
+.act-done{font-size:11px;color:#7d8896;}
+
 </style>
 </head>
 <body>
@@ -49,6 +55,29 @@ h1{font-size:17px;}
 </nav>
 
 <script>
+// ── 승인 버튼 공용 ──
+function renderActions(actions, sid){
+  if(!actions||!actions.length) return '';
+  return '<div class="act-row">'+actions.map(a=>a.alive
+    ? `<button class="act-btn ${a.data.includes(':ok:')?'ok':'no'}" onclick="doAction('${a.data}',this,'${sid||''}')">${a.label}</button>`
+    : `<span class="act-done">${a.label.replace(/[✅❌]\s*/,'')} · 처리/만료</span>`).join('')+'</div>';
+}
+async function doAction(data, btn, sid){
+  if(!confirm((data.includes(':ok:')?'승인':'거절')+' 하시겠어요?')) return;
+  const row = btn.closest('.act-row'); if(row) row.querySelectorAll('button').forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch('/api/jarvis/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({data, session_id: sid||'web'})});
+    const j=await r.json();
+    if(row) row.innerHTML='<span class="act-done">'+(j.reply||'처리됨').replace(/</g,'&lt;').slice(0,160)+'</span>';
+  }catch(e){ if(row) row.innerHTML='<span class="act-done">❌ 처리 실패</span>'; }
+}
+function renderBtnMarkers(text, sid){
+  // [[BTN:data|label]] 마커 → 버튼
+  const acts=[]; const clean=text.replace(/\[\[BTN:([^|\]]+)\|([^\]]+)\]\]/g,(m,d,l)=>{acts.push({data:d,label:l,alive:true});return '';});
+  return {text:clean.trim(), html:renderActions(acts, sid)};
+}
+
 async function load(){
   try{
     const r = await fetch('/api/notifications?limit=50');
@@ -68,6 +97,7 @@ async function load(){
       return `<div class="item ${n.is_read?'':'unread'}">
         <div class="t">${title.replace(/</g,'&lt;')}</div>
         ${body?`<div class="b">${body.replace(/</g,'&lt;')}</div>`:''}
+        ${renderActions(n.actions,'web')}
         <div class="ts">${ts}</div></div>`;
     }).join('');
     fetch('/api/notifications/read',{method:'POST'}).catch(()=>{});

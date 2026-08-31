@@ -919,9 +919,14 @@ async def _jarvis_closing_report():
 
 
 async def _get_jarvis_knowledge(limit: int = 5) -> str:
-    """학습한 외부 지식 (유튜브/기사) — 최근 N건"""
+    """학습 지식 — 정제본(core 10개) 우선, 없으면 최근 raw N건"""
     try:
         async with db_pool.acquire() as conn:
+            core = await conn.fetch(
+                "SELECT content FROM jarvis_notes WHERE category='knowledge_core' AND is_active=TRUE "
+                "ORDER BY id LIMIT 10")
+            if core:
+                return "\n".join(f"- {r['content']}" for r in core)
             rows = await conn.fetch(
                 "SELECT content FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE "
                 "ORDER BY created_at DESC LIMIT $1", limit)
@@ -1005,14 +1010,20 @@ async def _gemini_watch_youtube(url: str, prompt: str) -> str:
         raise RuntimeError(f"Gemini 시청 실패: {str(data)[:120]}")
 
 
-_LEARN_PROMPT = """이 주식 투자 학습 자료의 내용을 바탕으로,
+_LEARN_PROMPT_BASE = """이 주식 투자 학습 자료의 내용을 바탕으로,
 자비스(자동매매 AI)가 실전 매수·매도 판단에 적용할 수 있는 핵심 원칙을
 정확히 3~5개, 각 1줄(40자 이내)로 뽑아라. 각 줄은 "원칙: "으로 시작.
 근거 없는 낙관·종목 추천·광고성 내용은 제외하라."""
+_LEARN_PROMPT = _LEARN_PROMPT_BASE
 
 
-async def _learn_from_url(url: str) -> str:
+async def _learn_from_url(url: str, hint: str = "") -> str:
     """URL 학습: 자막/본문 → (실패 시 Gemini 영상 시청) → 원칙 요약 → 저장"""
+    global _LEARN_PROMPT
+    if hint:
+        _LEARN_PROMPT = _LEARN_PROMPT_BASE + f"\n특히 주인이 강조한 관점: {hint}"
+    else:
+        _LEARN_PROMPT = _LEARN_PROMPT_BASE
     title, text = "", ""
     vid = _extract_youtube_id(url)
     try:
@@ -1036,12 +1047,9 @@ async def _learn_from_url(url: str) -> str:
     if len(text) < 200:
         return "⚠️ 학습할 내용이 너무 적어요 (자막/본문 부족)."
     text = text[:18000]
-    prompt = f"""다음은 주식 투자 학습 자료({title})의 내용이다.
-자비스(자동매매 AI)가 실전 매수·매도 판단에 적용할 수 있는 핵심 원칙을
-정확히 3~5개, 각 1줄(40자 이내)로 뽑아라. 각 줄은 "원칙: "으로 시작.
-근거 없는 낙관·종목 추천·광고성 내용은 제외하라.
+    prompt = f"""{_LEARN_PROMPT}
 
-[자료 내용]
+[자료 내용 — {title}]
 {text}"""
     out = await _ask_openwebui(prompt, session_id="daily_plan")
     if not out or out.startswith("❌"):
@@ -1482,6 +1490,53 @@ async def _jarvis_weekly_review():
         logger.error(f"주간 복습 오류: {e}")
 
 
+async def _jarvis_knowledge_curate():
+    """지식 정리: 중복 통합·상충 해소·카테고리 분류 → 핵심 10개 정제본(core) 저장"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, content FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE "
+                "ORDER BY created_at DESC LIMIT 80")
+        if len(rows) < 3:
+            logger.info("📚 지식 정리: 자료 부족 — 스킵")
+            return ""
+        raw = "\n".join(f"- {r['content']}" for r in rows)
+        prompt = f"""다음은 자동매매 AI가 여러 자료에서 학습한 매매 원칙 목록이다.
+
+{raw}
+
+작업:
+1) 중복·유사 원칙은 하나로 통합, 서로 상충하는 것은 더 보수적/검증된 쪽을 택하라.
+2) 각 원칙을 [진입]/[청산]/[리스크]/[습관] 중 하나로 분류하라.
+3) 실전 판단에 가장 유용한 핵심 원칙 정확히 10개만 남겨라.
+출력 형식: 각 줄 "[분류] 원칙 내용(40자 이내)" — 다른 말 없이 10줄만."""
+        out = await _ask_openwebui(prompt, session_id="daily_plan")
+        if not out or out.startswith("❌"):
+            return ""
+        lines = [ln.strip() for ln in out.split("\n")
+                 if ln.strip().startswith("[") and len(ln.strip()) > 6][:10]
+        if not lines:
+            return ""
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE jarvis_notes SET is_active=FALSE WHERE category='knowledge_core'")
+            for ln in lines:
+                await conn.execute(
+                    "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('knowledge_core', $1, TRUE)",
+                    ln[:200])
+        msg = f"📚 지식 정리 완료: {len(rows)}개 → 핵심 {len(lines)}개\n" + "\n".join(lines)
+        await _send_telegram(msg)
+        return msg
+    except Exception as e:
+        logger.error(f"지식 정리 오류: {e}")
+        return ""
+
+
+@app.api_route("/api/jarvis/knowledge/curate", methods=["GET", "POST"])
+async def run_knowledge_curate():
+    msg = await _jarvis_knowledge_curate()
+    return {"success": bool(msg), "result": msg}
+
+
 async def _jarvis_weekly_preview():
     """일 20:00 — 다음주 예습: 보유 차트 분석 + 다음주 작전 초안"""
     try:
@@ -1567,7 +1622,10 @@ async def _jarvis_scheduler():
             # 주말 스터디: 토 10:00 주간복습 / 일 20:00 다음주예습
             if now.weekday() == 5 and dtime(10, 0) <= cur_time <= dtime(10, 5)                     and last_wk_review != today:
                 last_wk_review = today
-                asyncio.create_task(_jarvis_weekly_review())
+                async def _sat_study():
+                    await _jarvis_weekly_review()
+                    await _jarvis_knowledge_curate()
+                asyncio.create_task(_sat_study())
             if now.weekday() == 6 and dtime(20, 0) <= cur_time <= dtime(20, 5)                     and last_wk_preview != today:
                 last_wk_preview = today
                 asyncio.create_task(_jarvis_weekly_preview())
@@ -4072,10 +4130,12 @@ async def jarvis_chat(body: dict):
         _url_m = _re_mod.search(r"https?://\S+", user_msg)
         if _url_m and any(k in user_msg for k in ("배워", "학습", "공부", "익혀", "가능한가", "가능해")):
             _learn_url = _url_m.group(0)
+            _hint_m = _re_mod.search(r"(?:—|-|특히|위주로|관점)\s*(.+)$", user_msg.replace(_learn_url, "").strip())
+            _learn_hint = (_hint_m.group(1).strip() if _hint_m else "")[:60]
             _sid_for_learn = body.get("session_id") or os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
             async def _bg_learn():
                 try:
-                    result = await _learn_from_url(_learn_url)
+                    result = await _learn_from_url(_learn_url, _learn_hint)
                 except Exception as le:
                     result = f"❌ 학습 실패: {le}"
                 await _send_telegram(f"📚 <b>자비스 학습 결과</b>\n{result}")
@@ -5301,9 +5361,13 @@ async def list_knowledge():
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, content, created_at FROM jarvis_notes WHERE category='knowledge' "
-                "AND is_active=TRUE ORDER BY created_at DESC LIMIT 50")
-        return {"success": True, "data": [
-            {"id": r["id"], "content": r["content"], "ts": r["created_at"].isoformat()} for r in rows]}
+                "AND is_active=TRUE ORDER BY created_at DESC LIMIT 100")
+            core = await conn.fetch(
+                "SELECT id, content FROM jarvis_notes WHERE category='knowledge_core' "
+                "AND is_active=TRUE ORDER BY id")
+        return {"success": True,
+                "core": [{"id": r["id"], "content": r["content"]} for r in core],
+                "data": [{"id": r["id"], "content": r["content"], "ts": r["created_at"].isoformat()} for r in rows]}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 

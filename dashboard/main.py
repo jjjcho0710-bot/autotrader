@@ -1516,6 +1516,94 @@ async def _jarvis_weekly_review():
         logger.error(f"주간 복습 오류: {e}")
 
 
+async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
+    """자비스 능동 제안: 보유종목 차트+학습원칙+교훈+시장 종합 → 실행 가능한 제안 최대 3개"""
+    try:
+        res = await get_stock_positions()
+        positions = res.get("data") or []
+        pos_txt = ""
+        for p_ in positions[:6]:
+            ana = await _analyze_chart(p_["symbol"], p_.get("name", ""))
+            pos_txt += (f"\n{ana}\n(보유 {p_['qty']}주, 평단 {p_['avg_price']:,}, "
+                        f"현재 {p_.get('cur_price', 0):,}, 손익 {p_.get('pnl_rate', 0):+.1f}%)\n")
+        knowledge = await _get_jarvis_knowledge(10)
+        lessons = await _get_jarvis_lessons(3)
+        directives = await _get_active_directives()
+        mkt = await _get_market_index_ctx()
+        prev = ""
+        try:
+            pv = await redis_client.get("advice:recent_titles")
+            prev = pv if isinstance(pv, str) else (pv or b"").decode()
+        except Exception:
+            pass
+        names = ", ".join(p_.get("name", p_["symbol"]) for p_ in positions) or "(없음)"
+        prompt = f"""너는 주인의 트레이딩 파트너 자비스다. 아래를 종합해 지금 실행할 가치가 있는 제안만 골라라.
+확신 없으면 제안하지 마라. 최대 3개.
+
+{mkt}
+
+[보유 종목 차트 분석]
+{pos_txt or '(보유 없음)'}
+
+[학습한 매매 원칙]
+{knowledge or '(없음)'}
+
+[최근 교훈]
+{lessons or '(없음)'}
+
+[주인 지시사항]
+{directives or '(없음)'}
+
+[이미 제안했던 것 — 반복 금지]
+{prev or '(없음)'}
+
+허용되는 command 형식 (정확히 이 형태만):
+- "{{종목명}} 전량 매도"  /  "{{종목명}} {{N}}주 매도"  /  "{{종목명}} {{N}}주 매수"
+- "손절 {{-N}}%로 변경해줘"  /  "익절 {{N}}%로 변경해줘"
+- "지시: {{한 줄 지시}}"
+보유 종목명은 다음 중 하나여야 한다: {names}
+
+출력은 JSON 배열만 (다른 말 금지). 제안 없으면 [] 만 출력.
+[{{"title":"제안 제목(20자)","reason":"근거 1~2문장, 적용 원칙 K번호 포함","command":"허용 형식 명령"}}]"""
+        out = await _ask_openwebui(prompt, session_id="daily_plan")
+        import re as _r, json as _j
+        m = _r.search(r"\[.*\]", out or "", _r.S)
+        items = []
+        if m:
+            try:
+                items = [x for x in _j.loads(m.group(0)) if isinstance(x, dict) and x.get("command")][:3]
+            except Exception:
+                items = []
+        if not items:
+            if trigger == "manual":
+                await _send_telegram("💡 자비스 제안: 지금은 특별히 제안할 것이 없습니다.")
+            return "제안 없음"
+        # 저장 (2시간) + 알림
+        lines = []
+        for i, it in enumerate(items, 1):
+            await redis_client.setex(f"advice:{i}", 7200, _j.dumps(it, ensure_ascii=False))
+            lines.append(f"{i}. <b>{it.get('title','')}</b>\n   {it.get('reason','')}\n   → {it.get('command')}")
+        try:
+            titles = "; ".join(it.get("title", "") for it in items)
+            await redis_client.setex("advice:recent_titles", 86400, (prev + "; " + titles)[-600:])
+        except Exception:
+            pass
+        now = datetime.now(KST).strftime("%H:%M")
+        msg = (f"💡 <b>자비스 제안 [{now}]</b>\n\n" + "\n\n".join(lines) +
+               "\n\n✅ 실행: '승인 1' / ❌ '거절 1'  (2시간 내)")
+        await _send_telegram(msg)
+        return msg
+    except Exception as e:
+        logger.error(f"능동 제안 오류: {e}")
+        return ""
+
+
+@app.api_route("/api/jarvis/advice/run", methods=["GET", "POST"])
+async def run_advice_now():
+    msg = await _jarvis_proactive_advice("manual")
+    return {"success": True, "result": msg}
+
+
 async def _jarvis_knowledge_curate():
     """지식 정리: 중복 통합·상충 해소·카테고리 분류 → 핵심 10개 정제본(core) 저장"""
     try:
@@ -1649,6 +1737,8 @@ async def _jarvis_scheduler():
     last_scan_1300 = None
     last_wk_review = None
     last_wk_preview = None
+    last_adv_11 = None
+    last_adv_14 = None
 
     while True:
         await asyncio.sleep(60)
@@ -1676,6 +1766,14 @@ async def _jarvis_scheduler():
                 last_wk_preview = today
                 asyncio.create_task(_jarvis_weekly_preview())
             continue
+
+        # 자비스 능동 제안 (11:00 / 14:00)
+        if dtime(11, 0) <= cur_time <= dtime(11, 5) and last_adv_11 != today:
+            last_adv_11 = today
+            asyncio.create_task(_jarvis_proactive_advice())
+        if dtime(14, 0) <= cur_time <= dtime(14, 5) and last_adv_14 != today:
+            last_adv_14 = today
+            asyncio.create_task(_jarvis_proactive_advice())
 
         # 장중 보충 스캔 (09:30 / 10:30 / 13:00) — 새 거래량 상위 종목 감시 추가
         if dtime(9, 30) <= cur_time <= dtime(9, 35) and last_scan_0930 != today:
@@ -4205,8 +4303,26 @@ async def jarvis_chat(body: dict):
                     return {"success": True, "reply": chart_txt, "context_used": False}
                 return {"success": True, "reply": f"⚠️ {_nm}({_sym}) 차트 데이터를 가져오지 못했어요.", "context_used": False}
 
-        # 매수 제안 승인/거절 처리
+        # 능동 제안 승인/거절: "승인 2" / "거절 1"
         _um = user_msg.strip()
+        _adv = _re_mod.match(r"^(승인|거절|오케이|ok)\s*(\d)\s*$", _um, _re_mod.I)
+        if _adv:
+            n = _adv.group(2)
+            raw = await redis_client.get(f"advice:{n}")
+            if raw:
+                it = json.loads(raw if isinstance(raw, str) else raw.decode())
+                await redis_client.delete(f"advice:{n}")
+                if _adv.group(1) == "거절":
+                    return {"success": True, "reply": f"❌ 제안 {n} '{it.get('title')}' 거절했어요.", "context_used": False}
+                cmd = it.get("command", "")
+                sub = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "advice"})
+                rep = sub.get("reply") or sub.get("error") or "실행 결과 없음"
+                out = f"✅ 제안 {n} 승인 → 실행: {cmd}\n{rep}"
+                await _send_telegram(out)
+                return {"success": True, "reply": out, "context_used": False}
+            return {"success": True, "reply": f"제안 {n}은(는) 없거나 만료됐어요.", "context_used": False}
+
+        # 매수 제안 승인/거절 처리
         if _re_prop.search(_um):
             try:
                 target = None

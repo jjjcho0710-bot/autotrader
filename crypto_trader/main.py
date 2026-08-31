@@ -131,8 +131,9 @@ class CryptoTrader:
         asyncio.create_task(self._scan_loop())
         asyncio.create_task(self._price_loop())
         asyncio.create_task(self._price_monitor())
-        asyncio.create_task(self._six_hour_report_loop())
-        asyncio.create_task(self._daily_report_loop())
+        # 코인 6시간 요약·일일 결산 리포트 비활성화 (주인 지시 — 통합 21:00 일일보고에 포함됨)
+        # asyncio.create_task(self._six_hour_report_loop())
+        # asyncio.create_task(self._daily_report_loop())
         asyncio.create_task(self._telegram_polling_loop())
 
         await self._loop()

@@ -943,15 +943,27 @@ async def _fetch_learning_text(url: str) -> tuple:
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
             def _get():
+                # v1.x: 인스턴스 API / v0.x: 클래스 메서드 — 둘 다 지원
                 try:
-                    tl = YouTubeTranscriptApi.list_transcripts(vid)
-                    try:
-                        t = tl.find_transcript(["ko"])
-                    except Exception:
-                        t = tl.find_generated_transcript(["ko", "en"])
-                    return " ".join(x["text"] for x in t.fetch())
+                    api = YouTubeTranscriptApi()
+                    if hasattr(api, "fetch"):
+                        try:
+                            ft = api.fetch(vid, languages=["ko", "en"])
+                        except Exception:
+                            tl = api.list(vid)
+                            try:
+                                ft = tl.find_transcript(["ko"]).fetch()
+                            except Exception:
+                                ft = tl.find_generated_transcript(["ko", "en"]).fetch()
+                        return " ".join(getattr(x, "text", None) or x.get("text", "") for x in ft)
+                except TypeError:
+                    pass
+                tl = YouTubeTranscriptApi.list_transcripts(vid)
+                try:
+                    t = tl.find_transcript(["ko"])
                 except Exception:
-                    return " ".join(x["text"] for x in YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"]))
+                    t = tl.find_generated_transcript(["ko", "en"])
+                return " ".join(x["text"] for x in t.fetch())
             loop = asyncio.get_event_loop()
             txt = await loop.run_in_executor(None, _get)
             return (f"유튜브 {vid}", txt)

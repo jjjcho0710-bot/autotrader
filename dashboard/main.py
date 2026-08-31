@@ -3945,10 +3945,27 @@ async def jarvis_chat(body: dict):
                             id SERIAL PRIMARY KEY, category VARCHAR(30) DEFAULT 'note',
                             content TEXT NOT NULL, is_active BOOLEAN DEFAULT TRUE,
                             created_at TIMESTAMPTZ DEFAULT NOW())""")
+                        # 충돌 해소: 해제성 지시면 같은 핵심어(예: 5만원)의 옛 지시 비활성화
+                        deactivated = []
+                        if any(k in d for k in ("해제", "취소", "풀", "허용", "포함", "완화", "없애")):
+                            keys = set(_re.findall(r"\d+\s*만\s*원|\d+\s*종목|\d+\s*%", d))
+                            if keys:
+                                olds = await conn.fetch(
+                                    "SELECT id, content FROM jarvis_notes "
+                                    "WHERE category='directive' AND is_active=TRUE")
+                                for o in olds:
+                                    oc = o["content"].replace(" ", "")
+                                    if any(k.replace(" ", "") in oc for k in keys) and \
+                                       not any(x in o["content"] for x in ("해제", "취소", "허용", "포함")):
+                                        await conn.execute(
+                                            "UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1", o["id"])
+                                        deactivated.append(f"#{o['id']}")
                         did = await conn.fetchval(
                             "INSERT INTO jarvis_notes (category, content, is_active) "
                             "VALUES ('directive', $1, TRUE) RETURNING id", d[:300])
                     notes.append(f"📌 지시 #{did} 저장됨 (해제: '지시 취소 {did}')")
+                    if deactivated:
+                        notes.append(f"🔄 충돌 지시 자동 해제: {', '.join(deactivated)}")
                 # 설정 적용
                 st = action.get("settings") or {}
                 valid = {}
@@ -4435,7 +4452,12 @@ async def telegram_webhook(body: dict):
             shared_session = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
             token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
             await _typing_action(chat_id, token)
-            reply = await _ask_openwebui(text, session_id=shared_session)
+            # 웹 채팅과 동일 파이프라인 (컨텍스트·지시·설정·차트·ACTION 실행 전부 공유)
+            try:
+                res = await jarvis_chat({"message": text, "session_id": shared_session})
+                reply = res.get("reply") or res.get("error") or "응답 없음"
+            except Exception as _e:
+                reply = await _ask_openwebui(text, session_id=shared_session)
             if len(reply) > 3800:
                 reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"
             await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)

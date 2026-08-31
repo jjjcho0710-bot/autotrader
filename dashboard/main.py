@@ -1243,8 +1243,8 @@ async def _jarvis_evening_review(target_date=None):
                 SELECT symbol, side, amount, pnl, strategy
                 FROM trade_history
                 WHERE bot='stock_trader'
-                  AND DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
-                ORDER BY created_at""", today)
+                  AND DATE(ts AT TIME ZONE 'Asia/Seoul') = $1
+                ORDER BY ts""", today)
         # 판단 기록 (SKIP 포함) — 체결 없는 날도 교훈의 재료
         async with db_pool.acquire() as conn:
             jdg = await conn.fetch("""
@@ -1444,7 +1444,7 @@ async def _jarvis_weekly_review():
                 ORDER BY ts""")
             trades = await conn.fetch("""
                 SELECT symbol, side, pnl, strategy FROM trade_history
-                WHERE bot='stock_trader' AND created_at > NOW() - INTERVAL '7 days'""")
+                WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'""")
         if not rows:
             logger.info("📚 주간 복습: 판단 기록 없음 — 스킵")
             return

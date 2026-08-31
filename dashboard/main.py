@@ -3982,8 +3982,8 @@ async def jarvis_chat(body: dict):
             return {"success": True, "reply": action_result, "context_used": False}
 
         # 학습 명령: URL + (배워|학습|공부)
-        _url_m = _re.search(r"https?://\S+", user_msg)
-        if _url_m and any(k in user_msg for k in ("배워", "학습", "공부", "익혀")):
+        _url_m = _re_mod.search(r"https?://\S+", user_msg)
+        if _url_m and any(k in user_msg for k in ("배워", "학습", "공부", "익혀", "가능한가", "가능해")):
             try:
                 result = await _learn_from_url(_url_m.group(0))
             except Exception as le:

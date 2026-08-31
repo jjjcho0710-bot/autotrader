@@ -519,11 +519,8 @@ async function refreshPanel() {
 
 // 메시지 추가
 function addMessage(role, text) {
-  // 제안 카드 버튼 마커 처리
-  if (role !== 'user' && typeof text==='string' && text.includes('[[BTN:')) {
-    const _r = renderBtnMarkers(text, 'jarvis_main');
-    text = _r.text + '\u0000BTN\u0000' + _r.html;
-  }
+  let _btnText = String(text||''), _btnHtml = '';
+  if (_btnText.includes('[[BTN:')) { const _r = renderBtnMarkers(_btnText, 'jarvis_main'); _btnText = _r.text; _btnHtml = _r.html; }
   const messages = document.getElementById('messages');
   const now = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
   const isJarvis = role === 'jarvis';
@@ -538,7 +535,7 @@ function addMessage(role, text) {
   div.innerHTML = `
     ${isJarvis ? '<div class="msg-avatar">🤖</div>' : ''}
     <div class="msg-wrap">
-      <div class="msg-bubble">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}</div>
+      <div class="msg-bubble">${_btnText.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}${_btnHtml}</div>
       <div class="msg-time">${isJarvis ? 'Jarvis' : '나'} · ${now}${ttsBtnHtml}</div>
     </div>
     ${!isJarvis ? '<div class="msg-avatar">👤</div>' : ''}`;
@@ -950,14 +947,6 @@ function renderBtnMarkers(text, sid){
   return {text:clean.trim(), html:renderActions(acts, sid)};
 }
 
-// 버튼 마커 후처리: 텍스트 노드 안의 BTN 구분자를 HTML로 치환
-new MutationObserver(()=>{
-  document.querySelectorAll('.message .bubble, .msg-bubble, .message-content').forEach(el=>{
-    if(el.dataset.btnDone) return;
-    const t=el.innerHTML; const i=t.indexOf('\u0000BTN\u0000');
-    if(i>=0){ el.innerHTML = t.slice(0,i) + t.slice(i+5); el.dataset.btnDone='1'; }
-  });
-}).observe(document.body,{childList:true,subtree:true});
 // 초기 로드
 refreshPanel();
 loadHistory();

@@ -247,6 +247,7 @@ async def startup():
     import asyncio
     asyncio.create_task(_load_stock_cache())
     asyncio.create_task(_jarvis_scheduler())
+    asyncio.create_task(_cache_warmer())
 
 
 async def _auto_register_webhook():
@@ -2039,6 +2040,23 @@ async def get_single_price(symbol: str):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+
+
+async def _cache_warmer():
+    """백그라운드 캐시 워머: 첫 진입도 캐시 히트되도록 핵심 데이터 선적재"""
+    await asyncio.sleep(5)
+    while True:
+        try:
+            now = datetime.now(KST)
+            hot = now.weekday() < 5 and dtime(8, 50) <= now.time().replace(tzinfo=None) <= dtime(15, 40)
+            await get_market_index()
+            pos = await get_stock_positions()
+            await get_stock_prices()
+            for p_ in (pos.get("data") or [])[:6]:
+                await get_chart_data(p_["symbol"], 90, "D")
+        except Exception as e:
+            logger.debug(f"워머 오류(무시): {e}")
+        await asyncio.sleep(6 if hot else 45)
 
 
 def ttl_for(period: str) -> int:

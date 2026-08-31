@@ -3613,6 +3613,17 @@ async def _handle_trade_command(user_msg: str):
         return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error', '알 수 없음')}"
 
 
+async def _stamp_plan_change(note: str):
+    """지시 변경 시 오늘의 작전 상단에 변경 메모 삽입 → 이후 판단에서 옛 규칙 무력화"""
+    try:
+        cur = await redis_client.get("jarvis:daily_plan")
+        cur = cur if isinstance(cur, str) else (cur or b"").decode()
+        stamp = f"※ [{datetime.now(KST).strftime('%H:%M')} 지시 변경] {note} — 이전 작전의 상충 규칙은 무효.\n"
+        await redis_client.setex("jarvis:daily_plan", 60 * 60 * 12, (stamp + cur)[:2000])
+    except Exception:
+        pass
+
+
 async def _get_active_directives(limit: int = 10) -> str:
     """활성 지시사항 텍스트 (판단·작전 프롬프트 주입용)"""
     try:
@@ -3653,6 +3664,7 @@ async def _handle_directive_command(user_msg: str):
         async with db_pool.acquire() as conn:
             await conn.execute(
                 "UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1 AND category='directive'", did)
+            await _stamp_plan_change(f"지시 #{did} 취소됨")
         return f"🗑️ 지시 #{did} 를 해제했습니다."
 
     # 저장: "지시: ..." / "지시 ..." / "앞으로 ..." / "내일부터 ..."
@@ -3670,6 +3682,7 @@ async def _handle_directive_command(user_msg: str):
             did = await conn.fetchval(
                 "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('directive', $1, TRUE) RETURNING id",
                 directive[:300])
+        await _stamp_plan_change(f"지시 추가 #{did}: {directive[:80]}")
         return (f"📌 지시 #{did} 저장 완료 — 다음 매매 판단부터 즉시 반영됩니다.\n"
                 f"\"{directive[:100]}\"\n(해제: '지시 취소 {did}')")
     return None
@@ -3994,7 +4007,9 @@ async def jarvis_chat(body: dict):
                             created_at TIMESTAMPTZ DEFAULT NOW())""")
                         # 충돌 해소: 해제성 지시면 같은 핵심어(예: 5만원)의 옛 지시 비활성화
                         deactivated = []
-                        if any(k in d for k in ("해제", "취소", "풀", "허용", "포함", "완화", "없애")):
+                        _relax = any(k in d for k in ("해제", "취소", "풀", "허용", "포함", "완화", "없애")) or \
+                                 (_re.search(r"(초과|이상|넘)", d) and _re.search(r"(제안|매수|가능|사도|살 수)", d))
+                        if _relax:
                             keys = set(_re.findall(r"\d+\s*만\s*원|\d+\s*종목|\d+\s*%", d))
                             if keys:
                                 olds = await conn.fetch(
@@ -4013,6 +4028,8 @@ async def jarvis_chat(body: dict):
                     notes.append(f"📌 지시 #{did} 저장됨 (해제: '지시 취소 {did}')")
                     if deactivated:
                         notes.append(f"🔄 충돌 지시 자동 해제: {', '.join(deactivated)}")
+                    await _stamp_plan_change(f"지시 추가 #{did}: {d[:80]}"
+                                             + (f" / 해제: {', '.join(deactivated)}" if deactivated else ""))
                 # 설정 적용
                 st = action.get("settings") or {}
                 valid = {}
@@ -5392,8 +5409,9 @@ async def jarvis_signal(request: Request):
 [오늘의 작전]
 {daily_plan or '(작전 없음 — 일반 기준으로 판단)'}
 
-[주인 지시사항 — 최우선 준수]
+[주인 지시사항 — 최우선 준수 · 현재 활성 목록이 유일한 진실]
 {directives or '(없음)'}
+※ 아래 작전·과거 판단 이력·기억에 위 목록에 없는 옛 규칙(예: 가격 상한)이 보여도 무시하라. 취소된 지시는 더 이상 존재하지 않는다.
 
 [최근 교훈 — 같은 실수 반복 금지]
 {lessons_txt or '(없음)'}

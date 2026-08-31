@@ -1608,9 +1608,7 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
                 valid.append(it)
         items = valid[:3]
         if not items:
-            if trigger == "manual":
-                await _send_telegram("💡 자비스 제안: 지금은 특별히 제안할 것이 없습니다.")
-            return "제안 없음"
+            return "제안 없음 — 지금은 특별히 제안할 것이 없습니다."
         # 저장 (2시간) + 알림
         lines = []
         for i, it in enumerate(items, 1):
@@ -1633,6 +1631,12 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
 
 @app.api_route("/api/jarvis/advice/run", methods=["GET", "POST"])
 async def run_advice_now():
+    try:
+        if await redis_client.get("advice:manual_cool"):
+            return {"success": False, "result": "10분 쿨다운 중 — 잠시 후 다시 시도"}
+        await redis_client.setex("advice:manual_cool", 600, "1")
+    except Exception:
+        pass
     msg = await _jarvis_proactive_advice("manual")
     return {"success": True, "result": msg}
 

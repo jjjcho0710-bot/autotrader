@@ -3133,6 +3133,12 @@ async def get_portfolio_context() -> str:
             ctx_parts.append(_mi)
     except Exception:
         pass
+    try:
+        _kn = await _get_jarvis_knowledge(8)
+        if _kn:
+            ctx_parts.append("[학습한 매매 원칙 — 유튜브/자료에서 배운 것]\n" + _kn)
+    except Exception:
+        pass
     _now = datetime.now(KST)
     _wd = ["월", "화", "수", "목", "금", "토", "일"][_now.weekday()]
     _t = _now.time()
@@ -4036,6 +4042,31 @@ async def jarvis_chat(body: dict):
         action_result = await _handle_watchlist_command(user_msg)
         if action_result:
             return {"success": True, "reply": action_result, "context_used": False}
+
+        # 학습 지식 목록 (확정 명령, AI 미경유)
+        if _re_mod.search(r"(학습|배운|지식).*(내용|목록|뭐|알려|정리|보여)", user_msg) and "http" not in user_msg:
+            try:
+                async with db_pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT id, content, created_at FROM jarvis_notes WHERE category='knowledge' "
+                        "AND is_active=TRUE ORDER BY created_at DESC LIMIT 20")
+                if not rows:
+                    return {"success": True, "reply": "📚 아직 학습한 자료가 없어요. URL과 함께 '이거 배워'라고 보내주세요.", "context_used": False}
+                lines = [f"#{r['id']} {r['content']}" for r in rows]
+                return {"success": True, "reply": "📚 학습한 매매 원칙 (" + str(len(rows)) + "건)\n" + "\n".join(lines)
+                        + "\n\n(제외: '지식 삭제 N')", "context_used": False}
+            except Exception as e:
+                logger.warning(f"지식 목록 오류: {e}")
+
+        # 지식 삭제 N
+        _kd = _re_mod.search(r"지식\s*삭제\s*(\d+)", user_msg)
+        if _kd:
+            try:
+                async with db_pool.acquire() as conn:
+                    await conn.execute("UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1 AND category='knowledge'", int(_kd.group(1)))
+                return {"success": True, "reply": f"🗑️ 지식 #{_kd.group(1)} 제외했어요.", "context_used": False}
+            except Exception:
+                pass
 
         # 학습 명령: URL + (배워|학습|공부)
         _url_m = _re_mod.search(r"https?://\S+", user_msg)

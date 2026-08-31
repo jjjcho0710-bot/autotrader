@@ -248,6 +248,14 @@ async def startup():
     asyncio.create_task(_load_stock_cache())
     asyncio.create_task(_jarvis_scheduler())
     asyncio.create_task(_cache_warmer())
+    # trade_history 시간컬럼 호환 보강 (ts ↔ created_at)
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("ALTER TABLE trade_history ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ")
+            await conn.execute("UPDATE trade_history SET created_at = ts WHERE created_at IS NULL AND ts IS NOT NULL")
+            await conn.execute("ALTER TABLE trade_history ALTER COLUMN created_at SET DEFAULT NOW()")
+    except Exception as _e:
+        logger.debug(f"trade_history 컬럼 보강 스킵: {_e}")
 
 
 async def _auto_register_webhook():
@@ -860,9 +868,9 @@ async def _jarvis_closing_report():
             trades = await conn.fetch("""
                 SELECT symbol, side, price, quantity, amount, pnl, strategy, created_at
                 FROM trade_history
-                WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
+                WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = $1
                   AND asset_type = 'stock'
-                ORDER BY created_at DESC
+                ORDER BY ts DESC
             """, now_kst.date())
 
             # watchlist 현황
@@ -1321,8 +1329,8 @@ async def _jarvis_unified_daily_report():
             # 두 봇의 오늘 매매 보고
             stock_trades = await conn.fetch("""
                 SELECT symbol, side, amount, pnl, strategy FROM trade_history
-                WHERE bot='stock_trader' AND DATE(created_at AT TIME ZONE 'Asia/Seoul')=$1
-                ORDER BY created_at""", today)
+                WHERE bot='stock_trader' AND DATE(ts AT TIME ZONE 'Asia/Seoul')=$1
+                ORDER BY ts""", today)
             crypto_trades = await conn.fetch("""
                 SELECT symbol, side, amount, pnl, strategy FROM trade_history
                 WHERE bot='crypto_trader' AND DATE(created_at AT TIME ZONE 'Asia/Seoul')=$1
@@ -2683,8 +2691,8 @@ async def full_health_check():
             trades = await conn.fetch("""
                 SELECT bot, side, symbol, amount, pnl, created_at
                 FROM trade_history
-                WHERE created_at >= NOW() - INTERVAL '24 hours'
-                ORDER BY created_at DESC LIMIT 20
+                WHERE ts >= NOW() - INTERVAL '24 hours'
+                ORDER BY ts DESC LIMIT 20
             """)
         total_pnl = sum(float(t["pnl"] or 0) for t in trades)
         result["checks"]["today_trades"] = {

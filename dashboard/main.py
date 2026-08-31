@@ -931,10 +931,10 @@ async def _get_jarvis_knowledge(limit: int = 5) -> str:
     try:
         async with db_pool.acquire() as conn:
             core = await conn.fetch(
-                "SELECT content FROM jarvis_notes WHERE category='knowledge_core' AND is_active=TRUE "
-                "ORDER BY id LIMIT 10")
+                "SELECT id, content FROM jarvis_notes WHERE category='knowledge_core' AND is_active=TRUE "
+                "ORDER BY id LIMIT 20")
             if core:
-                return "\n".join(f"- {r['content']}" for r in core)
+                return "\n".join(f"- K{r['id']} {r['content']}" for r in core)
             rows = await conn.fetch(
                 "SELECT content FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE "
                 "ORDER BY created_at DESC LIMIT $1", limit)
@@ -1157,8 +1157,12 @@ async def _score_journal() -> str:
     """오늘의 판단(SKIP/EXECUTE)을 당일 종가로 채점 → 요약 반환"""
     try:
         async with db_pool.acquire() as conn:
+            await conn.execute("""CREATE TABLE IF NOT EXISTS principle_stats (
+                principle_id INT PRIMARY KEY, applied INT DEFAULT 0, hits INT DEFAULT 0,
+                updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            await conn.execute("ALTER TABLE trade_journal ADD COLUMN IF NOT EXISTS principles TEXT")
             rows = await conn.fetch("""
-                SELECT id, symbol, name, action, jarvis_decision, price
+                SELECT id, symbol, name, action, jarvis_decision, price, principles
                 FROM trade_journal
                 WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
                   AND bot='stock_trader' AND eval_at IS NULL AND price > 0
@@ -1209,14 +1213,28 @@ async def _score_journal() -> str:
                 """, float(close), round(rate, 2), r["id"])
                 dec = r["jarvis_decision"]
                 nm = r["name"] or r["symbol"]
+                good = None
                 if dec in ("EXECUTE", "EXECUTE_SMALL") and r["action"] == "buy":
-                    if rate >= 0.5: scored["exec_hit"] += 1; tag = "✅적중"
-                    else: scored["exec_miss"] += 1; tag = "❌빗나감"
+                    if rate >= 0.5: scored["exec_hit"] += 1; tag = "✅적중"; good = True
+                    else: scored["exec_miss"] += 1; tag = "❌빗나감"; good = False
                     lines.append(f"매수 {nm}: 신호가 대비 {rate:+.1f}% {tag}")
                 elif dec == "SKIP" and r["action"] == "buy":
-                    if rate >= 1.0: scored["skip_missed"] += 1; tag = "⚠️기회놓침"
-                    else: scored["skip_good"] += 1; tag = "✅잘거름"
+                    if rate >= 1.0: scored["skip_missed"] += 1; tag = "⚠️기회놓침"; good = False
+                    else: scored["skip_good"] += 1; tag = "✅잘거름"; good = True
                     lines.append(f"SKIP {nm}: 이후 {rate:+.1f}% {tag}")
+                # 원칙별 성과 누적
+                try:
+                    pr = (r.get("principles") if hasattr(r, "get") else r["principles"]) or ""
+                    for pid in [x for x in pr.split(",") if x.strip().isdigit()]:
+                        await conn.execute("""
+                            INSERT INTO principle_stats (principle_id, applied, hits, updated_at)
+                            VALUES ($1, 1, $2, NOW())
+                            ON CONFLICT (principle_id) DO UPDATE
+                            SET applied = principle_stats.applied + 1,
+                                hits = principle_stats.hits + $2, updated_at = NOW()""",
+                            int(pid), 1 if good else 0)
+                except Exception:
+                    pass
         total = sum(scored.values())
         if total == 0:
             return ""
@@ -1509,6 +1527,20 @@ async def _jarvis_knowledge_curate():
             logger.info("📚 지식 정리: 자료 부족 — 스킵")
             return ""
         raw = "\n".join(f"- {r['content']}" for r in rows)
+        # 원칙 성과 통계 (지난 정제본의 실전 적중률)
+        stats_txt = "(아직 없음)"
+        try:
+            async with db_pool.acquire() as conn:
+                st = await conn.fetch("""
+                    SELECT ps.principle_id, ps.applied, ps.hits, n.content
+                    FROM principle_stats ps JOIN jarvis_notes n ON n.id = ps.principle_id
+                    WHERE ps.applied > 0 ORDER BY ps.applied DESC LIMIT 30""")
+            if st:
+                stats_txt = "\n".join(
+                    f"- K{r['principle_id']} {r['content'][:40]}: 적용 {r['applied']}회, 적중 {r['hits']}회 "
+                    f"({r['hits']/max(1,r['applied'])*100:.0f}%)" for r in st)
+        except Exception:
+            pass
         prompt = f"""다음은 자동매매 AI가 여러 자료에서 학습한 매매 원칙 목록이다.
 
 {raw}
@@ -1516,13 +1548,17 @@ async def _jarvis_knowledge_curate():
 작업:
 1) 중복·유사 원칙은 하나로 통합, 서로 상충하는 것은 더 보수적/검증된 쪽을 택하라.
 2) 각 원칙을 [진입]/[청산]/[리스크]/[습관] 중 하나로 분류하라.
-3) 실전 판단에 가장 유용한 핵심 원칙 정확히 10개만 남겨라.
-출력 형식: 각 줄 "[분류] 원칙 내용(40자 이내)" — 다른 말 없이 10줄만."""
+3) 분류별로 실전 판단에 가장 유용한 원칙을 각 5개씩(총 20개) 남겨라.
+   아래 [원칙 성과 통계]가 있으면 적중률 낮은 원칙은 제외하고 높은 원칙은 반드시 유지하라.
+출력 형식: 각 줄 "[분류] 원칙 내용(40자 이내)" — 다른 말 없이 20줄만.
+
+[원칙 성과 통계 — 지난 정제본 기준]
+{stats_txt}"""
         out = await _ask_openwebui(prompt, session_id="daily_plan")
         if not out or out.startswith("❌"):
             return ""
         lines = [ln.strip() for ln in out.split("\n")
-                 if ln.strip().startswith("[") and len(ln.strip()) > 6][:10]
+                 if ln.strip().startswith("[") and len(ln.strip()) > 6][:20]
         if not lines:
             return ""
         async with db_pool.acquire() as conn:
@@ -1532,6 +1568,8 @@ async def _jarvis_knowledge_curate():
                     "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('knowledge_core', $1, TRUE)",
                     ln[:200])
         msg = f"📚 지식 정리 완료: {len(rows)}개 → 핵심 {len(lines)}개\n" + "\n".join(lines)
+        if stats_txt != "(아직 없음)":
+            msg += "\n\n📊 원칙 성과(적용순)\n" + stats_txt[:600]
         await _send_telegram(msg)
         return msg
     except Exception as e:
@@ -5265,6 +5303,15 @@ async def remove_watchlist(symbol: str):
     return {"success": False, "error": "제거 실패"}
 
 
+def _extract_principles(text: str) -> str:
+    import re as _r
+    m = _r.search(r"근거\s*원칙\s*[:：]\s*([K\d,\s]+)", text or "")
+    if not m:
+        return ""
+    ids = _r.findall(r"K(\d+)", m.group(1))
+    return ",".join(sorted(set(ids)))
+
+
 async def _log_journal(bot: str, symbol: str, name: str, action: str,
                         strategy: str, signal_reason: str,
                         jarvis_decision: str, jarvis_reason: str,
@@ -5286,14 +5333,14 @@ async def _log_journal(bot: str, symbol: str, name: str, action: str,
                     source VARCHAR(10) DEFAULT 'auto',
                     eval_price NUMERIC, eval_pnl_rate NUMERIC, eval_at TIMESTAMPTZ
                 )""")
+            await conn.execute("ALTER TABLE trade_journal ADD COLUMN IF NOT EXISTS principles TEXT")
             await conn.execute("""
-                INSERT INTO trade_journal
-                (bot,symbol,name,action,strategy,signal_reason,
-                 jarvis_decision,jarvis_reason,executed,order_success,price,qty,source)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                INSERT INTO trade_journal (bot,symbol,name,action,strategy,signal_reason,
+                 jarvis_decision,jarvis_reason,executed,order_success,price,qty,source, principles) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, $14)
             """, bot, symbol, name, action, strategy, (signal_reason or "")[:500],
                  jarvis_decision, (jarvis_reason or "")[:300],
-                 executed, order_success, float(price or 0), float(qty or 0), source)
+                 executed, order_success, float(price or 0), float(qty or 0), source,
+                 _extract_principles(jarvis_reason))
     except Exception as e:
         logger.warning(f"매매일지 기록 실패: {e}")
 
@@ -5373,8 +5420,16 @@ async def list_knowledge():
             core = await conn.fetch(
                 "SELECT id, content FROM jarvis_notes WHERE category='knowledge_core' "
                 "AND is_active=TRUE ORDER BY id")
+        stats = {}
+        try:
+            async with db_pool.acquire() as conn:
+                st = await conn.fetch("SELECT principle_id, applied, hits FROM principle_stats")
+            stats = {r["principle_id"]: {"applied": r["applied"], "hits": r["hits"]} for r in st}
+        except Exception:
+            pass
         return {"success": True,
-                "core": [{"id": r["id"], "content": r["content"]} for r in core],
+                "core": [{"id": r["id"], "content": r["content"],
+                          **stats.get(r["id"], {"applied": 0, "hits": 0})} for r in core],
                 "data": [{"id": r["id"], "content": r["content"], "ts": r["created_at"].isoformat()} for r in rows]}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
@@ -5710,7 +5765,7 @@ async def jarvis_signal(request: Request):
 [최근 교훈 — 같은 실수 반복 금지]
 {lessons_txt or '(없음)'}
 
-[학습한 매매 원칙]
+[학습한 매매 원칙 — 판단에 적용한 원칙이 있으면 이유 끝에 "근거원칙: K12,K7" 형식으로 표기]
 {knowledge_txt or '(없음)'}
 
 {chart_ctx or ''}

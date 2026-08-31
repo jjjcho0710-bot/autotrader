@@ -918,6 +918,90 @@ async def _jarvis_closing_report():
         logger.error(f"Jarvis 마감 리포트 실패: {e}")
 
 
+async def _get_jarvis_knowledge(limit: int = 5) -> str:
+    """학습한 외부 지식 (유튜브/기사) — 최근 N건"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT content FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE "
+                "ORDER BY created_at DESC LIMIT $1", limit)
+        return "\n".join(f"- {r['content']}" for r in rows) if rows else ""
+    except Exception:
+        return ""
+
+
+def _extract_youtube_id(url: str) -> str:
+    import re as _r
+    m = _r.search(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else ""
+
+
+async def _fetch_learning_text(url: str) -> tuple:
+    """URL → (제목힌트, 본문텍스트). 유튜브는 자막, 그 외는 웹 본문"""
+    vid = _extract_youtube_id(url)
+    if vid:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            def _get():
+                try:
+                    tl = YouTubeTranscriptApi.list_transcripts(vid)
+                    try:
+                        t = tl.find_transcript(["ko"])
+                    except Exception:
+                        t = tl.find_generated_transcript(["ko", "en"])
+                    return " ".join(x["text"] for x in t.fetch())
+                except Exception:
+                    return " ".join(x["text"] for x in YouTubeTranscriptApi.get_transcript(vid, languages=["ko", "en"]))
+            loop = asyncio.get_event_loop()
+            txt = await loop.run_in_executor(None, _get)
+            return (f"유튜브 {vid}", txt)
+        except Exception as e:
+            raise RuntimeError(f"자막을 가져올 수 없어요 (자막 없는 영상이거나 차단): {str(e)[:80]}")
+    # 일반 웹
+    try:
+        import ssl as _ssl, re as _r
+        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            r = await sess.get(url, headers={"User-Agent": "Mozilla/5.0"},
+                               timeout=_aiohttp.ClientTimeout(total=12))
+            html = await r.text()
+        html = _r.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=_r.S | _r.I)
+        title = (_r.search(r"<title[^>]*>(.*?)</title>", html, _r.S | _r.I) or [None, ""])[1]
+        text = _r.sub(r"<[^>]+>", " ", html)
+        text = _r.sub(r"\s+", " ", text)
+        return ((title or "웹 문서").strip()[:60], text)
+    except Exception as e:
+        raise RuntimeError(f"페이지를 읽을 수 없어요: {str(e)[:80]}")
+
+
+async def _learn_from_url(url: str) -> str:
+    """URL 학습: 텍스트 추출 → 핵심 원칙 요약 → knowledge 저장"""
+    title, text = await _fetch_learning_text(url)
+    if len(text) < 200:
+        return "⚠️ 학습할 내용이 너무 적어요 (자막/본문 부족)."
+    text = text[:18000]
+    prompt = f"""다음은 주식 투자 학습 자료({title})의 내용이다.
+자비스(자동매매 AI)가 실전 매수·매도 판단에 적용할 수 있는 핵심 원칙을
+정확히 3~5개, 각 1줄(40자 이내)로 뽑아라. 각 줄은 "원칙: "으로 시작.
+근거 없는 낙관·종목 추천·광고성 내용은 제외하라.
+
+[자료 내용]
+{text}"""
+    out = await _ask_openwebui(prompt, session_id="daily_plan")
+    if not out or out.startswith("❌"):
+        return "❌ 요약에 실패했어요."
+    principles = [ln.strip() for ln in out.split("\n") if "원칙" in ln and len(ln.strip()) > 6][:5]
+    if not principles:
+        return "⚠️ 유효한 원칙을 추출하지 못했어요."
+    async with db_pool.acquire() as conn:
+        for p_ in principles:
+            await conn.execute(
+                "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('knowledge', $1, TRUE)",
+                f"[{title[:30]}] {p_[:200]}")
+    return ("📚 학습 완료 — 지식 " + str(len(principles)) + "건 저장\n"
+            + "\n".join(principles) + "\n(이후 매수 판단·작전에 반영됩니다)")
+
+
 async def _get_jarvis_lessons(limit: int = 5) -> str:
     """최근 복기 교훈 로드 (아침 작전 수립용)"""
     try:
@@ -946,6 +1030,7 @@ async def _jarvis_daily_plan():
                 "SELECT symbol, name, reason FROM watchlist WHERE is_active=TRUE LIMIT 20")
         wl_txt = "\n".join(f"- {r['name']}({r['symbol']}): {r['reason'] or ''}" for r in wl) or "(없음)"
         lessons = await _get_jarvis_lessons()
+        knowledge = await _get_jarvis_knowledge(5)
         directives_txt = await _get_active_directives()
         weekly_plan = ""
         try:
@@ -962,6 +1047,9 @@ async def _jarvis_daily_plan():
 
 [최근 복기 교훈]
 {lessons}
+
+[학습한 매매 원칙]
+{knowledge or '(없음)'}
 
 [주말 예습 — 다음주 작전 초안]
 {weekly_plan or '(없음)'}
@@ -3893,6 +3981,15 @@ async def jarvis_chat(body: dict):
         if action_result:
             return {"success": True, "reply": action_result, "context_used": False}
 
+        # 학습 명령: URL + (배워|학습|공부)
+        _url_m = _re.search(r"https?://\S+", user_msg)
+        if _url_m and any(k in user_msg for k in ("배워", "학습", "공부", "익혀")):
+            try:
+                result = await _learn_from_url(_url_m.group(0))
+            except Exception as le:
+                result = f"❌ {le}"
+            return {"success": True, "reply": result, "context_used": False}
+
         # 차트 리서치 명령: "차트 OO" / "OO 차트 어때"
         if "차트" in user_msg:
             _sym, _nm = await _resolve_stock_symbol(user_msg)
@@ -5098,6 +5195,29 @@ async def run_review_now():
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/jarvis/knowledge")
+async def list_knowledge():
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, content, created_at FROM jarvis_notes WHERE category='knowledge' "
+                "AND is_active=TRUE ORDER BY created_at DESC LIMIT 50")
+        return {"success": True, "data": [
+            {"id": r["id"], "content": r["content"], "ts": r["created_at"].isoformat()} for r in rows]}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+
+@app.post("/api/jarvis/knowledge/delete")
+async def delete_knowledge(body: dict):
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1", int(body.get("id")))
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/jarvis/plan")
 async def get_jarvis_plan():
     try:
@@ -5356,10 +5476,12 @@ async def jarvis_signal(request: Request):
         # 1-1b. 주인 지시사항 (최우선)
         directives = await _get_active_directives()
 
-        # 1-1b2. 최근 복기 교훈 (자비스가 배운 것)
+        # 1-1b2. 최근 복기 교훈 + 학습 지식
         lessons_txt = ""
+        knowledge_txt = ""
         try:
             lessons_txt = await _get_jarvis_lessons(3)
+            knowledge_txt = await _get_jarvis_knowledge(5)
         except Exception:
             pass
 
@@ -5415,6 +5537,9 @@ async def jarvis_signal(request: Request):
 
 [최근 교훈 — 같은 실수 반복 금지]
 {lessons_txt or '(없음)'}
+
+[학습한 매매 원칙]
+{knowledge_txt or '(없음)'}
 
 {chart_ctx or ''}
 {self_history}

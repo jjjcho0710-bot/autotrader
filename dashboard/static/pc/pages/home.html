@@ -180,8 +180,10 @@ async function drawBigFor(sym, avg){
     if(!el)return;
     if(!rows.length){el.innerHTML='<div class="empty">차트 데이터 없음</div>';return;}
     el.innerHTML='';
-    const cd=rows.map(r=>({time:toTime(r,isMin),open:r.o,high:r.h,low:r.l,close:r.c}));
-    const vd=rows.map(r=>({time:toTime(r,isMin),value:r.v,
+    const _m=new Map(); rows.forEach(r=>_m.set(String(toTime(r,isMin)),r));
+    const rowsU=[..._m.values()];
+    const cd=rowsU.map(r=>({time:toTime(r,isMin),open:r.o,high:r.h,low:r.l,close:r.c}));
+    const vd=rowsU.map(r=>({time:toTime(r,isMin),value:r.v,
       color:r.c>=r.o?'rgba(246,70,93,.5)':'rgba(56,139,253,.5)'}));
     const opt={layout:{background:{color:'transparent'},textColor:'#8b949e',fontSize:11},
       grid:{vertLines:{color:'#1c2129'},horzLines:{color:'#1c2129'}},
@@ -354,13 +356,18 @@ async function drawCm(){
   if(chart){chart.remove();chart=null;}
   if(volChart){volChart.remove();volChart=null;}
   if(!rows.length)return;
-  const fmt=d=>`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
-  const cd=rows.map(r=>({time:fmt(r.d),open:r.o,high:r.h,low:r.l,close:r.c}));
-  const vd=rows.map(r=>({time:fmt(r.d),value:r.v,
+  const isMinM=cmPeriod.endsWith('m');
+  const tt=r=>isMinM
+    ? Date.UTC(+r.d.slice(0,4),+r.d.slice(4,6)-1,+r.d.slice(6,8),+(r.t||'0000').slice(0,2),+(r.t||'0000').slice(2,4))/1000
+    : `${r.d.slice(0,4)}-${r.d.slice(4,6)}-${r.d.slice(6,8)}`;
+  const _mm=new Map(); rows.forEach(r=>_mm.set(String(tt(r)),r));
+  const rowsU=[..._mm.values()];
+  const cd=rowsU.map(r=>({time:tt(r),open:r.o,high:r.h,low:r.l,close:r.c}));
+  const vd=rowsU.map(r=>({time:tt(r),value:r.v,
     color:r.c>=r.o?'rgba(246,70,93,.55)':'rgba(56,139,253,.55)'}));
   const opt={layout:{background:{color:'transparent'},textColor:'#8b949e'},
     grid:{vertLines:{color:'#1c2129'},horzLines:{color:'#1c2129'}},
-    crosshair:{mode:0},timeScale:{borderColor:'#21262d'},
+    crosshair:{mode:0},timeScale:{borderColor:'#21262d',timeVisible:isMinM,secondsVisible:false},
     rightPriceScale:{borderColor:'#21262d'}};
   chart=LightweightCharts.createChart(document.getElementById('cmChart'),
     {...opt,height:380});

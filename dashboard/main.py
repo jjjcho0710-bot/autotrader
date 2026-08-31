@@ -310,7 +310,11 @@ async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
             except Exception:
                 pass
         out = [o for o in out if o["close"] > 0]
-        out.sort(key=lambda x: x["date"])
+        # 같은 날짜 중복 제거 (마지막 값 유지) → 차트 렌더 오류 방지
+        _dd = {}
+        for o in out:
+            _dd[o["date"]] = o
+        out = sorted(_dd.values(), key=lambda x: x["date"])
         return out[-days:]
     except Exception as e:
         logger.debug(f"일봉 조회 실패 [{symbol}]: {e}")
@@ -5061,7 +5065,10 @@ async def _fetch_minute_ohlcv(symbol: str, unit: int = 1) -> list:
             except Exception:
                 pass
         out = [o for o in out if o["close"] > 0]
-        out.sort(key=lambda x: x["date"] + x["time"])
+        _dm = {}
+        for o in out:
+            _dm[o["date"] + o["time"][:4]] = o  # 분 단위 중복 제거
+        out = sorted(_dm.values(), key=lambda x: x["date"] + x["time"])
         # 1분봉 원본 → unit 분봉 합성
         if unit > 1 and out:
             merged, bucket, key = [], [], None

@@ -1562,6 +1562,7 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
 - "손절 {{-N}}%로 변경해줘"  /  "익절 {{N}}%로 변경해줘"
 - "지시: {{한 줄 지시}}"
 보유 종목명은 다음 중 하나여야 한다: {names}
+규칙: 매도/익절/손절 제안은 보유 종목에만. 금액(원) 단위 금지 — 반드시 주 수량. 매매는 command로만(지시: 안에 매매 문구 금지).
 
 출력은 JSON 배열만 (다른 말 금지). 제안 없으면 [] 만 출력.
 [{{"title":"제안 제목(20자)","reason":"근거 1~2문장, 적용 원칙 K번호 포함","command":"허용 형식 명령"}}]"""
@@ -1571,9 +1572,41 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
         items = []
         if m:
             try:
-                items = [x for x in _j.loads(m.group(0)) if isinstance(x, dict) and x.get("command")][:3]
+                items = [x for x in _j.loads(m.group(0)) if isinstance(x, dict) and x.get("command")]
             except Exception:
                 items = []
+        # 검증·정규화
+        held = {p_.get("name", ""): p_ for p_ in positions}
+        valid = []
+        for it in items:
+            cmd = str(it.get("command", "")).strip()
+            ok = False
+            # "종목 N원 매수" → N주 변환
+            mw = _r.match(r"^(\S+)\s+([\d,]+)\s*원\s*매수$", cmd)
+            if mw:
+                nm, amt = mw.group(1), int(mw.group(2).replace(",", ""))
+                sym, _n = await _resolve_stock_symbol(nm)
+                pr = 0
+                try:
+                    pc = await redis_client.get(f"stock:price:{sym}")
+                    pr = int(json.loads(pc if isinstance(pc, str) else pc.decode()).get("price", 0)) if pc else 0
+                except Exception:
+                    pass
+                if sym and pr > 0 and amt // pr >= 1:
+                    cmd = f"{nm} {amt // pr}주 매수"
+            if _r.match(r"^\S+\s+(\d+주\s*(매수|매도)|전량\s*매도)$", cmd):
+                nm = cmd.split()[0]
+                if "매도" in cmd and nm not in held:
+                    continue  # 미보유 매도 제외
+                ok = True
+            elif _r.match(r"^(손절|익절)\s*-?\d+(\.\d+)?%로\s*변경해줘$", cmd):
+                ok = True
+            elif cmd.startswith("지시:") and "매도" not in cmd and "매수" not in cmd:
+                ok = True
+            if ok:
+                it["command"] = cmd
+                valid.append(it)
+        items = valid[:3]
         if not items:
             if trigger == "manual":
                 await _send_telegram("💡 자비스 제안: 지금은 특별히 제안할 것이 없습니다.")
@@ -1739,6 +1772,7 @@ async def _jarvis_scheduler():
     last_wk_preview = None
     last_adv_11 = None
     last_adv_14 = None
+    last_queue_run = None
 
     while True:
         await asyncio.sleep(60)
@@ -1766,6 +1800,22 @@ async def _jarvis_scheduler():
                 last_wk_preview = today
                 asyncio.create_task(_jarvis_weekly_preview())
             continue
+
+        # 장외 승인 예약 실행 (09:01)
+        if dtime(9, 1) <= cur_time <= dtime(9, 6) and last_queue_run != today:
+            last_queue_run = today
+            async def _run_queue():
+                try:
+                    while True:
+                        raw = await redis_client.lpop("advice:queue")
+                        if not raw:
+                            break
+                        q = json.loads(raw if isinstance(raw, str) else raw.decode())
+                        sub = await jarvis_chat({"message": q["command"], "session_id": "advice"})
+                        await _send_telegram(f"⏰ 예약 실행: {q['command']}\n{sub.get('reply') or sub.get('error')}")
+                except Exception as qe:
+                    logger.warning(f"예약 실행 오류: {qe}")
+            asyncio.create_task(_run_queue())
 
         # 자비스 능동 제안 (11:00 / 14:00)
         if dtime(11, 0) <= cur_time <= dtime(11, 5) and last_adv_11 != today:
@@ -4315,6 +4365,14 @@ async def jarvis_chat(body: dict):
                 if _adv.group(1) == "거절":
                     return {"success": True, "reply": f"❌ 제안 {n} '{it.get('title')}' 거절했어요.", "context_used": False}
                 cmd = it.get("command", "")
+                _is_trade = ("매수" in cmd or "매도" in cmd) and not cmd.startswith("지시:")
+                _now = datetime.now(KST)
+                _open = (_now.weekday() < 5 and dtime(9, 0) <= _now.time().replace(tzinfo=None) <= dtime(15, 20))
+                if _is_trade and not _open:
+                    await redis_client.rpush("advice:queue", json.dumps({"command": cmd, "title": it.get("title", "")}, ensure_ascii=False))
+                    out = f"⏰ 제안 {n} 승인 — 장외라 다음 개장(09:01)에 자동 실행 예약: {cmd}"
+                    await _send_telegram(out)
+                    return {"success": True, "reply": out, "context_used": False}
                 sub = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "advice"})
                 rep = sub.get("reply") or sub.get("error") or "실행 결과 없음"
                 out = f"✅ 제안 {n} 승인 → 실행: {cmd}\n{rep}"

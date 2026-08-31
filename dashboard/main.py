@@ -3528,6 +3528,11 @@ async def _resolve_stock_symbol(text: str) -> tuple:
     return None, None
 
 
+import re as _re_mod
+_re_prop = _re_mod.compile(r"(승인|오케이|오케|ok|ㅇㅋ|사자|매수 ?해|매수 ?하자|고고|거절|취소해|사지 ?마)", _re_mod.I)
+_re_reject = _re_mod.compile(r"(거절|취소해|사지 ?마|안 ?사)")
+
+
 async def _handle_trade_command(user_msg: str):
     """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
     import re as _re
@@ -3883,6 +3888,46 @@ async def jarvis_chat(body: dict):
                 if chart_txt:
                     return {"success": True, "reply": chart_txt, "context_used": False}
                 return {"success": True, "reply": f"⚠️ {_nm}({_sym}) 차트 데이터를 가져오지 못했어요.", "context_used": False}
+
+        # 매수 제안 승인/거절 처리
+        _um = user_msg.strip()
+        if _re_prop.search(_um):
+            try:
+                target = None
+                latest = await redis_client.get("proposal:latest")
+                latest = latest if isinstance(latest, str) else (latest or b"").decode()
+                # 종목명이 함께 오면 그 제안, 아니면 최신 제안
+                keys = [k if isinstance(k, str) else k.decode() for k in await redis_client.keys("proposal:*")]
+                cands = [k.split(":", 1)[1] for k in keys if not k.startswith("proposal:cool") and k != "proposal:latest"]
+                for sym_ in cands:
+                    raw = await redis_client.get(f"proposal:{sym_}")
+                    pj = json.loads(raw if isinstance(raw, str) else raw.decode())
+                    if pj.get("name") and pj["name"] in _um:
+                        target = pj; break
+                if not target and latest:
+                    raw = await redis_client.get(f"proposal:{latest}")
+                    if raw:
+                        target = json.loads(raw if isinstance(raw, str) else raw.decode())
+                if not target:
+                    return {"success": True, "reply": "대기 중인 매수 제안이 없어요.", "context_used": False}
+                if _re_reject.search(_um):
+                    await redis_client.delete(f"proposal:{target['symbol']}")
+                    return {"success": True, "reply": f"❌ {target['name']} 매수 제안 거절 처리했어요.", "context_used": False}
+                # 승인 → 실제 매수
+                order = await _kis_stock_order(target["symbol"], int(target["price"]), int(target["qty"]), True)
+                await redis_client.delete(f"proposal:{target['symbol']}")
+                if order.get("success"):
+                    await _log_journal("stock_trader", target["symbol"], target["name"], "buy",
+                                       target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
+                                       target.get("reason", ""), True, True,
+                                       int(target["price"]), int(target["qty"]))
+                    msg = (f"✅ <b>{target['name']} 매수 체결 (주인 승인)</b>\n"
+                           f"{target['qty']}주 @ {int(target['price']):,}원")
+                    await _send_telegram(msg)
+                    return {"success": True, "reply": msg.replace("<b>", "").replace("</b>", ""), "context_used": False}
+                return {"success": True, "reply": f"❌ 매수 실패: {order.get('error')}", "context_used": False}
+            except Exception as pe:
+                logger.warning(f"제안 승인 처리 오류: {pe}")
 
         # 매매 지시 감지 → 실제 KIS 주문 실행 (자비스 경유 X)
         trade_result = await _handle_trade_command(user_msg)
@@ -5362,17 +5407,43 @@ async def jarvis_signal(request: Request):
 반드시 다음 중 하나로 시작해서 이유를 한 줄로:
 - EXECUTE: 조건 대부분 충족, 강한 확신
 - EXECUTE_SMALL: 일부 조건(2~3개) 충족, 리스크 제한적 → 절반 금액 진입
+- PROPOSE: 신호는 강한데 주인 지시(가격 상한·분산 한도 등)나 규칙에 막힘 → 주인에게 매수 제안 (승인 시 실행)
 - SKIP: 근거 부족
-완벽하지 않다는 이유만으로 전부 SKIP하지 마라. 애매하면 EXECUTE_SMALL로 소액 검증하라."""
+완벽하지 않다는 이유만으로 전부 SKIP하지 마라. 애매하면 EXECUTE_SMALL로 소액 검증하라.
+지시에 막혀도 정말 좋은 기회라면 SKIP 대신 PROPOSE로 주인과 상의하라."""
 
         # 3. Jarvis 판단 (+ AI 장애 시 ML 폴백)
         jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
         logger.info(f"🤖 Jarvis 판단 [{symbol}]: {jarvis_reply[:150]}")
         import re as _re2
-        _m = _re2.search(r"\b(EXECUTE_SMALL|EXECUTE|SKIP)\b", jarvis_reply.upper())
+        _m = _re2.search(r"\b(EXECUTE_SMALL|EXECUTE|PROPOSE|SKIP)\b", jarvis_reply.upper())
         _verdict = _m.group(1) if _m else ""
         is_small = _verdict == "EXECUTE_SMALL"
         should_execute = _verdict in ("EXECUTE", "EXECUTE_SMALL")
+
+        # PROPOSE: 주인에게 매수 제안 (승인 대기, 30분)
+        if _verdict == "PROPOSE" and action in ["buy", "BUY"]:
+            try:
+                if not await redis_client.get(f"proposal:cool:{symbol}"):
+                    prop = {"symbol": symbol, "name": name, "price": price, "qty": qty,
+                            "reason": jarvis_reply[:400], "strategy": strategy,
+                            "ts": datetime.now(KST).isoformat()}
+                    await redis_client.setex(f"proposal:{symbol}", 1800, json.dumps(prop, default=str))
+                    await redis_client.setex("proposal:latest", 1800, symbol)
+                    await redis_client.setex(f"proposal:cool:{symbol}", 3600, "1")
+                    est = int(price) * int(qty) if price and qty else 0
+                    await _send_telegram(
+                        f"💡 <b>자비스 매수 제안: {name}({symbol})</b>\n"
+                        f"{qty}주 × {int(price):,}원 ≈ {est:,}원\n\n"
+                        f"{jarvis_reply[:350]}\n\n"
+                        f"✅ 승인: '승인' 또는 '{name} 승인'\n"
+                        f"❌ 거절: '거절'  (30분 내 무응답 시 자동 취소)")
+                    await _log_journal(bot, symbol, name, action, strategy, reason,
+                                       "PROPOSE", jarvis_reply, False, False, price, qty)
+            except Exception as pe:
+                logger.warning(f"제안 처리 오류: {pe}")
+            return {"success": True, "executed": False, "proposed": True,
+                    "jarvis_reply": jarvis_reply}
         if is_small and action in ["buy", "BUY"]:
             try:
                 qty = max(1, int(float(qty) // 2))  # 절반 금액 진입

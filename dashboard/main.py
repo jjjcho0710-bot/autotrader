@@ -986,9 +986,53 @@ async def _fetch_learning_text(url: str) -> tuple:
         raise RuntimeError(f"페이지를 읽을 수 없어요: {str(e)[:80]}")
 
 
+async def _gemini_watch_youtube(url: str, prompt: str) -> str:
+    """Gemini API로 유튜브 영상 직접 시청·요약 (자막 차단 시 폴백)"""
+    key = os.getenv("GEMINI_API_KEY", "")
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY 미설정 — Railway dashboard 서비스 환경변수에 추가 필요")
+    body = {"contents": [{"parts": [
+        {"file_data": {"file_uri": url}},
+        {"text": prompt}]}]}
+    async with _aiohttp.ClientSession() as sess:
+        r = await sess.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            params={"key": key}, json=body, timeout=_aiohttp.ClientTimeout(total=180))
+        data = await r.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        raise RuntimeError(f"Gemini 시청 실패: {str(data)[:120]}")
+
+
+_LEARN_PROMPT = """이 주식 투자 학습 자료의 내용을 바탕으로,
+자비스(자동매매 AI)가 실전 매수·매도 판단에 적용할 수 있는 핵심 원칙을
+정확히 3~5개, 각 1줄(40자 이내)로 뽑아라. 각 줄은 "원칙: "으로 시작.
+근거 없는 낙관·종목 추천·광고성 내용은 제외하라."""
+
+
 async def _learn_from_url(url: str) -> str:
-    """URL 학습: 텍스트 추출 → 핵심 원칙 요약 → knowledge 저장"""
-    title, text = await _fetch_learning_text(url)
+    """URL 학습: 자막/본문 → (실패 시 Gemini 영상 시청) → 원칙 요약 → 저장"""
+    title, text = "", ""
+    vid = _extract_youtube_id(url)
+    try:
+        title, text = await _fetch_learning_text(url)
+    except Exception as fe:
+        if vid:
+            # 자막 차단/없음 → Gemini가 영상 직접 시청
+            clean_url = f"https://www.youtube.com/watch?v={vid}"
+            out = await _gemini_watch_youtube(clean_url, _LEARN_PROMPT)
+            principles = [ln.strip() for ln in out.split("\n") if "원칙" in ln and len(ln.strip()) > 6][:5]
+            if not principles:
+                return "⚠️ 영상에서 유효한 원칙을 추출하지 못했어요."
+            async with db_pool.acquire() as conn:
+                for p_ in principles:
+                    await conn.execute(
+                        "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('knowledge', $1, TRUE)",
+                        f"[유튜브 {vid}] {p_[:200]}")
+            return ("📚 학습 완료 (영상 직접 시청) — 지식 " + str(len(principles)) + "건 저장\n"
+                    + "\n".join(principles) + "\n(이후 매수 판단·작전에 반영됩니다)")
+        raise
     if len(text) < 200:
         return "⚠️ 학습할 내용이 너무 적어요 (자막/본문 부족)."
     text = text[:18000]

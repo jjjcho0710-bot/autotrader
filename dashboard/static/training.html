@@ -52,6 +52,12 @@
   .nav a{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 0 7px;font-size:11px;font-weight:600;color:var(--dim);text-decoration:none;}
   .nav-ic{font-size:21px;line-height:1;}
   .nav a.active{color:var(--gold);}
+
+.kn-core{background:rgba(240,185,11,.08);border:1px solid rgba(240,185,11,.3);border-radius:10px;padding:10px 12px;margin-bottom:6px;font-size:12.5px;}
+.kn-core .cat{color:var(--gold, #f0b90b);font-weight:700;margin-right:6px;}
+.kn-item{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;}
+.kn-item:last-child{border:none;}
+.kn-del{background:none;border:1px solid var(--border);color:var(--dim);border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;flex-shrink:0;}
 </style>
 </head>
 <body>
@@ -78,6 +84,13 @@
     <span><span class="dot" style="background:var(--green)"></span>잘거름</span>
     <span><span class="dot" style="background:#b8860b"></span>기회놓침</span>
   </div>
+</div>
+
+<div class="section">
+  <div class="section-title">📚 학습 라이브러리 <span class="badge" id="knCount">0</span></div>
+  <div id="knCore"></div>
+  <div style="font-size:11px;color:var(--dim);margin:10px 0 6px;">전체 학습 원칙 (최근순)</div>
+  <div id="knList"><div class="empty">아직 학습한 자료가 없어요 — 자비스에게 URL과 함께 '이거 배워'</div></div>
 </div>
 
 <div class="section">

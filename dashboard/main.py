@@ -4040,11 +4040,17 @@ async def jarvis_chat(body: dict):
         # 학습 명령: URL + (배워|학습|공부)
         _url_m = _re_mod.search(r"https?://\S+", user_msg)
         if _url_m and any(k in user_msg for k in ("배워", "학습", "공부", "익혀", "가능한가", "가능해")):
-            try:
-                result = await _learn_from_url(_url_m.group(0))
-            except Exception as le:
-                result = f"❌ {le}"
-            return {"success": True, "reply": result, "context_used": False}
+            _learn_url = _url_m.group(0)
+            async def _bg_learn():
+                try:
+                    result = await _learn_from_url(_learn_url)
+                except Exception as le:
+                    result = f"❌ 학습 실패: {le}"
+                await _send_telegram(f"📚 <b>자비스 학습 결과</b>\n{result}")
+            asyncio.create_task(_bg_learn())
+            return {"success": True,
+                    "reply": "📚 학습 시작했어요! 영상은 1~3분 걸릴 수 있어요. 끝나면 텔레그램·알림으로 결과 알려드릴게요.",
+                    "context_used": False}
 
         # 차트 리서치 명령: "차트 OO" / "OO 차트 어때"
         if "차트" in user_msg:

@@ -1621,8 +1621,10 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
             pass
         now = datetime.now(KST).strftime("%H:%M")
         msg = (f"💡 <b>자비스 제안 [{now}]</b>\n\n" + "\n\n".join(lines) +
-               "\n\n✅ 실행: '승인 1' / ❌ '거절 1'  (2시간 내)")
-        await _send_telegram(msg)
+               "\n\n아래 버튼으로 승인/거절하세요 (2시간 내)")
+        kb_rows = [[(f"✅ 승인 {i}", f"adv:ok:{i}"), (f"❌ 거절 {i}", f"adv:no:{i}")]
+                   for i in range(1, len(items) + 1)]
+        await _send_telegram(msg, reply_markup=_kb(kb_rows))
         return msg
     except Exception as e:
         logger.error(f"능동 제안 오류: {e}")
@@ -4670,7 +4672,7 @@ async def mark_notifications_read():
         return {"success": False, "error": str(e)}
 
 
-async def _send_telegram(text: str, chat_id: str = None, token: str = None):
+async def _send_telegram(text: str, chat_id: str = None, token: str = None, reply_markup: dict = None):
     """텔레그램 메시지 전송 (내부용) + 시스템 알림센터 저장"""
     # 주말 매매 신호 알림 차단 (일일보고·복기·코인은 허용)
     try:
@@ -4695,11 +4697,17 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None):
         async with http.ClientSession() as session:
             await session.post(
                 f"https://api.telegram.org/bot{_token}/sendMessage",
-                json={"chat_id": cid, "text": text, "parse_mode": "HTML"},
+                json={"chat_id": cid, "text": text, "parse_mode": "HTML",
+                      **({"reply_markup": reply_markup} if reply_markup else {})},
                 timeout=http.ClientTimeout(total=10),
             )
     except Exception as e:
         logger.warning(f"텔레그램 전송 실패: {e}")
+
+
+def _kb(rows: list) -> dict:
+    """인라인 키보드 헬퍼: [[("라벨","data"),...],...]"""
+    return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in r] for r in rows]}
 
 
 # 텔레그램 채팅별 대화 히스토리 (Redis 저장)
@@ -4919,6 +4927,42 @@ async def _ask_gemini_direct(message: str) -> str:
 async def telegram_webhook(body: dict):
     """텔레그램 Bot webhook — 메시지 수신 → Jarvis 처리"""
     try:
+        # 버튼 클릭(callback_query) 처리
+        cq = body.get("callback_query")
+        if cq:
+            data = cq.get("data", "")
+            cq_chat = str(cq.get("message", {}).get("chat", {}).get("id", ""))
+            cq_msg_id = cq.get("message", {}).get("message_id")
+            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+            cmd = None
+            if data.startswith("adv:"):
+                _, act, n = data.split(":")
+                cmd = f"{'승인' if act == 'ok' else '거절'} {n}"
+            elif data.startswith("prop:"):
+                _, act, sym = data.split(":")
+                cmd = "승인" if act == "ok" else "거절"
+            reply = ""
+            if cmd:
+                try:
+                    res = await jarvis_chat({"message": cmd, "session_id": os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")})
+                    reply = res.get("reply") or res.get("error") or "처리됨"
+                except Exception as e:
+                    reply = f"❌ 처리 실패: {e}"
+            try:
+                import aiohttp as http
+                async with http.ClientSession() as sess:
+                    await sess.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                                    json={"callback_query_id": cq.get("id"), "text": "처리 중..."}, timeout=http.ClientTimeout(total=5))
+                    # 버튼 제거 (중복 클릭 방지)
+                    await sess.post(f"https://api.telegram.org/bot{token}/editMessageReplyMarkup",
+                                    json={"chat_id": cq_chat, "message_id": cq_msg_id,
+                                          "reply_markup": {"inline_keyboard": []}}, timeout=http.ClientTimeout(total=5))
+            except Exception:
+                pass
+            if reply:
+                await _send_telegram(reply[:3500], cq_chat, token)
+            return {"ok": True}
+
         message = body.get("message", {})
         chat_id = str(message.get("chat", {}).get("id", ""))
         text = message.get("text", "").strip()
@@ -5986,8 +6030,9 @@ async def jarvis_signal(request: Request):
                         f"💡 <b>자비스 매수 제안: {name}({symbol})</b>\n"
                         f"{qty}주 × {int(price):,}원 ≈ {est:,}원\n\n"
                         f"{jarvis_reply[:350]}\n\n"
-                        f"✅ 승인: '승인' 또는 '{name} 승인'\n"
-                        f"❌ 거절: '거절'  (30분 내 무응답 시 자동 취소)")
+                        f"아래 버튼으로 승인/거절 (30분 내 무응답 시 자동 취소)",
+                        reply_markup=_kb([[("✅ 매수 승인", f"prop:ok:{symbol}"),
+                                           ("❌ 거절", f"prop:no:{symbol}")]]))
                     await _log_journal(bot, symbol, name, action, strategy, reason,
                                        "PROPOSE", jarvis_reply, False, False, price, qty)
             except Exception as pe:

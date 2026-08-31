@@ -1625,6 +1625,15 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
         kb_rows = [[(f"✅ 승인 {i}", f"adv:ok:{i}"), (f"❌ 거절 {i}", f"adv:no:{i}")]
                    for i in range(1, len(items) + 1)]
         await _send_telegram(msg, reply_markup=_kb(kb_rows))
+        # 웹 자비스 대화에도 카드 (버튼 마커: [[BTN:adv:ok:1|✅ 승인 1]] 형식)
+        import re as _rr
+        plain = _rr.sub(r"<[^>]+>", "", msg)
+        btns = " ".join(f"[[BTN:{d}|{t}]]" for row in kb_rows for t, d in row)
+        for sid in {os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "pc"}:
+            try:
+                await _save_chat_history(sid, "assistant", plain + "\n" + btns)
+            except Exception:
+                pass
         return msg
     except Exception as e:
         logger.error(f"능동 제안 오류: {e}")
@@ -4615,8 +4624,8 @@ async def _typing_action(chat_id: str, token: str = None):
         pass
 
 
-async def _store_notification(text: str):
-    """시스템 알림센터 저장 (배지용)"""
+async def _store_notification(text: str, actions: list = None):
+    """시스템 알림센터 저장 (배지용) — actions: [{"label","data"}] 승인 버튼"""
     try:
         import re as _re
         clean = _re.sub(r"<[^>]+>", "", text or "").strip()
@@ -4631,9 +4640,10 @@ async def _store_notification(text: str):
                     is_read BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )""")
+            await conn.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS meta TEXT")
             await conn.execute(
-                "INSERT INTO notifications (title, body) VALUES ($1, $2)",
-                title, clean[:1500])
+                "INSERT INTO notifications (title, body, meta) VALUES ($1, $2, $3)",
+                title, clean[:1500], json.dumps(actions, ensure_ascii=False) if actions else None)
     except Exception as e:
         logger.debug(f"알림 저장 실패(무시): {e}")
 
@@ -4646,15 +4656,54 @@ async def get_notifications(limit: int = 30):
 async def _get_notifications_raw(limit: int = 30):
     try:
         async with db_pool.acquire() as conn:
+            await conn.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS meta TEXT")
             rows = await conn.fetch(
-                "SELECT id, title, body, is_read, created_at FROM notifications "
+                "SELECT id, title, body, is_read, created_at, meta FROM notifications "
                 "ORDER BY created_at DESC LIMIT $1", limit)
             unread = await conn.fetchval(
                 "SELECT COUNT(*) FROM notifications WHERE is_read=FALSE")
-        return {"success": True, "unread": unread,
-                "data": [dict(r) | {"created_at": r["created_at"].isoformat()} for r in rows]}
+        out = []
+        for r in rows:
+            d = dict(r) | {"created_at": r["created_at"].isoformat()}
+            acts = []
+            if r["meta"]:
+                try:
+                    for a in json.loads(r["meta"]):
+                        data = a.get("data", "")
+                        alive = False
+                        try:
+                            if data.startswith("adv:"):
+                                alive = bool(await redis_client.get(f"advice:{data.split(':')[2]}"))
+                            elif data.startswith("prop:"):
+                                alive = bool(await redis_client.get(f"proposal:{data.split(':')[2]}"))
+                        except Exception:
+                            pass
+                        acts.append({"label": a.get("label"), "data": data, "alive": alive})
+                except Exception:
+                    pass
+            d["meta"] = None
+            d["actions"] = acts
+            out.append(d)
+        return {"success": True, "unread": unread, "data": out}
     except Exception as e:
         return {"success": False, "error": str(e), "unread": 0, "data": []}
+
+
+@app.post("/api/jarvis/action")
+async def jarvis_action(body: dict):
+    """웹 승인/거절 버튼 → 텔레그램 콜백과 동일 로직"""
+    data = str(body.get("data", ""))
+    cmd = None
+    if data.startswith("adv:"):
+        _, act, n = data.split(":")
+        cmd = f"{'승인' if act == 'ok' else '거절'} {n}"
+    elif data.startswith("prop:"):
+        _, act, _sym = data.split(":")
+        cmd = "승인" if act == "ok" else "거절"
+    if not cmd:
+        return {"success": False, "reply": "알 수 없는 액션"}
+    res = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "web"})
+    return {"success": True, "reply": res.get("reply") or res.get("error") or "처리됨"}
 
 
 @app.post("/api/notifications/read")
@@ -4685,7 +4734,11 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None, repl
     except Exception:
         pass
     try:
-        await _store_notification(text)
+        _acts = None
+        if reply_markup and reply_markup.get("inline_keyboard"):
+            _acts = [{"label": b["text"], "data": b["callback_data"]}
+                     for row in reply_markup["inline_keyboard"] for b in row]
+        await _store_notification(text, _acts)
     except Exception:
         pass
     _token = token or config.TELEGRAM_TOKEN
@@ -6033,6 +6086,13 @@ async def jarvis_signal(request: Request):
                         f"아래 버튼으로 승인/거절 (30분 내 무응답 시 자동 취소)",
                         reply_markup=_kb([[("✅ 매수 승인", f"prop:ok:{symbol}"),
                                            ("❌ 거절", f"prop:no:{symbol}")]]))
+                    for sid in {os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "pc"}:
+                        try:
+                            await _save_chat_history(sid, "assistant",
+                                f"💡 매수 제안: {name}({symbol}) {qty}주 × {int(price):,}원\n{jarvis_reply[:300]}\n"
+                                f"[[BTN:prop:ok:{symbol}|✅ 매수 승인]] [[BTN:prop:no:{symbol}|❌ 거절]]")
+                        except Exception:
+                            pass
                     await _log_journal(bot, symbol, name, action, strategy, reason,
                                        "PROPOSE", jarvis_reply, False, False, price, qty)
             except Exception as pe:

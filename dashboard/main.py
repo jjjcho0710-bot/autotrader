@@ -4076,6 +4076,10 @@ async def _store_notification(text: str):
 
 @app.get("/api/notifications")
 async def get_notifications(limit: int = 30):
+    return await _rcache(f"cache:noti:{limit}", 5, lambda: _get_notifications_raw(limit))
+
+
+async def _get_notifications_raw(limit: int = 30):
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -4092,6 +4096,11 @@ async def get_notifications(limit: int = 30):
 @app.post("/api/notifications/read")
 async def mark_notifications_read():
     try:
+        try:
+            for k in await redis_client.keys("cache:noti:*"):
+                await redis_client.delete(k)
+        except Exception:
+            pass
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE notifications SET is_read=TRUE WHERE is_read=FALSE")
         return {"success": True}
@@ -4704,6 +4713,10 @@ async def get_crypto_balance():
 
 @app.get("/api/strategies")
 async def get_strategies(bot: str = None):
+    return await _rcache(f"cache:strategies:{bot}", 20, lambda: _get_strategies_raw(bot))
+
+
+async def _get_strategies_raw(bot: str = None):
     """전략 설정 조회"""
     try:
         import json
@@ -4735,8 +4748,17 @@ async def get_strategies(bot: str = None):
         return {"success": False, "error": str(e)}
 
 
+async def _invalidate_strategy_cache():
+    try:
+        for k in await redis_client.keys("cache:strategies:*"):
+            await redis_client.delete(k)
+    except Exception:
+        pass
+
+
 @app.post("/api/strategies/update")
 async def update_strategy(body: dict):
+    await _invalidate_strategy_cache()
     """전략 ON/OFF + 파라미터 저장"""
     try:
         import json
@@ -4927,6 +4949,10 @@ async def _log_journal(bot: str, symbol: str, name: str, action: str,
 
 @app.get("/api/training/summary")
 async def training_summary(days: int = 14):
+    return await _rcache("cache:training:summary", 30, lambda: _training_summary_raw(days))
+
+
+async def _training_summary_raw(days: int = 14):
     """트레이닝 페이지용: 교훈 목록 + 일별 채점 성적"""
     try:
         async with db_pool.acquire() as conn:

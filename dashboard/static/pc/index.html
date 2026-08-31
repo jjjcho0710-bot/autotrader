@@ -87,6 +87,9 @@ async function go(name){
   }
 }
 go('home');
+// 조각 파일 사전 로드 → 메뉴 전환 즉시
+setTimeout(()=>{['jarvis','strategy','training','logs'].forEach(n=>
+  fetch(`/static/pc/pages/${n}.html?v=20260831`).catch(()=>{}));}, 1500);
 // 자비스 상태 점검
 setInterval(async()=>{
   try{const r=await fetch('/api/status');const j=await r.json();

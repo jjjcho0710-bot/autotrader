@@ -1826,7 +1826,7 @@ async def _jarvis_scheduler():
                         if not raw:
                             break
                         q = json.loads(raw if isinstance(raw, str) else raw.decode())
-                        sub = await jarvis_chat({"message": q["command"], "session_id": "advice"})
+                        sub = await jarvis_chat({"message": q["command"], "session_id": "advice", "_no_mirror": True})
                         await _send_telegram(f"⏰ 예약 실행: {q['command']}\n{sub.get('reply') or sub.get('error')}")
                 except Exception as qe:
                     logger.warning(f"예약 실행 오류: {qe}")
@@ -4287,6 +4287,20 @@ async def _summarize_old_chats():
 
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
+    """채팅 엔트리 — 웹 대화는 텔레그램으로 미러 전달"""
+    res = await _jarvis_chat_impl(body)
+    try:
+        if not body.get("_no_mirror") and isinstance(res, dict) and res.get("reply"):
+            um = (body.get("message") or "")[:600]
+            rp = str(res.get("reply"))[:2600]
+            asyncio.create_task(_send_telegram(
+                f"🌐 <b>웹 대화</b>\n🧑 {um}\n\n🤖 {rp}", store=False))
+    except Exception:
+        pass
+    return res
+
+
+async def _jarvis_chat_impl(body: dict):
     """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
     user_msg = body.get("message", "").strip()
     # 텔레그램과 완전히 같은 세션 공유
@@ -4388,7 +4402,7 @@ async def jarvis_chat(body: dict):
                     out = f"⏰ 제안 {n} 승인 — 장외라 다음 개장(09:01)에 자동 실행 예약: {cmd}"
                     await _send_telegram(out)
                     return {"success": True, "reply": out, "context_used": False}
-                sub = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "advice"})
+                sub = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "advice", "_no_mirror": True})
                 rep = sub.get("reply") or sub.get("error") or "실행 결과 없음"
                 out = f"✅ 제안 {n} 승인 → 실행: {cmd}\n{rep}"
                 await _send_telegram(out)
@@ -4702,7 +4716,7 @@ async def jarvis_action(body: dict):
         cmd = "승인" if act == "ok" else "거절"
     if not cmd:
         return {"success": False, "reply": "알 수 없는 액션"}
-    res = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "web"})
+    res = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "web", "_no_mirror": True})
     return {"success": True, "reply": res.get("reply") or res.get("error") or "처리됨"}
 
 
@@ -4721,7 +4735,7 @@ async def mark_notifications_read():
         return {"success": False, "error": str(e)}
 
 
-async def _send_telegram(text: str, chat_id: str = None, token: str = None, reply_markup: dict = None):
+async def _send_telegram(text: str, chat_id: str = None, token: str = None, reply_markup: dict = None, store: bool = True):
     """텔레그램 메시지 전송 (내부용) + 시스템 알림센터 저장"""
     # 주말 매매 신호 알림 차단 (일일보고·복기·코인은 허용)
     try:
@@ -4735,10 +4749,14 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None, repl
         pass
     try:
         _acts = None
+        if not store:
+            raise StopIteration
         if reply_markup and reply_markup.get("inline_keyboard"):
             _acts = [{"label": b["text"], "data": b["callback_data"]}
                      for row in reply_markup["inline_keyboard"] for b in row]
         await _store_notification(text, _acts)
+    except StopIteration:
+        pass
     except Exception:
         pass
     _token = token or config.TELEGRAM_TOKEN
@@ -4997,7 +5015,7 @@ async def telegram_webhook(body: dict):
             reply = ""
             if cmd:
                 try:
-                    res = await jarvis_chat({"message": cmd, "session_id": os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")})
+                    res = await jarvis_chat({"message": cmd, "session_id": os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "_no_mirror": True})
                     reply = res.get("reply") or res.get("error") or "처리됨"
                 except Exception as e:
                     reply = f"❌ 처리 실패: {e}"
@@ -5096,7 +5114,7 @@ async def telegram_webhook(body: dict):
             await _typing_action(chat_id, token)
             # 웹 채팅과 동일 파이프라인 (컨텍스트·지시·설정·차트·ACTION 실행 전부 공유)
             try:
-                res = await jarvis_chat({"message": text, "session_id": shared_session})
+                res = await jarvis_chat({"message": text, "session_id": shared_session, "_no_mirror": True})
                 reply = res.get("reply") or res.get("error") or "응답 없음"
             except Exception as _e:
                 reply = await _ask_openwebui(text, session_id=shared_session)

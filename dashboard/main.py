@@ -4072,12 +4072,19 @@ async def jarvis_chat(body: dict):
         _url_m = _re_mod.search(r"https?://\S+", user_msg)
         if _url_m and any(k in user_msg for k in ("배워", "학습", "공부", "익혀", "가능한가", "가능해")):
             _learn_url = _url_m.group(0)
+            _sid_for_learn = body.get("session_id") or os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
             async def _bg_learn():
                 try:
                     result = await _learn_from_url(_learn_url)
                 except Exception as le:
                     result = f"❌ 학습 실패: {le}"
                 await _send_telegram(f"📚 <b>자비스 학습 결과</b>\n{result}")
+                # 웹 자비스 대화 기록에도 남김 (다음 화면 로드 시 표시)
+                for sid in {_sid_for_learn, os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "pc"}:
+                    try:
+                        await _save_chat_history(sid, "assistant", result)
+                    except Exception:
+                        pass
             asyncio.create_task(_bg_learn())
             return {"success": True,
                     "reply": "📚 학습 시작했어요! 영상은 1~3분 걸릴 수 있어요. 끝나면 텔레그램·알림으로 결과 알려드릴게요.",

@@ -187,5 +187,35 @@ setInterval(load, 30000);
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 </style>
+
+<script>
+// ── 학습 라이브러리 ──
+async function loadKnowledge(){
+  try{
+    const r=await fetch('/api/jarvis/knowledge');const j=await r.json();
+    const core=j.core||[], data=j.data||[];
+    document.getElementById('knCount').textContent=data.length;
+    document.getElementById('knCore').innerHTML=core.length
+      ? '<div style="font-size:11px;color:var(--dim);margin-bottom:6px;">핵심 원칙 (정제본 '+core.length+')</div>'
+        + core.map(c=>{const m=c.content.match(/^\[(.+?)\]\s*(.*)$/);
+          const ap=c.applied||0, hi=c.hits||0;
+          const perf=ap>0?`<span style="float:right;color:${hi/ap>=0.6?'#16c784':'var(--dim)'};font-size:11px;">${hi}/${ap} (${Math.round(hi/ap*100)}%)</span>`
+                         :`<span style="float:right;color:var(--dim);font-size:10px;">데이터 수집 중</span>`;
+          return `<div class="kn-core"><span style="color:var(--dim);font-size:10px;">K${c.id}</span> ${m?'<span class="cat">'+m[1]+'</span>'+m[2]:c.content}${perf}</div>`;}).join('')
+      : '<div style="font-size:11px;color:var(--dim);">정제본 없음 — 토요일 자동 정리 또는 자료 3개 이상 시 생성</div>';
+    const el=document.getElementById('knList');
+    if(data.length){
+      el.innerHTML=data.map(k=>`<div class="kn-item"><span>${k.content.replace(/</g,'&lt;')}</span>
+        <button class="kn-del" onclick="delKn(${k.id})">삭제</button></div>`).join('');
+    }
+  }catch(e){}
+}
+async function delKn(id){
+  if(!confirm('이 원칙을 제외할까요?'))return;
+  await fetch('/api/jarvis/knowledge/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  loadKnowledge();
+}
+loadKnowledge();
+</script>
 </body>
 </html>

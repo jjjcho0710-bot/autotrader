@@ -504,6 +504,51 @@ class StockTrader:
                     logger.warning(f"손절 자동매도 오류 [{symbol}]: {e}")
                 continue
 
+            # 급등 절반익절: 1시간 내 +10%p 이상 급등 시 절반 자동 매도 (완만한 상승은 제외)
+            try:
+                surge_key = f"surge_ref:{symbol}"
+                ref = await cache.client.get(surge_key)
+                now_ts = datetime.now().timestamp()
+                if ref:
+                    ref_price, ref_ts = map(float, ref.split(":"))
+                    if now_ts - ref_ts > 3600:
+                        # 1시간 지난 기준가는 폐기하고 현재가로 갱신
+                        await cache.client.setex(surge_key, 3600, f"{cur_price}:{now_ts}")
+                        ref_price = cur_price
+                else:
+                    await cache.client.setex(surge_key, 3600, f"{cur_price}:{now_ts}")
+                    ref_price = cur_price
+
+                surge_rate = (cur_price - ref_price) / ref_price * 100 if ref_price > 0 else 0
+                if surge_rate >= 10.0 and qty >= 2 and \
+                   not await cache.client.get(f"surge_tp:{symbol}"):
+                    half_qty = qty // 2
+                    result = await self.trader.sell(symbol, cur_price, half_qty)
+                    if result["success"]:
+                        half_pnl = int((cur_price - avg_price) * half_qty)
+                        await db.insert_trade(
+                            bot="stock_trader", asset_type="stock",
+                            symbol=symbol, side="SELL",
+                            price=cur_price, quantity=half_qty,
+                            amount=cur_price * half_qty,
+                            strategy=f"{strat_name}_급등절반익절", pnl=half_pnl,
+                        )
+                        await cache.client.setex(f"surge_tp:{symbol}", 86400, "1")
+                        try:
+                            from common.telegram import send_stock
+                            await send_stock(
+                                f"🚀 <b>{pos.get('name', symbol)} 급등 절반 익절</b>\n"
+                                f"1시간 내 {surge_rate:+.1f}% 급등 — {half_qty}주 매도 @ {cur_price:,}원 "
+                                f"(전체 손익 {pnl_rate:+.1f}%, 실현 {half_pnl:+,}원)\n"
+                                f"잔여 {qty - half_qty}주는 트레일링으로 계속 관리합니다.")
+                        except Exception:
+                            pass
+                        pos["qty"] = qty - half_qty
+                        self.positions[symbol] = pos
+                        continue
+            except Exception as e:
+                logger.warning(f"급등 절반익절 처리 오류 [{symbol}]: {e}")
+
             # 지시 #5: +3% 도달 시 절반 익절 (지시 활성 시, 종목당 1회)
             try:
                 if pnl_rate >= 3.0 and qty >= 2 and \

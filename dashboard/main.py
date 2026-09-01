@@ -5808,7 +5808,21 @@ async def run_review_now():
 @app.get("/api/stock/lookup")
 async def stock_lookup(q: str):
     sym, nm = await _resolve_stock_symbol(q)
-    return {"query": q, "symbol": sym, "name": nm, "cache_size": len(_stock_name_cache)}
+    db_count = 0
+    try:
+        async with db_pool.acquire() as conn:
+            db_count = await conn.fetchval("SELECT COUNT(*) FROM stock_master")
+    except Exception as e:
+        db_count = f"error: {e}"
+    return {"query": q, "symbol": sym, "name": nm,
+            "memory_cache_size": len(_stock_name_cache), "db_count": db_count}
+
+
+@app.api_route("/api/stock/reload_cache", methods=["GET", "POST"])
+async def reload_stock_cache():
+    """종목 캐시 즉시 강제 갱신 (pykrx, 수 분 소요될 수 있음)"""
+    asyncio.create_task(_load_stock_cache())
+    return {"success": True, "note": "백그라운드 갱신 시작됨 — 잠시 후 /api/stock/lookup으로 확인"}
 
 
 @app.get("/api/jarvis/knowledge")

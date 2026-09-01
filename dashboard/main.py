@@ -152,8 +152,24 @@ _stock_name_cache: dict = {}  # {종목명: 종목코드}
 _stock_code_cache: dict = {}  # {종목코드: 종목명}
 
 async def _load_stock_cache():
-    """pykrx로 전체 종목 목록 메모리 로드"""
+    """전체 종목 목록: DB(stock_master) 즉시 로드 → 7일 이상 오래됐거나 비어있으면 pykrx로 갱신 후 DB 저장"""
     global _stock_name_cache, _stock_code_cache
+    # 1) DB에서 즉시 로드
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("""CREATE TABLE IF NOT EXISTS stock_master (
+                symbol VARCHAR(10) PRIMARY KEY, name VARCHAR(80), updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            rows = await conn.fetch("SELECT symbol, name FROM stock_master")
+            age = await conn.fetchval("SELECT NOW() - MAX(updated_at) FROM stock_master")
+        if rows:
+            _stock_name_cache = {r["name"]: r["symbol"] for r in rows if r["name"]}
+            _stock_code_cache = {r["symbol"]: r["name"] for r in rows}
+            logger.info(f"✅ 종목 캐시 DB 로드: {len(rows)}개")
+            if age is not None and age.days < 7:
+                return
+    except Exception as e:
+        logger.warning(f"종목 캐시 DB 로드 실패: {e}")
+    # 2) pykrx 갱신 (느림 — 백그라운드)
     try:
         import asyncio
         from pykrx import stock as pykrx_stock
@@ -170,9 +186,18 @@ async def _load_stock_cache():
             return result
 
         name_map = await loop.run_in_executor(None, _fetch)
-        _stock_name_cache = name_map
-        _stock_code_cache = {v: k for k, v in name_map.items()}
-        logger.info(f"✅ 전체 종목 캐시 로드 완료: {len(name_map)}개")
+        if name_map:
+            _stock_name_cache = name_map
+            _stock_code_cache = {v: k for k, v in name_map.items()}
+            logger.info(f"✅ 전체 종목 캐시 pykrx 갱신: {len(name_map)}개")
+            try:
+                async with db_pool.acquire() as conn:
+                    await conn.executemany(
+                        "INSERT INTO stock_master (symbol, name, updated_at) VALUES ($1, $2, NOW()) "
+                        "ON CONFLICT (symbol) DO UPDATE SET name=EXCLUDED.name, updated_at=NOW()",
+                        [(v, k) for k, v in name_map.items()])
+            except Exception as e:
+                logger.warning(f"종목 캐시 DB 저장 실패: {e}")
     except Exception as e:
         logger.warning(f"종목 캐시 로드 실패 (무시): {e}")
 
@@ -3942,6 +3967,16 @@ async def _resolve_stock_symbol(text: str) -> tuple:
                 return code, nm
     except Exception:
         pass
+    # DB 폴백 (캐시 미로드 시): 텍스트에 포함되는 가장 긴 종목명
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT symbol, name FROM stock_master WHERE $1 LIKE '%' || name || '%' "
+                "ORDER BY LENGTH(name) DESC LIMIT 1", text)
+        if rows:
+            return rows[0]["symbol"], rows[0]["name"]
+    except Exception:
+        pass
     return None, None
 
 
@@ -5756,6 +5791,12 @@ async def run_review_now():
                 "note": "복기 실행됨 — 트레이닝 페이지에서 교훈 확인"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/stock/lookup")
+async def stock_lookup(q: str):
+    sym, nm = await _resolve_stock_symbol(q)
+    return {"query": q, "symbol": sym, "name": nm, "cache_size": len(_stock_name_cache)}
 
 
 @app.get("/api/jarvis/knowledge")

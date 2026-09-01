@@ -1024,6 +1024,29 @@ async def _fetch_learning_text(url: str) -> tuple:
         raise RuntimeError(f"페이지를 읽을 수 없어요: {str(e)[:80]}")
 
 
+async def _web_research_stock(query: str, symbol: str = "", name: str = "") -> str:
+    """시스템 미등록 종목/기업 질문 → Gemini + Google 검색으로 웹 조사 후 요약 답변"""
+    key = os.getenv("GEMINI_API_KEY", "") or config.GEMINI_API_KEY
+    if not key:
+        return "❌ 웹 검색 기능을 쓰려면 GEMINI_API_KEY 설정이 필요해요."
+    subject = name or query
+    prompt = f"""'{subject}' 이 한국 상장(또는 예정) 기업/종목에 대해 최신 정보를 검색해서 알려줘.
+포함할 내용: 어떤 회사인지(사업), 최근 주요 뉴스나 공시(있으면 날짜 포함), 최근 주가 동향(알 수 있으면).
+모르는 내용은 추측하지 말고 "확인 안 됨"이라고 써라. 5~8문장, 한국어 존댓말로 자연스럽게 작성."""
+    body = {"contents": [{"parts": [{"text": prompt}]}],
+            "tools": [{"google_search": {}}]}
+    try:
+        async with _aiohttp.ClientSession() as sess:
+            r = await sess.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                params={"key": key}, json=body, timeout=_aiohttp.ClientTimeout(total=30))
+            data = await r.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return f"🔎 웹 조사: {subject}\n\n{text}\n\n(참고: 실시간 시세·매매 판단용이 아닌 일반 정보입니다)"
+    except Exception as e:
+        return f"❌ 웹 조사 실패: {str(e)[:120]}"
+
+
 async def _gemini_watch_youtube(url: str, prompt: str) -> str:
     """Gemini API로 유튜브 영상 직접 시청·요약 (자막 차단 시 폴백)"""
     key = os.getenv("GEMINI_API_KEY", "")
@@ -4382,6 +4405,10 @@ async def _jarvis_chat_impl(body: dict):
                     return {"success": True, "reply": f"👁️ {_wn}({_ws}) 감시종목에 추가했어요. 다음 스캔부터 신호 감시합니다.", "context_used": False}
                 except Exception as we:
                     return {"success": True, "reply": f"❌ 감시 추가 실패: {str(we)[:80]}", "context_used": False}
+            else:
+                q = _wm.group(1).strip()
+                reply = await _web_research_stock(q, name=q)
+                return {"success": True, "reply": reply + "\n\n(시스템 종목코드를 못 찾아 감시 추가는 안 됐어요. 정식 종목명으로 다시 시도해보세요.)", "context_used": False}
 
         # 학습 지식 목록 (확정 명령, AI 미경유)
         if _re_mod.search(r"(학습|배운|지식).*(내용|목록|뭐|알려|정리|보여)", user_msg) and "http" not in user_msg:
@@ -4539,6 +4566,11 @@ async def _jarvis_chat_impl(body: dict):
         try:
             if _re_mod.search(r"(어때|어떠|어떻게\s*봐|전망|분석|살까|살만|볼만|괜찮|매수\s*타이밍|어느\s*정도)", user_msg):
                 _sym, _nm = await _resolve_stock_symbol(user_msg)
+                if not _sym:
+                    _guess = _re_mod.sub(r"(어때|어떠|어떻게\s*봐|전망|분석|살까|살만|볼만|괜찮|매수\s*타이밍|어느\s*정도|\?|\.|알려줘|뭐하는|뭐 하는|회사야|기업이야)", "", user_msg).strip()
+                    if 2 <= len(_guess) <= 20:
+                        _web_reply = await _web_research_stock(_guess, name=_guess)
+                        return {"success": True, "reply": _web_reply, "context_used": False}
                 if _sym:
                     _rows = await _fetch_daily_ohlcv(_sym, 5)
                     _cur = _rows[-1]["close"] if _rows else 0

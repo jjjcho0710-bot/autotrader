@@ -549,112 +549,64 @@ class StockTrader:
             except Exception as e:
                 logger.warning(f"급등 절반익절 처리 오류 [{symbol}]: {e}")
 
-            # 지시 #5: +3% 도달 시 절반 익절 (지시 활성 시, 종목당 1회)
-            try:
-                if pnl_rate >= 3.0 and qty >= 2 and \
-                   not await cache.client.get(f"half_tp:{symbol}"):
-                    _half_on = False
-                    try:
-                        async with db.pool.acquire() as _conn:
-                            _half_on = bool(await _conn.fetchval(
-                                "SELECT 1 FROM jarvis_notes WHERE category='directive' "
-                                "AND is_active=TRUE AND content LIKE '%절반%' LIMIT 1"))
-                    except Exception:
-                        pass
-                    if _half_on:
-                        half_qty = qty // 2
-                        result = await self.trader.sell(symbol, cur_price, half_qty)
-                        if result["success"]:
-                            half_pnl = int((cur_price - avg_price) * half_qty)
-                            await db.insert_trade(
-                                bot="stock_trader", asset_type="stock",
-                                symbol=symbol, side="SELL",
-                                price=cur_price, quantity=half_qty,
-                                amount=cur_price * half_qty,
-                                strategy=f"{strat_name}_절반익절", pnl=half_pnl,
-                            )
-                            await cache.client.setex(f"half_tp:{symbol}", 86400, "1")
-                            try:
-                                from common.telegram import send_stock
-                                await send_stock(
-                                    f"💰 <b>{pos.get('name', symbol)} 절반 익절 실현</b>\n"
-                                    f"{half_qty}주 매도 @ {cur_price:,}원 "
-                                    f"(+{pnl_rate:.1f}%, 수익 {half_pnl:+,}원)\n"
-                                    f"잔여 {qty - half_qty}주는 트레일링으로 계속 관리합니다. "
-                                    f"(지시 #5: 3% 절반 챙기기)")
-                            except Exception:
-                                pass
-                            # 보유 수량 갱신 후 다음 종목으로
-                            pos["qty"] = qty - half_qty
-                            self.positions[symbol] = pos
-                            continue
-            except Exception as e:
-                logger.warning(f"절반 익절 처리 오류 [{symbol}]: {e}")
-
-            # 익절: 상의 모드 + 트레일링 수익보호
-            # ① 익절선 도달 → 자동매도 안함, 알림(홀딩/매도 판단 요청) + 고점 추적 시작
-            # ② 고점 대비 -2% 반락 → 그때만 자동 매도 (수익 확보)
-            if default_strategy.check_take_profit(avg_price, cur_price) or \
-               await cache.client.get(f"tp:armed:{symbol}"):
-                high_key = f"pos:high:{symbol}"
-                armed_key = f"tp:armed:{symbol}"
-                prev_high = float(await cache.client.get(high_key) or 0)
-                high = max(prev_high, cur_price)
-                await cache.client.setex(high_key, 86400, str(high))
-
-                first_arm = not await cache.client.get(armed_key)
-                await cache.client.setex(armed_key, 86400, "1")
-
-                drop_from_high = (cur_price - high) / high * 100 if high > 0 else 0
-
-                if drop_from_high <= -2.0:
-                    # 트레일링 발동: 수익 보호 자동 매도
-                    result = await self.trader.sell(symbol, cur_price, qty)
-                    if result["success"]:
-                        await db.insert_trade(
-                            bot="stock_trader", asset_type="stock",
-                            symbol=symbol, side="SELL",
-                            price=cur_price, quantity=qty,
-                            amount=cur_price * qty,
-                            strategy=f"{strat_name}_트레일링익절", pnl=pnl,
-                        )
-                        await self._notify_trade(
-                            action="매도", symbol=symbol, name=pos.get("name", symbol),
-                            price=cur_price, qty=qty,
-                            pnl=pnl, pnl_rate=pnl_rate,
-                            strategy=f"{strat_name}_트레일링익절(고점-2%)"
-                        )
-                        self.positions.pop(symbol, None)
-                        # 익절 후 당일 재매수 금지
+            # 익절 AI 판단: +3% 이상이면 자비스가 HOLD/HALF/ALL 판단 (30분 쿨다운)
+            if pnl_rate >= 3.0 and qty >= 1:
+                try:
+                    if not await cache.client.get(f"exit_ai_cool:{symbol}"):
+                        await cache.client.setex(f"exit_ai_cool:{symbol}", 1800, "1")
+                        import aiohttp as http
+                        decision, reason = "HOLD", ""
                         try:
-                            from datetime import datetime as _dt
-                            _now = _dt.now()
-                            _eod = _now.replace(hour=23, minute=59, second=0)
-                            await cache.client.setex(
-                                f"rebuy_block:{symbol}",
-                                max(60, int((_eod - _now).total_seconds())), "tp")
-                        except Exception:
-                            pass
-                        await cache.client.delete(high_key)
-                        await cache.client.delete(armed_key)
-                elif first_arm:
-                    # 첫 도달: 상의 알림
-                    try:
-                        from common.telegram import send_stock
-                        nm = pos.get("name", symbol)
-                        trend = ("상승 지속 중 — 홀딩 관찰 추천"
-                                 if cur_price >= high * 0.995 else "상승 둔화 — 매도 검토 추천")
-                        await send_stock(
-                            f"🔔 <b>{nm}({symbol}) 익절선 도달 {pnl_rate:+.1f}%</b>\n"
-                            f"{trend}\n"
-                            f"자동 매도하지 않습니다. 고점 대비 -2% 반락 시에만 "
-                            f"수익보호 자동매도 됩니다.\n"
-                            f"즉시 매도: '{nm} 전량 매도' 지시"
-                        )
-                        logger.info(f"🔔 익절 상의 알림 [{symbol}] {pnl_rate:+.1f}%")
-                    except Exception as e:
-                        logger.warning(f"익절 알림 실패 [{symbol}]: {e}")
-                continue
+                            async with http.ClientSession() as session:
+                                resp = await session.post(
+                                    f"{DASHBOARD_URL}/api/jarvis/exit_decision",
+                                    json={"symbol": symbol, "name": pos.get("name", symbol),
+                                          "qty": qty, "avg_price": avg_price,
+                                          "cur_price": cur_price, "pnl_rate": pnl_rate},
+                                    timeout=http.ClientTimeout(total=25))
+                                dj = await resp.json()
+                                decision = dj.get("decision", "HOLD")
+                                reason = dj.get("reason", "")
+                        except Exception as de:
+                            logger.warning(f"익절 판단 요청 실패 [{symbol}]: {de}")
+
+                        if decision in ("HALF", "ALL"):
+                            sell_qty = max(1, qty // 2) if (decision == "HALF" and qty >= 2) else qty
+                            result = await self.trader.sell(symbol, cur_price, sell_qty)
+                            if result.get("success"):
+                                s_pnl = int((cur_price - avg_price) * sell_qty)
+                                await db.insert_trade(
+                                    bot="stock_trader", asset_type="stock",
+                                    symbol=symbol, side="SELL",
+                                    price=cur_price, quantity=sell_qty,
+                                    amount=cur_price * sell_qty,
+                                    strategy=f"{strat_name}_AI익절{decision}", pnl=s_pnl,
+                                )
+                                from common.telegram import send_stock
+                                remain = qty - sell_qty
+                                await send_stock(
+                                    f"🤖 <b>{pos.get('name', symbol)} AI 익절 판단: {decision}</b>\n"
+                                    f"{sell_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                    f"근거: {reason}\n"
+                                    + (f"잔여 {remain}주는 계속 보유·관찰합니다." if remain > 0 else "전량 매도 완료.")
+                                )
+                                if remain > 0:
+                                    pos["qty"] = remain
+                                    self.positions[symbol] = pos
+                                else:
+                                    self.positions.pop(symbol, None)
+                                    try:
+                                        from datetime import datetime as _dt
+                                        _now = _dt.now()
+                                        _eod = _now.replace(hour=23, minute=59, second=0)
+                                        await cache.client.setex(
+                                            f"rebuy_block:{symbol}",
+                                            max(60, int((_eod - _now).total_seconds())), "tp")
+                                    except Exception:
+                                        pass
+                                continue
+                except Exception as e:
+                    logger.warning(f"AI 익절 판단 처리 오류 [{symbol}]: {e}")
 
         # ② 신규 진입 신호 체크
         if len(self.positions) >= max_positions:

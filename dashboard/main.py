@@ -4324,6 +4324,20 @@ async def _jarvis_chat_impl(body: dict):
         if action_result:
             return {"success": True, "reply": action_result, "context_used": False}
 
+        # 감시 추가/제외 (확정 명령)
+        _wm = _re_mod.search(r"(.+?)\s*(감시|관심)\s*(종목)?\s*(추가|등록|넣어)", user_msg)
+        if _wm and "http" not in user_msg:
+            _ws, _wn = await _resolve_stock_symbol(_wm.group(1))
+            if _ws:
+                try:
+                    async with db_pool.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO watchlist (symbol, name, is_active) VALUES ($1, $2, TRUE) "
+                            "ON CONFLICT (symbol) DO UPDATE SET is_active=TRUE, name=EXCLUDED.name", _ws, _wn)
+                    return {"success": True, "reply": f"👁️ {_wn}({_ws}) 감시종목에 추가했어요. 다음 스캔부터 신호 감시합니다.", "context_used": False}
+                except Exception as we:
+                    return {"success": True, "reply": f"❌ 감시 추가 실패: {str(we)[:80]}", "context_used": False}
+
         # 학습 지식 목록 (확정 명령, AI 미경유)
         if _re_mod.search(r"(학습|배운|지식).*(내용|목록|뭐|알려|정리|보여)", user_msg) and "http" not in user_msg:
             try:
@@ -4475,13 +4489,40 @@ async def _jarvis_chat_impl(body: dict):
         if directives_now:
             memory_block += f"\n[현재 활성 지시사항]\n{directives_now}\n"
 
-        full_msg = (f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}\n{memory_block}\n"
+        # 종목 질문 자동 리서치: "OO 어때/전망/살까/분석" → 현재가+차트 첨부 (감시 밖 종목 포함)
+        stock_ctx = ""
+        try:
+            if _re_mod.search(r"(어때|어떠|어떻게\s*봐|전망|분석|살까|살만|볼만|괜찮|매수\s*타이밍|어느\s*정도)", user_msg):
+                _sym, _nm = await _resolve_stock_symbol(user_msg)
+                if _sym:
+                    _rows = await _fetch_daily_ohlcv(_sym, 5)
+                    _cur = _rows[-1]["close"] if _rows else 0
+                    _chg = ""
+                    if len(_rows) >= 2 and _rows[-2]["close"]:
+                        _chg = f" ({(_rows[-1]['close'] / _rows[-2]['close'] - 1) * 100:+.2f}%)"
+                    _ana = await _analyze_chart(_sym, _nm)
+                    _held = ""
+                    try:
+                        _pos = (await get_stock_positions()).get("data") or []
+                        _pp = next((x for x in _pos if x["symbol"] == _sym), None)
+                        if _pp:
+                            _held = f"\n보유: {_pp['qty']}주, 평단 {_pp['avg_price']:,}원, 손익 {_pp.get('pnl_rate',0):+.1f}%"
+                    except Exception:
+                        pass
+                    stock_ctx = (f"\n[질문 종목 즉시 조회: {_nm}({_sym})]\n현재가 {_cur:,}원{_chg}{_held}\n"
+                                 f"{_ana or '(차트 데이터 부족)'}\n"
+                                 "→ 위 데이터를 근거로 추세·지지/저항·매수 관점을 구체적으로 답하라.\n")
+        except Exception as _e:
+            logger.debug(f"종목 자동 리서치 스킵: {_e}")
+
+        full_msg = (f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}{stock_ctx}\n{memory_block}\n"
                     "[시스템 주의] 너는 이 대화에서 직접 주문을 실행할 수 없다. "
                     "매매는 사용자가 '종목명(또는 코드) N주 매수/매도' 형식으로 지시하면 시스템이 직접 체결하고 결과를 표시한다. "
-                    "네가 '매수 완료/체결'이라고 단정하지 마라.\n"
+                    "네가 '매수 완료/체결'이라고 단정하지 마라. 감시 추가·설정 변경 등 실제로 수행하지 않은 행동을 "
+                    "'했다'고 말하지 마라 — 할 수 있으면 [[ACTION]]으로 요청하고, 없으면 '못 한다'고 말하라.\n"
                     "[액션 프로토콜] 사용자의 말에 앞으로 계속 적용해야 할 지시(매매 원칙·선호·제한)나 "
                     "전략 설정 변경(손절%/익절%/매수금액)이 담겨 있으면, 자연스러운 답변 후 마지막 줄에 딱 한 줄로:\n"
-                    '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}}\n'
+                    '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}, "watch_add": "종목명 또는 코드(감시 추가 요청 시)"}\n'
                     "형식으로 출력하라. settings 키는 stop_loss/take_profit/buy_amount만 가능. "
                     "해당 없으면 [[ACTION]] 줄을 출력하지 마라. 일회성 질문·잡담엔 절대 출력 금지.\n"
                     "[응답 형식 — 반드시 준수] 최종 결론만 출력하라. 최대 4문장. "
@@ -4504,6 +4545,20 @@ async def _jarvis_chat_impl(body: dict):
                     action = {}
                 notes = []
                 # 지시 저장
+                wa = (action.get("watch_add") or "").strip()
+                if wa:
+                    try:
+                        _ws, _wn = await _resolve_stock_symbol(wa)
+                        if _ws:
+                            async with db_pool.acquire() as conn:
+                                await conn.execute(
+                                    "INSERT INTO watchlist (symbol, name, is_active) VALUES ($1, $2, TRUE) "
+                                    "ON CONFLICT (symbol) DO UPDATE SET is_active=TRUE, name=EXCLUDED.name", _ws, _wn)
+                            notes.append(f"👁️ 감시종목 추가: {_wn}({_ws})")
+                        else:
+                            notes.append(f"⚠️ 감시 추가 실패: '{wa}' 종목을 찾지 못함")
+                    except Exception as we:
+                        notes.append(f"⚠️ 감시 추가 오류: {str(we)[:60]}")
                 d = (action.get("directive") or "").strip()
                 if d and len(d) >= 4:
                     async with db_pool.acquire() as conn:

@@ -470,27 +470,38 @@ class StockTrader:
             pnl = (cur_price - avg_price) * qty
             pnl_rate = (cur_price - avg_price) / avg_price * 100
 
-            # 손절 체크 — 자동 실행 금지, 상의(알림) 후 수동 결정
+            # 손절 -7% 도달 → 즉시 자동 매도 (주인 지시: 알아서 처리)
             if default_strategy.check_stop_loss(avg_price, cur_price):
                 try:
-                    alert_key = f"stopalert:{symbol}"
-                    prev = await cache.client.get(alert_key)
-                    prev_rate = float(prev) if prev else None
-                    # 첫 도달 또는 -2%p 추가 악화 시 재알림 (기본 30분 쿨다운)
-                    need_alert = prev_rate is None or (pnl_rate <= prev_rate - 2.0)
-                    if need_alert:
-                        await cache.client.setex(alert_key, 1800, str(pnl_rate))
-                        from common.telegram import send_stock
-                        nm = pos.get("name", symbol)
-                        await send_stock(
-                            f"⚠️ <b>{nm}({symbol}) 손절선 도달 {pnl_rate:+.1f}%</b>\n"
-                            f"평단 {avg_price:,.0f} → 현재 {cur_price:,.0f} (손실 {pnl:+,.0f}원)\n"
-                            f"자동 매도하지 않습니다. 매도하려면 자비스에게\n"
-                            f"'{nm} 전량 매도' 라고 지시하세요."
+                    nm = pos.get("name", symbol)
+                    result = await self.trader.sell(symbol, cur_price, qty)
+                    if result.get("success"):
+                        await db.insert_trade(
+                            bot="stock_trader", asset_type="stock",
+                            symbol=symbol, side="SELL", price=cur_price, quantity=qty,
+                            amount=cur_price * qty, strategy=f"{strat_name}_손절", pnl=pnl,
                         )
-                        logger.info(f"⚠️ 손절 알림(자동매도 안함) [{symbol}] {pnl_rate:+.1f}%")
+                        try:
+                            await cache.client.delete(f"half_tp:{symbol}")
+                        except Exception:
+                            pass
+                        from common.telegram import send_stock
+                        await send_stock(
+                            f"🔴 <b>{nm}({symbol}) 손절 매도 체결 {pnl_rate:+.1f}%</b>\n"
+                            f"{qty}주 @ {cur_price:,}원 (손실 {pnl:+,.0f}원)\n"
+                            f"평단 {avg_price:,.0f} → 매도 {cur_price:,.0f}"
+                        )
+                        logger.info(f"🔴 손절 자동매도 체결 [{symbol}] {pnl_rate:+.1f}%")
+                        self.positions.pop(symbol, None)
+                    else:
+                        from common.telegram import send_stock
+                        await send_stock(
+                            f"⚠️ <b>{nm}({symbol}) 손절 매도 실패</b> {pnl_rate:+.1f}%\n"
+                            f"사유: {result.get('error', '알 수 없음')} — 수동 확인 필요"
+                        )
+                        logger.warning(f"손절 매도 실패 [{symbol}]: {result.get('error')}")
                 except Exception as e:
-                    logger.warning(f"손절 알림 실패 [{symbol}]: {e}")
+                    logger.warning(f"손절 자동매도 오류 [{symbol}]: {e}")
                 continue
 
             # 지시 #5: +3% 도달 시 절반 익절 (지시 활성 시, 종목당 1회)

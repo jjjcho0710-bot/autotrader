@@ -6065,6 +6065,52 @@ async def _get_journal_raw(days: int = 7):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/jarvis/exit_decision")
+async def jarvis_exit_decision(request: Request):
+    """익절 판단 전용: 보유종목이 수익권일 때 HOLD/HALF/ALL 판단"""
+    try:
+        body = await request.json()
+        symbol = body.get("symbol", "")
+        name = body.get("name", symbol)
+        qty = int(body.get("qty", 0))
+        avg_price = float(body.get("avg_price", 0))
+        cur_price = float(body.get("cur_price", 0))
+        pnl_rate = float(body.get("pnl_rate", 0))
+        if not symbol or qty <= 0:
+            return {"decision": "HOLD", "reason": "데이터 부족"}
+
+        ana = await _analyze_chart(symbol, name)
+        knowledge = await _get_jarvis_knowledge(6)
+        lessons = await _get_jarvis_lessons(3)
+        prompt = f"""너는 한국 주식 트레이더 자비스다. 보유 중인 수익 종목의 익절 시점을 판단하라.
+
+[종목] {name}({symbol})
+[보유] {qty}주, 평단 {avg_price:,.0f}원, 현재가 {cur_price:,.0f}원, 손익률 {pnl_rate:+.1f}%
+
+[차트 분석]
+{ana or '(데이터 부족)'}
+
+[학습한 매매 원칙]
+{knowledge or '(없음)'}
+
+[최근 교훈]
+{lessons or '(없음)'}
+
+판단 기준: 추세 지속力·거래량·과열 신호(RSI 등 언급되면 참고)·저항선 근접도를 종합하라.
+반드시 다음 중 하나로 시작해서 이유를 한 줄로:
+- HOLD: 상승 여력 있음, 계속 보유
+- HALF: 추세 약화 조짐, 절반만 매도해 수익 확정
+- ALL: 추세 전환·모멘텀 소진, 전량 매도"""
+        out = await _ask_openwebui(prompt, session_id="daily_plan")
+        m = _re_mod.search(r"\b(HOLD|HALF|ALL)\b", (out or "").upper())
+        decision = m.group(1) if m else "HOLD"
+        reason = (out or "").strip()[:200]
+        return {"decision": decision, "reason": reason}
+    except Exception as e:
+        logger.error(f"익절 판단 오류: {e}")
+        return {"decision": "HOLD", "reason": f"판단 오류: {e}"}
+
+
 @app.post("/api/jarvis/signal")
 async def jarvis_signal(request: Request):
     """

@@ -2589,8 +2589,12 @@ async def _rcache(key: str, ttl: int, fn):
     try:
         if redis_client and isinstance(res, dict) and res.get("success") is not False:
             d = res.get("data")
-            # 실패/빈 데이터는 캐시하지 않음 — 다음 호출에서 재시도되도록
-            is_empty = d is None or d == {} or d == [] or (isinstance(d, dict) and not d)
+            acc = res.get("account")
+            # data와 account 둘 다 확인 — 계좌 정보만 비어도 캐시하지 않음
+            data_empty = d is None or d == {} or d == [] or (isinstance(d, dict) and not d)
+            account_present = "account" in res
+            account_empty = account_present and (acc is None or acc == {})
+            is_empty = data_empty or account_empty
             if not is_empty:
                 await redis_client.setex(key, ttl, json.dumps(res, default=str))
     except Exception:

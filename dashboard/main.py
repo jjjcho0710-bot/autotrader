@@ -169,23 +169,58 @@ async def _load_stock_cache():
                 return
     except Exception as e:
         logger.warning(f"종목 캐시 DB 로드 실패: {e}")
-    # 2) pykrx 갱신 (느림 — 백그라운드)
+    # 2) KIS 마스터파일(zip) 다운로드 — pykrx보다 Railway에서 안정적
+    name_map = {}
     try:
-        import asyncio
-        from pykrx import stock as pykrx_stock
-        loop = asyncio.get_event_loop()
+        import zipfile, io, ssl as _ssl
+        _c2 = _ssl.create_default_context(); _c2.check_hostname = False; _c2.verify_mode = _ssl.CERT_NONE
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c2)) as sess:
+            for url, enc in [
+                ("https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip", "cp949"),
+                ("https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip", "cp949"),
+            ]:
+                try:
+                    async with sess.get(url, timeout=_aiohttp.ClientTimeout(total=20)) as resp:
+                        raw = await resp.read()
+                    zf = zipfile.ZipFile(io.BytesIO(raw))
+                    fn = zf.namelist()[0]
+                    text = zf.read(fn).decode(enc, errors="ignore")
+                    for line in text.splitlines():
+                        if len(line) < 30:
+                            continue
+                        code = line[:9].strip()[-6:]
+                        rest = line[9:].strip()
+                        parts = rest.split()
+                        name = parts[0] if parts else ""
+                        if code and name and code.isdigit():
+                            name_map[name] = code
+                except Exception as ie:
+                    logger.warning(f"KIS 마스터 다운로드 실패({url}): {ie}")
+    except Exception as e:
+        logger.warning(f"KIS 마스터 처리 실패: {e}")
 
-        def _fetch():
-            result = {}
-            for market in ["KOSPI", "KOSDAQ"]:
-                tickers = pykrx_stock.get_market_ticker_list(market=market)
-                for ticker in tickers:
-                    name = pykrx_stock.get_market_ticker_name(ticker)
-                    if name:
-                        result[name] = ticker
-            return result
+    # 3) 실패 시 pykrx 폴백
+    if not name_map:
+        try:
+            import asyncio
+            from pykrx import stock as pykrx_stock
+            loop = asyncio.get_event_loop()
 
-        name_map = await loop.run_in_executor(None, _fetch)
+            def _fetch():
+                result = {}
+                for market in ["KOSPI", "KOSDAQ"]:
+                    tickers = pykrx_stock.get_market_ticker_list(market=market)
+                    for ticker in tickers:
+                        name = pykrx_stock.get_market_ticker_name(ticker)
+                        if name:
+                            result[name] = ticker
+                return result
+
+            name_map = await loop.run_in_executor(None, _fetch)
+        except Exception as e:
+            logger.warning(f"pykrx 폴백도 실패: {e}")
+
+    try:
         if name_map:
             _stock_name_cache = name_map
             _stock_code_cache = {v: k for k, v in name_map.items()}

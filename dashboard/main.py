@@ -2523,7 +2523,7 @@ def ttl_for(period: str) -> int:
 
 
 async def _rcache(key: str, ttl: int, fn):
-    """Redis JSON 캐시: 히트 시 즉시 반환, 미스 시 fn() 실행 후 저장"""
+    """Redis JSON 캐시: 히트 시 즉시 반환, 미스 시 fn() 실행 후 저장 (실패·빈 응답은 캐시하지 않음)"""
     try:
         if redis_client:
             c = await redis_client.get(key)
@@ -2533,8 +2533,12 @@ async def _rcache(key: str, ttl: int, fn):
         pass
     res = await fn()
     try:
-        if redis_client and isinstance(res, dict) and res.get("success", True):
-            await redis_client.setex(key, ttl, json.dumps(res, default=str))
+        if redis_client and isinstance(res, dict) and res.get("success") is not False:
+            d = res.get("data")
+            # 실패/빈 데이터는 캐시하지 않음 — 다음 호출에서 재시도되도록
+            is_empty = d is None or d == {} or d == [] or (isinstance(d, dict) and not d)
+            if not is_empty:
+                await redis_client.setex(key, ttl, json.dumps(res, default=str))
     except Exception:
         pass
     return res
@@ -5848,6 +5852,19 @@ async def stock_lookup(q: str):
         db_count = f"error: {e}"
     return {"query": q, "symbol": sym, "name": nm,
             "memory_cache_size": len(_stock_name_cache), "db_count": db_count}
+
+
+@app.api_route("/api/cache/flush", methods=["GET", "POST"])
+async def flush_bad_cache():
+    """0원/빈 데이터로 고착된 캐시 강제 삭제"""
+    keys = ["cache:positions:stock", "cache:market:index", "cache:prices:stock"]
+    n = 0
+    for k in keys:
+        try:
+            n += await redis_client.delete(k)
+        except Exception:
+            pass
+    return {"success": True, "cleared": n}
 
 
 @app.api_route("/api/stock/reload_cache", methods=["GET", "POST"])

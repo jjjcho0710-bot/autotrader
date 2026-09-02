@@ -4283,6 +4283,11 @@ def _validate_setting(k: str, v) -> tuple:
         return ((0.5 <= v <= 20), v if 0.5 <= v <= 20 else "익절 허용범위 0.5~20%")
     if k == "buy_amount":
         return ((50000 <= v <= 5000000), int(v) if 50000 <= v <= 5000000 else "매수금액 허용범위 5만~500만원")
+    if k == "max_num_stocks":
+        return ((1 <= v <= 20), int(v) if 1 <= v <= 20 else "보유종목 허용범위 1~20개")
+    if k == "max_buy_percent_of_cash":
+        v = v / 100 if v > 1 else v  # "70" 또는 "0.7" 둘 다 허용
+        return ((0.05 <= v <= 1.0), v if 0.05 <= v <= 1.0 else "예수금 비율 허용범위 5~100%")
     return False, f"알 수 없는 설정 {k}"
 
 

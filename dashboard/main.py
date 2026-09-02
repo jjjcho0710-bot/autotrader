@@ -4125,6 +4125,12 @@ async def _handle_trade_command(user_msg: str):
                 """, symbol, action.upper(), float(price), float(qty), float(price * qty))
         except Exception:
             pass
+        # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
+        try:
+            for k in ("cache:positions:stock", "cache:account:stock"):
+                await redis_client.delete(k)
+        except Exception:
+            pass
         await _send_telegram(
             f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
             f"가격: {price:,}원 × {qty}주 = {price*qty:,}원")

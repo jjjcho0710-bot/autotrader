@@ -147,6 +147,8 @@ window.jsend=async function(){
     const reply=j.reply||('❌ '+(j.error||'오류'));
     addB('j',reply);
     if(voiceMode){speak(reply);voiceMode=false;}
+    // 매매 체결 답변이면 우측 계좌/보유 패널 즉시 갱신 (캐시 무효화 이후라 최신값 반영됨)
+    if(/체결|매도 완료|매수 완료/.test(reply)) rail();
   }catch(e){addB('j','❌ 연결 오류');}
   jt.style.display='none';
 };

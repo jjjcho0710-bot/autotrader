@@ -5882,6 +5882,30 @@ async def training_page():
         return f.read()
 
 
+def _strip_mobile_nav(html: str) -> str:
+    """PC 임베드용: 모바일 하단탭 <div class="nav">...</div> 를 서버에서 완전히 제거"""
+    import re as _r
+    html = _r.sub(r'<div class="nav">.*?</div>\s*', '', html, flags=_r.S)
+    html = _r.sub(r'<nav class="bottom-nav">.*?</nav>\s*', '', html, flags=_r.S)
+    html = html.replace("padding-bottom:60px", "padding-bottom:20px")
+    html = html.replace("padding-bottom:64px", "padding-bottom:20px")
+    return html
+
+
+@app.get("/pc/embed/{page}", response_class=HTMLResponse)
+async def pc_embed_page(page: str):
+    """PC 데스크 전용: 하단탭이 서버에서 아예 제거된 페이지 버전"""
+    file_map = {"strategy": "static/strategy.html",
+                "training": "static/training.html",
+                "logs": "static/logs.html"}
+    fp = file_map.get(page)
+    if not fp:
+        return HTMLResponse("Not found", status_code=404)
+    with open(fp, encoding="utf-8") as f:
+        html = f.read()
+    return _strip_mobile_nav(html)
+
+
 @app.get("/pc", response_class=HTMLResponse)
 async def pc_page():
     with open("static/pc/index.html", encoding="utf-8") as f:

@@ -475,6 +475,12 @@ class StockTrader:
                 try:
                     nm = pos.get("name", symbol)
                     result = await self.trader.sell(symbol, cur_price, qty)
+                    # 초당 거래건수 제한 등 일시 오류는 짧은 대기 후 1회 재시도
+                    if not result.get("success") and any(
+                        k in str(result.get("error", "")) for k in ("초당", "거래건수", "rate", "Rate")
+                    ):
+                        await asyncio.sleep(1.2)
+                        result = await self.trader.sell(symbol, cur_price, qty)
                     if result.get("success"):
                         await db.insert_trade(
                             bot="stock_trader", asset_type="stock",

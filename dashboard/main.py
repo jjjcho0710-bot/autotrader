@@ -2550,8 +2550,10 @@ async def get_single_price(symbol: str):
 
 
 async def _cache_warmer():
-    """백그라운드 캐시 워머: 첫 진입도 캐시 히트되도록 핵심 데이터 선적재"""
+    """백그라운드 캐시 워머: 첫 진입도 캐시 히트되도록 핵심 데이터 선적재
+    (KIS 요청 제한을 stock_trader 봇과 공유하므로 호출 최소화)"""
     await asyncio.sleep(5)
+    chart_tick = 0
     while True:
         try:
             now = datetime.now(KST)
@@ -2559,11 +2561,15 @@ async def _cache_warmer():
             await get_market_index()
             pos = await get_stock_positions()
             await get_stock_prices()
-            for p_ in (pos.get("data") or [])[:6]:
-                await get_chart_data(p_["symbol"], 90, "D")
+            # 차트는 캐시 TTL(300초)에 맞춰 5분에 한 번만 선적재 (KIS 경합 완화)
+            chart_tick += 1
+            if chart_tick >= (50 if hot else 7):  # hot:6s*50≈5분 / cold:45s*7≈5분
+                chart_tick = 0
+                for p_ in (pos.get("data") or [])[:6]:
+                    await get_chart_data(p_["symbol"], 90, "D")
         except Exception as e:
             logger.debug(f"워머 오류(무시): {e}")
-        await asyncio.sleep(6 if hot else 45)
+        await asyncio.sleep(18 if hot else 60)
 
 
 def ttl_for(period: str) -> int:
@@ -2593,7 +2599,7 @@ async def _rcache(key: str, ttl: int, fn):
 
 @app.get("/api/market/index")
 async def get_market_index():
-    return await _rcache("cache:market:index", 15, lambda: _get_market_index_raw())
+    return await _rcache("cache:market:index", 20, lambda: _get_market_index_raw())
 
 
 async def _get_market_index_raw():
@@ -5402,7 +5408,7 @@ async def debug_stock_account():
 
 @app.get("/api/positions/stock")
 async def get_stock_positions():
-    return await _rcache("cache:positions:stock", 10, lambda: _get_stock_positions_raw())
+    return await _rcache("cache:positions:stock", 20, lambda: _get_stock_positions_raw())
 
 
 async def _get_stock_positions_raw():

@@ -4637,10 +4637,10 @@ async def _jarvis_chat_impl(body: dict):
         # 종목 질문 자동 리서치: "OO 어때/전망/살까/분석" → 현재가+차트 첨부 (감시 밖 종목 포함)
         stock_ctx = ""
         try:
-            if _re_mod.search(r"(어때|어떠|어떻게\s*봐|전망|분석|살까|살만|볼만|괜찮|매수\s*타이밍|어느\s*정도)", user_msg):
+            if _re_mod.search(r"(어때|어떠|어떻게|전망|분석|살까|살만|볼만|괜찮|타이밍|어느\s*정도|움직|동향|시세|주가|알려줘|뭐하는|뭐 하는|회사야|기업이야|올랐|내렸|얼마)", user_msg):
                 _sym, _nm = await _resolve_stock_symbol(user_msg)
                 if not _sym:
-                    _guess = _re_mod.sub(r"(어때|어떠|어떻게\s*봐|전망|분석|살까|살만|볼만|괜찮|매수\s*타이밍|어느\s*정도|\?|\.|알려줘|뭐하는|뭐 하는|회사야|기업이야)", "", user_msg).strip()
+                    _guess = _re_mod.sub(r"(어때|어떠|어떻게|전망|분석|살까|살만|볼만|괜찮|타이밍|어느\s*정도|움직였어|움직임|동향|시세|주가|올랐어|내렸어|얼마야|\?|\.|알려줘|뭐하는|뭐 하는|회사야|기업이야|오늘)", "", user_msg).strip()
                     if 2 <= len(_guess) <= 20:
                         _web_reply = await _web_research_stock(_guess, name=_guess)
                         return {"success": True, "reply": _web_reply, "context_used": False}

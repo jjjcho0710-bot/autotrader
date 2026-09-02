@@ -1692,29 +1692,42 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
         items = valid[:3]
         if not items:
             return "제안 없음 — 지금은 특별히 제안할 것이 없습니다."
-        # 저장 (2시간) + 알림
-        lines = []
+        # 완전 자동화: 승인 없이 즉시 실행 (주인 지시) — 장외면 개장 시 예약
+        _now_chk = datetime.now(KST)
+        _market_open = (_now_chk.weekday() < 5 and dtime(9, 0) <= _now_chk.time().replace(tzinfo=None) <= dtime(15, 20))
+        results = []
         for i, it in enumerate(items, 1):
-            await redis_client.setex(f"advice:{i}", 7200, _j.dumps(it, ensure_ascii=False))
-            lines.append(f"{i}. <b>{it.get('title','')}</b>\n   {it.get('reason','')}\n   → {it.get('command')}")
+            cmd = it.get("command", "")
+            title = it.get("title", "")
+            reason_txt = it.get("reason", "")
+            is_trade = ("매수" in cmd or "매도" in cmd) and not cmd.startswith("지시:")
+            if is_trade and not _market_open:
+                try:
+                    await redis_client.rpush("advice:queue", json.dumps({"command": cmd, "title": title}, ensure_ascii=False))
+                    rep = "⏰ 장외 — 다음 개장(09:01) 자동 실행 예약됨"
+                except Exception as qe:
+                    rep = f"❌ 예약 실패: {qe}"
+            else:
+                try:
+                    sub = await jarvis_chat({"message": cmd, "session_id": "advice", "_no_mirror": True})
+                    rep = sub.get("reply") or sub.get("error") or "결과 없음"
+                except Exception as ae:
+                    rep = f"❌ 실행 오류: {ae}"
+            results.append(f"{i}. <b>{title}</b>\n   근거: {reason_txt}\n   → {cmd}\n   결과: {rep}")
         try:
             titles = "; ".join(it.get("title", "") for it in items)
             await redis_client.setex("advice:recent_titles", 86400, (prev + "; " + titles)[-600:])
         except Exception:
             pass
         now = datetime.now(KST).strftime("%H:%M")
-        msg = (f"💡 <b>자비스 제안 [{now}]</b>\n\n" + "\n\n".join(lines) +
-               "\n\n아래 버튼으로 승인/거절하세요 (2시간 내)")
-        kb_rows = [[(f"✅ 승인 {i}", f"adv:ok:{i}"), (f"❌ 거절 {i}", f"adv:no:{i}")]
-                   for i in range(1, len(items) + 1)]
-        await _send_telegram(msg, reply_markup=_kb(kb_rows))
-        # 웹 자비스 대화에도 카드 (버튼 마커: [[BTN:adv:ok:1|✅ 승인 1]] 형식)
+        msg = f"🤖 <b>자비스 자동 실행 [{now}]</b>\n\n" + "\n\n".join(results)
+        await _send_telegram(msg)
+        # 웹 자비스 대화에도 기록
         import re as _rr
         plain = _rr.sub(r"<[^>]+>", "", msg)
-        btns = " ".join(f"[[BTN:{d}|{t}]]" for row in kb_rows for t, d in row)
         for sid in {os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "pc"}:
             try:
-                await _save_chat_history(sid, "assistant", plain + "\n" + btns)
+                await _save_chat_history(sid, "assistant", plain)
             except Exception:
                 pass
         return msg
@@ -6349,37 +6362,12 @@ async def jarvis_signal(request: Request):
         is_small = _verdict == "EXECUTE_SMALL"
         should_execute = _verdict in ("EXECUTE", "EXECUTE_SMALL")
 
-        # PROPOSE: 주인에게 매수 제안 (승인 대기, 30분)
+        # PROPOSE: 규칙(가격상한·분산 등) 밖 강신호 — 승인 없이 자동 실행 (주인 지시: 완전 자동화)
+        # 안전을 위해 소액(절반 수량)으로 진입
         if _verdict == "PROPOSE" and action in ["buy", "BUY"]:
-            try:
-                if not await redis_client.get(f"proposal:cool:{symbol}"):
-                    prop = {"symbol": symbol, "name": name, "price": price, "qty": qty,
-                            "reason": jarvis_reply[:400], "strategy": strategy,
-                            "ts": datetime.now(KST).isoformat()}
-                    await redis_client.setex(f"proposal:{symbol}", 1800, json.dumps(prop, default=str))
-                    await redis_client.setex("proposal:latest", 1800, symbol)
-                    await redis_client.setex(f"proposal:cool:{symbol}", 3600, "1")
-                    est = int(price) * int(qty) if price and qty else 0
-                    await _send_telegram(
-                        f"💡 <b>자비스 매수 제안: {name}({symbol})</b>\n"
-                        f"{qty}주 × {int(price):,}원 ≈ {est:,}원\n\n"
-                        f"{jarvis_reply[:350]}\n\n"
-                        f"아래 버튼으로 승인/거절 (30분 내 무응답 시 자동 취소)",
-                        reply_markup=_kb([[("✅ 매수 승인", f"prop:ok:{symbol}"),
-                                           ("❌ 거절", f"prop:no:{symbol}")]]))
-                    for sid in {os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "pc"}:
-                        try:
-                            await _save_chat_history(sid, "assistant",
-                                f"💡 매수 제안: {name}({symbol}) {qty}주 × {int(price):,}원\n{jarvis_reply[:300]}\n"
-                                f"[[BTN:prop:ok:{symbol}|✅ 매수 승인]] [[BTN:prop:no:{symbol}|❌ 거절]]")
-                        except Exception:
-                            pass
-                    await _log_journal(bot, symbol, name, action, strategy, reason,
-                                       "PROPOSE", jarvis_reply, False, False, price, qty)
-            except Exception as pe:
-                logger.warning(f"제안 처리 오류: {pe}")
-            return {"success": True, "executed": False, "proposed": True,
-                    "jarvis_reply": jarvis_reply}
+            is_small = True
+            should_execute = True
+            jarvis_reply = jarvis_reply + "\n[자동 실행: 규칙 외 강신호 — 소액 자동 진입]"
         if is_small and action in ["buy", "BUY"]:
             try:
                 qty = max(1, int(float(qty) // 2))  # 절반 금액 진입

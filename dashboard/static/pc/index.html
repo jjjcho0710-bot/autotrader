@@ -63,6 +63,7 @@ function clearTimers(){ while(timers.length) clearInterval(timers.pop()); }
 window.addTimer = fn_ms => { /* pages register intervals */ };
 window.regInterval = (fn, ms) => { const t = setInterval(fn, ms); timers.push(t); return t; };
 
+function _fragVer(){ return Math.floor(Date.now()/300000); } // 5분 단위 캐시버전 — 코드 변경 후 최대 5분 내 자동 반영
 async function go(name){
   if (cur === name) return;
   cur = name;
@@ -73,7 +74,7 @@ async function go(name){
   const pg = document.getElementById('page');
   pg.innerHTML = '<div class="loading">불러오는 중...</div>';
   try{
-    const r = await fetch(`/static/pc/pages/${name}.html?v=20260831`);
+    const r = await fetch(`/static/pc/pages/${name}.html?v=${_fragVer()}`);
     const html = await r.text();
     pg.innerHTML = html;
     // innerHTML 스크립트는 실행 안 되므로 재생성
@@ -89,7 +90,7 @@ async function go(name){
 go('home');
 // 조각 파일 사전 로드 → 메뉴 전환 즉시
 setTimeout(()=>{['jarvis','strategy','training','logs'].forEach(n=>
-  fetch(`/static/pc/pages/${n}.html?v=20260831`).catch(()=>{}));}, 1500);
+  fetch(`/static/pc/pages/${n}.html?v=${_fragVer()}`).catch(()=>{}));}, 1500);
 // 자비스 상태 점검
 setInterval(async()=>{
   try{const r=await fetch('/api/status');const j=await r.json();

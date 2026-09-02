@@ -1,7 +1,14 @@
 <style>.embed{width:100%;height:100vh;border:none;display:block;}</style>
 <iframe class="embed" src="/strategy" onload="try{
-  const d=this.contentDocument;
-  const st=d.createElement('style');
-  st.textContent='.bottom-nav,.nav{display:none!important}body{padding-bottom:20px!important}';
-  d.head.appendChild(st);
+  const d=this.contentDocument, w=this.contentWindow;
+  function hideNav(){
+    let st=d.getElementById("pc-embed-hide-nav");
+    if(!st){st=d.createElement("style");st.id="pc-embed-hide-nav";d.head.appendChild(st);}
+    st.textContent=".bottom-nav,.nav{display:none!important}body{padding-bottom:20px!important}";
+    // 혹시 다른 스크립트가 나중에 style을 재삽입해도 항상 마지막에 오도록 유지
+    if(d.head.lastElementChild!==st) d.head.appendChild(st);
+  }
+  hideNav();
+  new w.MutationObserver(hideNav).observe(d.head,{childList:true,subtree:true});
+  setInterval(hideNav, 1000);
 }catch(e){}"></iframe>

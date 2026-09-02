@@ -6503,9 +6503,7 @@ async def jarvis_signal(request: Request):
                                    jarvis_reply, True, False, price, qty)
                 return {"success": False, "executed": False, "error": result.get("error")}
         else:
-            # 4. 건너뜀 보고
-            msg = f"⏭️ <b>{name} {action_kr} 신호 건너뜀</b>\nJarvis 판단: {jarvis_reply[:100]}"
-            await _send_telegram(msg, chat_id, token)
+            # 4. 건너뜀 — 텔레그램 알림 없이 로그·채점 기록만 (완전자동화 후 SKIP은 액션 불필요)
             logger.info(f"⏭️ Jarvis가 {action_kr} 신호 건너뜀: {symbol}")
             await _log_journal(bot, symbol, name, action, strategy, reason,
                                "SKIP", jarvis_reply, False, False, price, qty)

@@ -36,6 +36,19 @@ MARKET_CLOSE  = time(15, 30)
 ML_TRAIN_TIME = time(15, 40)
 
 KST = timezone(timedelta(hours=9))
+
+async def _resolve_stock_name(symbol: str) -> str:
+    """종목코드 → 종목명 (dashboard 조회, 실패 시 코드 그대로)"""
+    try:
+        import aiohttp as http
+        async with http.ClientSession() as session:
+            resp = await session.get(f"{DASHBOARD_URL}/api/stock/name",
+                                      params={"code": symbol}, timeout=http.ClientTimeout(total=5))
+            data = await resp.json()
+            return data.get("name") or symbol
+    except Exception:
+        return symbol
+
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
 
 
@@ -369,7 +382,7 @@ class StockTrader:
                         "bot": "stock_trader",
                         "action": "sell",
                         "symbol": symbol,
-                        "name": symbol,
+                        "name": await _resolve_stock_name(symbol),
                         "price": cur_price,
                         "qty": qty,
                         "strategy": "실시간모니터",
@@ -786,7 +799,7 @@ class StockTrader:
                             "bot": "stock_trader",
                             "action": "buy",
                             "symbol": symbol,
-                            "name": symbol,
+                            "name": await _resolve_stock_name(symbol),
                             "price": cur_price,
                             "qty": qty,
                             "strategy": triggered_strategy,

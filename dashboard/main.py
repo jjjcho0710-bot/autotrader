@@ -5950,6 +5950,19 @@ async def run_review_now():
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/stock/name")
+async def stock_name_lookup(code: str):
+    """종목코드 → 종목명 (역방향 조회, 내부 서비스용)"""
+    name = _stock_code_cache.get(code)
+    if not name:
+        try:
+            async with db_pool.acquire() as conn:
+                name = await conn.fetchval("SELECT name FROM stock_master WHERE symbol=$1", code)
+        except Exception:
+            name = None
+    return {"code": code, "name": name or code}
+
+
 @app.get("/api/stock/lookup")
 async def stock_lookup(q: str):
     sym, nm = await _resolve_stock_symbol(q)
@@ -6228,11 +6241,17 @@ async def _get_journal_raw(days: int = 7):
         total = len(rows)
         executes = sum(1 for r in rows if r["executed"])
         fills = sum(1 for r in rows if r["order_success"])
+        data = []
+        for r in rows:
+            d = dict(r) | {"ts": r["ts"].isoformat()}
+            if not d.get("name") and d.get("symbol"):
+                d["name"] = _stock_code_cache.get(d["symbol"]) or d["symbol"]
+            data.append(d)
         return {"success": True,
                 "summary": {"total_signals": total, "executes": executes,
                              "skips": total - executes, "fills": fills,
                              "execute_rate": round(executes / total * 100, 1) if total else 0},
-                "data": [dict(r) | {"ts": r["ts"].isoformat()} for r in rows]}
+                "data": data}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

@@ -4634,34 +4634,29 @@ async def _jarvis_chat_impl(body: dict):
         if directives_now:
             memory_block += f"\n[현재 활성 지시사항]\n{directives_now}\n"
 
-        # 종목 질문 자동 리서치: "OO 어때/전망/살까/분석" → 현재가+차트 첨부 (감시 밖 종목 포함)
+        # 종목 정보 첨부: 시스템이 아는 종목이면 조용히 데이터만 붙여준다 (정규식으로 "질문 의도" 판단 안 함)
+        # 판단(포트폴리오 질문인지/종목 질문인지/잡담인지)은 AI에게 맡기고,
+        # AI가 모르는 종목이라 판단하면 [[NEED_SEARCH: 종목명]] 태그를 응답에 붙이도록 프롬프트로 지시한다.
         stock_ctx = ""
         try:
-            if _re_mod.search(r"(어때|어떠|어떻게|전망|분석|살까|살만|볼만|괜찮|타이밍|어느\s*정도|움직|동향|시세|주가|알려줘|뭐하는|뭐 하는|회사야|기업이야|올랐|내렸|얼마)", user_msg):
-                _sym, _nm = await _resolve_stock_symbol(user_msg)
-                if not _sym:
-                    _guess = _re_mod.sub(r"(어때|어떠|어떻게|전망|분석|살까|살만|볼만|괜찮|타이밍|어느\s*정도|움직였어|움직임|동향|시세|주가|올랐어|내렸어|얼마야|\?|\.|알려줘|뭐하는|뭐 하는|회사야|기업이야|오늘)", "", user_msg).strip()
-                    if 2 <= len(_guess) <= 20:
-                        _web_reply = await _web_research_stock(_guess, name=_guess)
-                        return {"success": True, "reply": _web_reply, "context_used": False}
-                if _sym:
-                    _rows = await _fetch_daily_ohlcv(_sym, 5)
-                    _cur = _rows[-1]["close"] if _rows else 0
-                    _chg = ""
-                    if len(_rows) >= 2 and _rows[-2]["close"]:
-                        _chg = f" ({(_rows[-1]['close'] / _rows[-2]['close'] - 1) * 100:+.2f}%)"
-                    _ana = await _analyze_chart(_sym, _nm)
-                    _held = ""
-                    try:
-                        _pos = (await get_stock_positions()).get("data") or []
-                        _pp = next((x for x in _pos if x["symbol"] == _sym), None)
-                        if _pp:
-                            _held = f"\n보유: {_pp['qty']}주, 평단 {_pp['avg_price']:,}원, 손익 {_pp.get('pnl_rate',0):+.1f}%"
-                    except Exception:
-                        pass
-                    stock_ctx = (f"\n[질문 종목 즉시 조회: {_nm}({_sym})]\n현재가 {_cur:,}원{_chg}{_held}\n"
-                                 f"{_ana or '(차트 데이터 부족)'}\n"
-                                 "→ 위 데이터를 근거로 추세·지지/저항·매수 관점을 구체적으로 답하라.\n")
+            _sym, _nm = await _resolve_stock_symbol(user_msg)
+            if _sym:
+                _rows = await _fetch_daily_ohlcv(_sym, 5)
+                _cur = _rows[-1]["close"] if _rows else 0
+                _chg = ""
+                if len(_rows) >= 2 and _rows[-2]["close"]:
+                    _chg = f" ({(_rows[-1]['close'] / _rows[-2]['close'] - 1) * 100:+.2f}%)"
+                _ana = await _analyze_chart(_sym, _nm)
+                _held = ""
+                try:
+                    _pos = (await get_stock_positions()).get("data") or []
+                    _pp = next((x for x in _pos if x["symbol"] == _sym), None)
+                    if _pp:
+                        _held = f"\n보유: {_pp['qty']}주, 평단 {_pp['avg_price']:,}원, 손익 {_pp.get('pnl_rate',0):+.1f}%"
+                except Exception:
+                    pass
+                stock_ctx = (f"\n[시스템이 인식한 종목: {_nm}({_sym}) — 질문과 관련 있다면 아래 데이터로 답하라]\n"
+                             f"현재가 {_cur:,}원{_chg}{_held}\n{_ana or '(차트 데이터 부족)'}\n")
         except Exception as _e:
             logger.debug(f"종목 자동 리서치 스킵: {_e}")
 
@@ -4676,6 +4671,12 @@ async def _jarvis_chat_impl(body: dict):
                     "자동매매 시스템 내부에서 신호를 처리할 때만 쓰는 표시이며, 사람과의 대화 응답에는 "
                     "절대 포함하지 마라. 종목에 대한 의견을 묻는 질문(예: 'OO 어때?')에는 이런 판정 접두어 "
                     "없이 자연스러운 문장으로만 답하라.\n"
+                    "[모르는 종목 조사 요청] 위 [시스템이 인식한 종목] 정보가 없는데도 사용자가 특정 종목/기업에 "
+                    "대해 묻고 있고(예: 'OO 오늘 어떻게 움직였어?', 'OO 알려줘', 'OO가 뭐하는 회사야') "
+                    "네가 그 회사를 잘 모르겠다면, 짧게 안내한 뒤 마지막 줄에 정확히 이 형식으로 추가하라: "
+                    '[[NEED_SEARCH: 종목또는회사명]]  '
+                    "포트폴리오·보유·수익·계좌 등 사용자 자신의 상황을 묻는 질문에는 이 태그를 절대 쓰지 마라. "
+                    "일반 잡담이나 이미 답을 아는 질문에도 쓰지 마라.\n"
                     "[액션 프로토콜] 사용자의 말에 앞으로 계속 적용해야 할 지시(매매 원칙·선호·제한)나 "
                     "전략 설정 변경(손절%/익절%/매수금액)이 담겨 있으면, 자연스러운 답변 후 마지막 줄에 딱 한 줄로:\n"
                     '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}, "watch_add": "종목명 또는 코드(감시 추가 요청 시)"}\n'
@@ -4687,6 +4688,17 @@ async def _jarvis_chat_impl(body: dict):
 
         # Open-WebUI 통해서 호출 (텔레그램과 같은 경로)
         reply = await _ask_openwebui(full_msg, session_id=session_id)
+
+        # NEED_SEARCH 태그 감지: AI가 스스로 "이 종목은 모르겠다" 판단했을 때만 웹조사 1회 수행
+        try:
+            _ns = _re_mod.search(r"\[\[NEED_SEARCH:\s*([^\]]+)\]\]", reply)
+            if _ns:
+                _target = _ns.group(1).strip()[:20]
+                reply = reply[:_ns.start()].rstrip()
+                _web_reply = await _web_research_stock(_target, name=_target)
+                reply = (reply + "\n\n" + _web_reply).strip() if reply else _web_reply
+        except Exception as _nse:
+            logger.debug(f"NEED_SEARCH 처리 스킵: {_nse}")
 
         # 액션 프로토콜 파싱: 자연어 지시/설정을 자동 저장·적용
         try:

@@ -3547,13 +3547,11 @@ async def get_portfolio_context() -> str:
                     rate = p['pnl_rate']
                     status = ""
                     if rate <= -7:
-                        status = " ⚠️손절선(-7%) 도달·초과 — 알림 후 승인 매도 대상. 승인 지시 없으면 자동매도 안 됨"
+                        status = " ⚠️손절선(-7%) 도달·초과 — 시스템이 승인 없이 자동 매도 처리 중(다음 사이클 내 체결)"
                     elif rate <= -5:
                         status = " (손절선 근접)"
-                    elif rate >= 5:
-                        status = " ✅익절선(+5%) 도달 — 상의모드·트레일링 대상"
                     elif rate >= 3:
-                        status = " (절반익절 3% 도달 — 지시 #5 대상)"
+                        status = " ✅익절 판단 대상(+3%↑) — 자비스가 차트·거래량 분석해 HOLD/HALF/ALL 자동 실행 중"
                     ctx_parts.append(
                         f"  - {p['name']}({p['symbol']}): {p['qty']}주 "
                         f"평균{p['avg_price']:,} 현재{p['cur_price']:,} "

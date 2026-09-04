@@ -9,7 +9,8 @@
 .ks{font-size:11px;margin-top:4px;color:var(--dim);}
 .hgrid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;}
 .tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
-.tab{padding:6px 14px;border-radius:20px;background:var(--bd);font-size:11px;cursor:pointer;color:var(--tx);}
+.tab{padding:8px 14px;border-radius:14px;background:var(--bd);font-size:11px;cursor:pointer;color:var(--tx);text-align:center;line-height:1.4;}
+.tab.on div:first-child{color:#000;font-weight:700;}
 .tab.on{background:var(--gd);color:#000;font-weight:700;}
 .bigchart{height:210px;position:relative;}
 .bigchart canvas{width:100%;height:100%;}
@@ -108,8 +109,12 @@ async function loadPos(){
     if(!positions.length){posTabs.innerHTML='';posMeta.innerHTML='<span class="empty">보유 없음</span>';
       drawBig([]);return;}
     if(!activeSym||!positions.find(p=>p.symbol===activeSym)) activeSym=positions[0].symbol;
-    posTabs.innerHTML=positions.map(p=>
-      `<div class="tab ${p.symbol===activeSym?'on':''}" onclick="selPos('${p.symbol}')">${p.name||p.symbol}</div>`).join('');
+    posTabs.innerHTML=positions.map(p=>{
+      const r=p.pnl_rate??0;
+      return `<div class="tab ${p.symbol===activeSym?'on':''}" onclick="selPos('${p.symbol}')">
+        <div>${p.name||p.symbol}</div>
+        <div class="mono ${p.symbol===activeSym?'':cls(r)}" style="font-size:10px;margin-top:2px;">${won(p.pnl)} (${pct(r)})</div>
+      </div>`;}).join('');
     const p=positions.find(x=>x.symbol===activeSym);
     const rate=p.pnl_rate??0;
     posMeta.innerHTML=`<span>${p.qty}주 · 평단 <b style="color:var(--br)">${won(p.avg_price)}</b></span>

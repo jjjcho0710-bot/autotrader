@@ -5968,13 +5968,19 @@ async def stock_name_lookup(code: str):
 async def stock_lookup(q: str):
     sym, nm = await _resolve_stock_symbol(q)
     db_count = 0
+    similar = []
     try:
         async with db_pool.acquire() as conn:
             db_count = await conn.fetchval("SELECT COUNT(*) FROM stock_master")
+            if not sym and len(q) >= 2:
+                rows = await conn.fetch(
+                    "SELECT symbol, name FROM stock_master WHERE name LIKE '%' || $1 || '%' LIMIT 10", q[:2])
+                similar = [f"{r['name']}({r['symbol']})" for r in rows]
     except Exception as e:
         db_count = f"error: {e}"
-    return {"query": q, "symbol": sym, "name": nm,
-            "memory_cache_size": len(_stock_name_cache), "db_count": db_count}
+    return {"query": q, "query_bytes": q.encode("utf-8").hex(), "symbol": sym, "name": nm,
+            "memory_cache_size": len(_stock_name_cache), "db_count": db_count,
+            "similar_names_found": similar}
 
 
 @app.api_route("/api/cache/flush", methods=["GET", "POST"])

@@ -349,7 +349,8 @@ async def _auto_register_webhook():
 
 
 async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
-    """KIS 일봉 조회 → [{date,open,high,low,close,vol}] 오래된→최신"""
+    """KIS 일봉 조회 → [{date,open,high,low,close,vol}] 오래된→최신
+    모의투자 서버는 중소형주 일봉이 비어있는 경우가 있어 실전 시세 도메인도 폴백 시도(시세 조회는 주문이 아니라 안전)"""
     try:
         token = await get_kis_token()
         if not token:
@@ -359,18 +360,26 @@ async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
         from datetime import timedelta as _td
         end = datetime.now(KST).strftime("%Y%m%d")
         start = (datetime.now(KST) - _td(days=days * 2)).strftime("%Y%m%d")
+        bases = [config.kis_base_url]
+        if config.KIS_IS_PAPER and "openapi.koreainvestment.com:9443" not in bases:
+            bases.append("https://openapi.koreainvestment.com:9443")
+        rows = []
+        data = {}
         async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
-            r = await sess.get(
-                f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-                headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
-                         "appsecret": config.kis_app_secret,
-                         "tr_id": "FHKST03010100", "custtype": "P"},
-                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
-                        "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
-                        "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
-                timeout=_aiohttp.ClientTimeout(total=8))
-            data = await r.json()
-        rows = data.get("output2", []) or []
+            for base in bases:
+                r = await sess.get(
+                    f"{base}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                    headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                             "appsecret": config.kis_app_secret,
+                             "tr_id": "FHKST03010100", "custtype": "P"},
+                    params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
+                            "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
+                            "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+                    timeout=_aiohttp.ClientTimeout(total=8))
+                data = await r.json()
+                rows = data.get("output2", []) or []
+                if rows:
+                    break
         if not rows:
             logger.warning(f"일봉 빈응답 [{symbol}] rt_cd={data.get('rt_cd')} msg={data.get('msg1','')[:60]}")
         out = []

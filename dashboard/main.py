@@ -4661,8 +4661,9 @@ async def _jarvis_chat_impl(body: dict):
                         _held = f"\n보유: {_pp['qty']}주, 평단 {_pp['avg_price']:,}원, 손익 {_pp.get('pnl_rate',0):+.1f}%"
                 except Exception:
                     pass
-                stock_ctx = (f"\n[시스템이 인식한 종목: {_nm}({_sym}) — 질문과 관련 있다면 아래 데이터로 답하라]\n"
-                             f"현재가 {_cur:,}원{_chg}{_held}\n{_ana or '(차트 데이터 부족)'}\n")
+                stock_ctx = (f"\n[시스템이 인식한 종목: {_nm}({_sym}) — 질문과 관련 있다면 아래 데이터로 답하라. "
+                             f"장 마감 후에도 이 가격은 최근 확보한 유효한 데이터이니 '모른다'고 하지 말고 이 값으로 답하라]\n"
+                             f"현재가(최근 종가 기준) {_cur:,}원{_chg}{_held}\n{_ana or '(차트 데이터 부족)'}\n")
         except Exception as _e:
             logger.debug(f"종목 자동 리서치 스킵: {_e}")
 

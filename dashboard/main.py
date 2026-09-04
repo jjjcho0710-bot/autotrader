@@ -169,9 +169,32 @@ async def _load_stock_cache():
                 return
     except Exception as e:
         logger.warning(f"종목 캐시 DB 로드 실패: {e}")
-    # 2) KIS 마스터파일(zip) 다운로드 — pykrx보다 Railway에서 안정적
+    # 2) pykrx 우선 시도 (정확한 한글 종목명 보장)
     name_map = {}
     try:
+        import asyncio
+        from pykrx import stock as pykrx_stock
+        loop = asyncio.get_event_loop()
+
+        def _fetch_pykrx():
+            result = {}
+            for market in ["KOSPI", "KOSDAQ"]:
+                tickers = pykrx_stock.get_market_ticker_list(market=market)
+                for ticker in tickers:
+                    name = pykrx_stock.get_market_ticker_name(ticker)
+                    if name:
+                        result[name] = ticker
+            return result
+
+        name_map = await loop.run_in_executor(None, _fetch_pykrx)
+    except Exception as e:
+        logger.warning(f"pykrx 종목 로드 실패: {e}")
+
+    # 3) pykrx 실패 시에만 KIS 마스터파일(zip) 폴백
+    # 주의: KIS .mst 파일은 종목명이 정확히 20바이트(cp949) 고정폭 필드.
+    #       단순 split()으로 자르면 ISIN/숫자 필드가 이름에 섞여 깨짐 — 반드시 고정폭으로 슬라이스.
+    if not name_map:
+      try:
         import zipfile, io, ssl as _ssl
         _c2 = _ssl.create_default_context(); _c2.check_hostname = False; _c2.verify_mode = _ssl.CERT_NONE
         async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c2)) as sess:
@@ -184,41 +207,26 @@ async def _load_stock_cache():
                         raw = await resp.read()
                     zf = zipfile.ZipFile(io.BytesIO(raw))
                     fn = zf.namelist()[0]
-                    text = zf.read(fn).decode(enc, errors="ignore")
-                    for line in text.splitlines():
-                        if len(line) < 30:
+                    raw_bytes = zf.read(fn)
+                    # 라인 단위로 바이트에서 직접 자름 (텍스트로 디코딩 후 자르면 멀티바이트 경계가 깨짐)
+                    for line_bytes in raw_bytes.split(b"\n"):
+                        if len(line_bytes) < 30:
                             continue
-                        code = line[:9].strip()[-6:]
-                        rest = line[9:].strip()
-                        parts = rest.split()
-                        name = parts[0] if parts else ""
-                        if code and name and code.isdigit():
-                            name_map[name] = code
+                        try:
+                            # 표준코드(ISIN) 12바이트 + 단축코드 6바이트 뒤에 종목명(cp949, 최대 40바이트) 위치
+                            code_part = line_bytes[9:21].decode("ascii", errors="ignore").strip()
+                            code = "".join(ch for ch in code_part if ch.isdigit())[-6:]
+                            name_bytes = line_bytes[21:61]
+                            name = name_bytes.decode(enc, errors="ignore").strip()
+                            if code and name and code.isdigit() and len(code) == 6 and \
+                               not any(c.isdigit() for c in name[:1]):
+                                name_map[name] = code
+                        except Exception:
+                            continue
                 except Exception as ie:
                     logger.warning(f"KIS 마스터 다운로드 실패({url}): {ie}")
-    except Exception as e:
+      except Exception as e:
         logger.warning(f"KIS 마스터 처리 실패: {e}")
-
-    # 3) 실패 시 pykrx 폴백
-    if not name_map:
-        try:
-            import asyncio
-            from pykrx import stock as pykrx_stock
-            loop = asyncio.get_event_loop()
-
-            def _fetch():
-                result = {}
-                for market in ["KOSPI", "KOSDAQ"]:
-                    tickers = pykrx_stock.get_market_ticker_list(market=market)
-                    for ticker in tickers:
-                        name = pykrx_stock.get_market_ticker_name(ticker)
-                        if name:
-                            result[name] = ticker
-                return result
-
-            name_map = await loop.run_in_executor(None, _fetch)
-        except Exception as e:
-            logger.warning(f"pykrx 폴백도 실패: {e}")
 
     try:
         if name_map:
@@ -6001,6 +6009,23 @@ async def reload_stock_cache():
     """종목 캐시 즉시 강제 갱신 (pykrx, 수 분 소요될 수 있음)"""
     asyncio.create_task(_load_stock_cache())
     return {"success": True, "note": "백그라운드 갱신 시작됨 — 잠시 후 /api/stock/lookup으로 확인"}
+
+
+@app.api_route("/api/stock/purge_and_reload", methods=["GET", "POST"])
+async def purge_and_reload_stock_cache():
+    """오염된 종목마스터 데이터를 완전 삭제 후 pykrx로 재적재 (일회성 복구용)"""
+    global _stock_name_cache, _stock_code_cache
+    try:
+        async with db_pool.acquire() as conn:
+            deleted = await conn.fetchval("SELECT COUNT(*) FROM stock_master")
+            await conn.execute("TRUNCATE TABLE stock_master")
+        _stock_name_cache = {}
+        _stock_code_cache = {}
+        asyncio.create_task(_load_stock_cache())
+        return {"success": True, "purged": deleted,
+                "note": "삭제 후 재적재 시작 — pykrx라 5~15분 소요, 이후 /api/stock/lookup으로 확인"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/jarvis/knowledge")

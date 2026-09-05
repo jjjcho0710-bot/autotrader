@@ -1439,8 +1439,103 @@ async def _jarvis_evening_review(target_date=None):
         logger.error(f"복기 오류: {e}")
 
 
+async def _jarvis_weekend_study_report():
+    """주말(토·일) 21:00 학습보고: 주간복습·지식정리·(일요일)예습 결과 종합 → 텔레그램"""
+    try:
+        now = datetime.now(KST)
+        today = now.date()
+        is_sun = now.weekday() == 6
+        async with db_pool.acquire() as conn:
+            # 이번 주 판단 통계 (월~금)
+            wk = await conn.fetchrow("""
+                SELECT COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL')) AS ex,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP') AS sk,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0) AS missed,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate IS NOT NULL AND eval_pnl_rate < 1.0) AS good_skip
+                FROM trade_journal
+                WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'""")
+            # 반복 SKIP-상승 종목 상위
+            miss_rows = await conn.fetch("""
+                SELECT COALESCE(name, symbol) AS nm, COUNT(*) AS n, AVG(eval_pnl_rate) AS avg_r
+                FROM trade_journal
+                WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'
+                  AND jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0
+                GROUP BY COALESCE(name, symbol) ORDER BY n DESC LIMIT 3""")
+            # 이번 주 새로 생긴 교훈
+            lessons = await conn.fetch("""
+                SELECT content, created_at FROM jarvis_notes
+                WHERE category='lesson' AND created_at > NOW() - INTERVAL '7 days'
+                ORDER BY created_at DESC LIMIT 6""")
+            # 정제본 핵심 원칙 (카테고리별)
+            core = await conn.fetch("""
+                SELECT content FROM jarvis_notes
+                WHERE category='knowledge_core' AND is_active=TRUE ORDER BY id LIMIT 20""")
+            # 이번 주 새로 학습한 raw 원칙 수
+            new_raw = await conn.fetchval("""
+                SELECT COUNT(*) FROM jarvis_notes
+                WHERE category='knowledge' AND is_active=TRUE AND created_at > NOW() - INTERVAL '7 days'""")
+            total_raw = await conn.fetchval(
+                "SELECT COUNT(*) FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE")
+
+        total = int(wk["total"] or 0)
+        sk = int(wk["sk"] or 0)
+        good_skip = int(wk["good_skip"] or 0)
+        missed = int(wk["missed"] or 0)
+        skip_acc = round(good_skip / (good_skip + missed) * 100) if (good_skip + missed) else 0
+
+        parts = [f"📚 <b>자비스 주말 학습보고</b> [{today.strftime('%m/%d')} {'일' if is_sun else '토'}]\n"]
+        parts.append(f"[이번 주 복습]\n판단 {total}건 (실행 {int(wk['ex'] or 0)} / 보류 {sk})\n"
+                     f"SKIP 정확도 {skip_acc}% (잘거름 {good_skip} / 놓침 {missed})")
+        if miss_rows:
+            parts.append("반복 놓친 종목: " + ", ".join(
+                f"{r['nm']}({int(r['n'])}회, 평균 {float(r['avg_r'] or 0):+.1f}%)" for r in miss_rows))
+        if lessons:
+            parts.append("\n[이번 주 교훈]\n" + "\n".join(f"- {r['content'][:90]}" for r in lessons[:4]))
+        parts.append(f"\n[지식 정리]\n학습 원칙 누적 {total_raw}개 (이번 주 +{new_raw}) → 핵심 {len(core)}개 정제")
+        if core:
+            cats = {}
+            for r in core:
+                c = r["content"]
+                key = c.split("]")[0].strip("[") if c.startswith("[") else "기타"
+                cats.setdefault(key, []).append(c.split("]", 1)[-1].strip() if "]" in c else c)
+            for k, v in cats.items():
+                parts.append(f"  [{k}] " + " / ".join(x[:35] for x in v[:2]) + ("…" if len(v) > 2 else ""))
+
+        if is_sun:
+            try:
+                wp = await redis_client.get("jarvis:weekly_plan")
+                wp = wp if isinstance(wp, str) else (wp or b"").decode()
+                if wp:
+                    parts.append(f"\n[다음 주 준비]\n{wp[:500]}")
+            except Exception:
+                pass
+
+        # 자비스 총평 (이번 주 배운 것 한 줄 요약)
+        summary_prompt = (f"다음은 자비스의 이번 주 학습 요약이다.\n" + "\n".join(parts[1:]) +
+                          "\n\n주인에게 보고하듯 이번 주 배운 핵심을 2~3문장으로 정리하라. "
+                          "숫자 반복 말고 '무엇을 깨달았고 다음 주에 무엇을 다르게 할지' 중심으로.")
+        comment = ""
+        try:
+            c = await _ask_openwebui(summary_prompt, session_id="daily_plan")
+            if c and not c.startswith("❌"):
+                comment = f"\n\n💬 자비스 총평:\n{c.strip()[:600]}"
+        except Exception:
+            pass
+
+        msg = "\n".join(parts) + comment
+        await _send_telegram(msg)
+        logger.info("📚 주말 학습보고 발송")
+    except Exception as e:
+        logger.error(f"주말 학습보고 오류: {e}")
+
+
 async def _jarvis_unified_daily_report():
-    """관리자 자비스 통합 일일보고: 코인봇+주식봇 보고 종합 → 텔레그램"""
+    """관리자 자비스 통합 일일보고: 코인봇+주식봇 보고 종합 → 텔레그램
+    주말(토·일)은 매매가 없으므로 학습보고로 대체"""
+    if datetime.now(KST).weekday() >= 5:
+        await _jarvis_weekend_study_report()
+        return
     try:
         today = datetime.now(KST).date()
         async with db_pool.acquire() as conn:
@@ -1871,6 +1966,12 @@ async def _jarvis_weekly_preview():
         logger.info("🗓️ 주간 예습 완료")
     except Exception as e:
         logger.error(f"주간 예습 오류: {e}")
+
+
+@app.api_route("/api/jarvis/weekend_report/run", methods=["GET", "POST"])
+async def run_weekend_report():
+    await _jarvis_weekend_study_report()
+    return {"success": True}
 
 
 @app.api_route("/api/jarvis/weekly/review/run", methods=["GET", "POST"])

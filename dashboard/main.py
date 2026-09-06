@@ -1488,10 +1488,13 @@ async def _jarvis_weekend_study_report():
         parts.append(f"[이번 주 복습]\n판단 {total}건 (실행 {int(wk['ex'] or 0)} / 보류 {sk})\n"
                      f"SKIP 정확도 {skip_acc}% (잘거름 {good_skip} / 놓침 {missed})")
         if miss_rows:
+            def _disp(nm):
+                # name이 비어 코드가 온 경우 캐시로 한글명 보완
+                return _stock_code_cache.get(nm, nm) if (nm and nm.isdigit()) else nm
             parts.append("반복 놓친 종목: " + ", ".join(
-                f"{r['nm']}({int(r['n'])}회, 평균 {float(r['avg_r'] or 0):+.1f}%)" for r in miss_rows))
+                f"{_disp(r['nm'])}({int(r['n'])}회, 평균 {float(r['avg_r'] or 0):+.1f}%)" for r in miss_rows))
         if lessons:
-            parts.append("\n[이번 주 교훈]\n" + "\n".join(f"- {r['content'][:90]}" for r in lessons[:4]))
+            parts.append("\n[이번 주 교훈]\n" + "\n".join(f"- {r['content'][:200]}" for r in lessons[:4]))
         parts.append(f"\n[지식 정리]\n학습 원칙 누적 {total_raw}개 (이번 주 +{new_raw}) → 핵심 {len(core)}개 정제")
         if core:
             cats = {}
@@ -1892,17 +1895,20 @@ async def _jarvis_knowledge_curate():
 작업:
 1) 중복·유사 원칙은 하나로 통합, 서로 상충하는 것은 더 보수적/검증된 쪽을 택하라.
 2) 각 원칙을 [진입]/[청산]/[리스크]/[습관] 중 하나로 분류하라.
-3) 분류별로 실전 판단에 가장 유용한 원칙을 각 5개씩(총 20개) 남겨라.
+3) 분류별로 실전 판단에 가장 유용한 원칙을 최대 5개씩(총 최대 20개) 남겨라.
+   원칙이 부족하면 있는 만큼만 출력하고, 빈 자리를 "(없음)"·"추후 추가 필요" 같은 자리채움 문구로 절대 채우지 마라.
    아래 [원칙 성과 통계]가 있으면 적중률 낮은 원칙은 제외하고 높은 원칙은 반드시 유지하라.
-출력 형식: 각 줄 "[분류] 원칙 내용(40자 이내)" — 다른 말 없이 20줄만.
+출력 형식: 각 줄 "[분류] 원칙 내용(40자 이내)" — 다른 말 없이 실제 원칙 줄만.
 
 [원칙 성과 통계 — 지난 정제본 기준]
 {stats_txt}"""
         out = await _ask_openwebui(prompt, session_id="daily_plan")
         if not out or out.startswith("❌"):
             return ""
+        _placeholder = ("없음", "추후", "추가 필요", "해당 없", "N/A", "없습니다")
         lines = [ln.strip() for ln in out.split("\n")
-                 if ln.strip().startswith("[") and len(ln.strip()) > 6][:20]
+                 if ln.strip().startswith("[") and len(ln.strip()) > 6
+                 and not any(pz in ln for pz in _placeholder)][:20]
         if not lines:
             return ""
         async with db_pool.acquire() as conn:
@@ -1966,6 +1972,24 @@ async def _jarvis_weekly_preview():
         logger.info("🗓️ 주간 예습 완료")
     except Exception as e:
         logger.error(f"주간 예습 오류: {e}")
+
+
+@app.api_route("/api/jarvis/knowledge/clean_placeholders", methods=["GET", "POST"])
+async def clean_knowledge_placeholders():
+    """정제본에 잘못 저장된 자리채움 문구('없음/추후 추가 필요' 등) 제거"""
+    try:
+        async with db_pool.acquire() as conn:
+            n = await conn.fetchval("""
+                WITH del AS (
+                    UPDATE jarvis_notes SET is_active=FALSE
+                    WHERE category IN ('knowledge_core','knowledge') AND is_active=TRUE
+                      AND (content LIKE '%없음%' OR content LIKE '%추후%' OR content LIKE '%추가 필요%'
+                           OR content LIKE '%해당 없%' OR content LIKE '%N/A%')
+                    RETURNING 1)
+                SELECT COUNT(*) FROM del""")
+        return {"success": True, "removed": n}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.api_route("/api/jarvis/weekend_report/run", methods=["GET", "POST"])

@@ -268,7 +268,12 @@ async function loadSummary() {
     // 상태
     const dot = document.getElementById("statusDot");
     const st  = document.getElementById("statusText");
-    if (json.success) {
+    if (json.success && json.stale) {
+      dot.classList.add("off");
+      const at = json.snapshot_at ? new Date(json.snapshot_at) : null;
+      const atStr = at ? `${at.getMonth()+1}/${at.getDate()} ${String(at.getHours()).padStart(2,"0")}:${String(at.getMinutes()).padStart(2,"0")}` : "";
+      st.textContent = `KIS 점검 중 — 마지막 확인(${atStr}) 데이터 표시`;
+    } else if (json.success) {
       dot.classList.remove("off");
       st.textContent = currentTab === "stock" ? "주식 봇 연결됨" : "코인 봇 연결됨";
     } else {
@@ -343,7 +348,7 @@ async function loadTrades() {
       return;
     }
     el.innerHTML = trades.map(t => {
-      const name = (t.symbol || "").replace("KRW-", "");
+      const name = (t.name || t.symbol || "").replace("KRW-", "");
       const isBuy = t.side === "BUY";
       const t2 = t.ts ? new Date(t.ts) : null;
       const timeStr = t2 ? `${t2.getMonth()+1}/${t2.getDate()} ${String(t2.getHours()).padStart(2,"0")}:${String(t2.getMinutes()).padStart(2,"0")}` : "";

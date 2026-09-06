@@ -2705,7 +2705,7 @@ async def _rcache(key: str, ttl: int, fn):
         pass
     res = await fn()
     try:
-        if redis_client and isinstance(res, dict) and res.get("success") is not False:
+        if redis_client and isinstance(res, dict) and res.get("success") is not False and not res.get("stale"):
             d = res.get("data")
             acc = res.get("account")
             # data와 account 둘 다 확인 — 계좌 정보만 비어도 캐시하지 않음
@@ -2899,11 +2899,17 @@ async def get_trades(limit: int = 50, bot: str = None):
 
             trades = []
             for r in rows:
+                sym = r["symbol"]
+                # 주식은 종목코드→한글명, 코인은 심볼 그대로
+                nm = sym
+                if r["asset_type"] == "stock":
+                    nm = _stock_code_cache.get(sym) or sym
                 trades.append({
                     "id":         r["id"],
                     "bot":        r["bot"],
                     "asset_type": r["asset_type"],
-                    "symbol":     r["symbol"],
+                    "symbol":     sym,
+                    "name":       nm,
                     "side":       r["side"],
                     "price":      float(r["price"] or 0),
                     "quantity":   float(r["quantity"] or 0),
@@ -5557,7 +5563,7 @@ async def _get_stock_positions_raw():
         base = config.kis_base_url
         token = await get_kis_token()
         if not token:
-            return {"success": False, "error": "KIS 토큰 발급 실패", "data": [], "account": {}}
+            raise RuntimeError("KIS 토큰 발급 실패")
 
         import ssl as _ssl
         _ssl_ctx = _ssl.create_default_context()
@@ -5626,8 +5632,25 @@ async def _get_stock_positions_raw():
                 "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0) or 0),
                 "_raw_keys":    list(summary.keys()),  # 디버그용
             }
-            return {"success": True, "data": positions, "account": account}
+            result = {"success": True, "data": positions, "account": account}
+            # 마지막 성공 스냅샷 보관 (주말 KIS 점검 등 실패 시 폴백용, 7일)
+            try:
+                await redis_client.setex("positions:last_ok", 86400 * 7,
+                                          json.dumps({**result, "snapshot_at": datetime.now(KST).isoformat()}, default=str))
+            except Exception:
+                pass
+            return result
     except Exception as e:
+        # 실패 시 마지막 성공 스냅샷으로 폴백 (계좌 데이터가 0원으로 뒤집히는 것 방지)
+        try:
+            snap = await redis_client.get("positions:last_ok")
+            if snap:
+                d = json.loads(snap if isinstance(snap, str) else snap.decode())
+                d["stale"] = True
+                d["error"] = f"KIS 조회 실패({str(e)[:40]}) — 마지막 확인 데이터 표시"
+                return d
+        except Exception:
+            pass
         return {"success": False, "error": str(e), "data": []}
 
 

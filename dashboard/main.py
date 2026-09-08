@@ -994,7 +994,7 @@ async def _jarvis_closing_report():
                 pnl_emoji = "📈" if total_pnl >= 0 else "📉"
                 msg += f"{pnl_emoji} 실현손익: {total_pnl:+,.0f}원\n"
             if buy_trades:
-                buy_list = "\n".join([f"  🟢 {t['symbol']} {int(t['price']):,}원×{int(t['quantity'])}주" 
+                buy_list = "\n".join([f"  🟢 {_stock_code_cache.get(t['symbol']) or t['symbol']} {int(t['price']):,}원×{int(t['quantity'])}주" 
                                        for t in buy_trades[:5]])
                 msg += f"신규 매수:\n{buy_list}\n"
         else:
@@ -1403,7 +1403,7 @@ async def _jarvis_evening_review(target_date=None):
             + (f" (이후 {float(r['eval_pnl_rate']):+.1f}%)" if r['eval_pnl_rate'] is not None else "")
             for r in jdg[:20]) or "(판단 없음)"
         t_txt = "\n".join(
-            f"- {t['side']} {t['symbol']} {float(t['amount']):,.0f}원"
+            f"- {t['side']} {_stock_code_cache.get(t['symbol']) or t['symbol']} {float(t['amount']):,.0f}원"
             + (f" 손익 {float(t['pnl'] or 0):+,.0f}원" if t['pnl'] is not None else "")
             + f" ({t['strategy']})" for t in trades) if trades else ""
         total_pnl = sum(float(t['pnl'] or 0) for t in trades) if trades else 0
@@ -1574,22 +1574,27 @@ async def _jarvis_unified_daily_report():
                 FROM trade_journal
                 WHERE DATE(ts AT TIME ZONE 'Asia/Seoul')=$1""", today)
 
-        def _fmt(trades):
+        def _fmt(trades, is_stock=False):
             if not trades:
                 return "매매 없음", 0.0
             pnl = sum(float(t["pnl"] or 0) for t in trades)
             buys = sum(1 for t in trades if t["side"] == "BUY")
             sells = len(trades) - buys
+            def _nm(t):
+                sym = t["symbol"]
+                if is_stock:
+                    return _stock_code_cache.get(sym) or sym
+                return sym.replace('KRW-', '')
             lines = "\n".join(
-                f"  · {t['side']} {t['symbol'].replace('KRW-','')} "
+                f"  · {t['side']} {_nm(t)} "
                 f"{float(t['amount']):,.0f}원"
                 + (f" ({float(t['pnl']):+,.0f}원)" if t["pnl"] is not None else "")
                 for t in trades[:6])
             more = f"\n  ...외 {len(trades)-6}건" if len(trades) > 6 else ""
             return f"매수 {buys} / 매도 {sells} (손익 {pnl:+,.0f}원)\n{lines}{more}", pnl
 
-        stock_txt, stock_pnl = _fmt(stock_trades)
-        crypto_txt, crypto_pnl = _fmt(crypto_trades)
+        stock_txt, stock_pnl = _fmt(stock_trades, is_stock=True)
+        crypto_txt, crypto_pnl = _fmt(crypto_trades, is_stock=False)
         total_pnl = stock_pnl + crypto_pnl
 
         raw = (f"[주식봇 보고]\n{stock_txt}\n\n"
@@ -3785,7 +3790,7 @@ async def get_portfolio_context() -> str:
                     ts = "-"
                 pnl_str = f" 손익:{t['pnl']:+,.0f}원" if t.get("pnl") else " 보유중"
                 ctx_parts.append(
-                    f"  {ts} [{t['bot']}] {t['side']} {t['symbol']} "
+                    f"  {ts} [{t['bot']}] {t['side']} {t.get('name') or t['symbol']} "
                     f"{t['price']:,}×{t['quantity']}{pnl_str}"
                 )
     except:
@@ -5508,7 +5513,7 @@ async def telegram_webhook(body: dict):
                         ts = t["ts"][11:16] if t["ts"] else "-"
                         side = "매수" if t["side"] == "BUY" else "매도"
                         pnl = f" {t['pnl']:+,}원" if t.get("pnl") else ""
-                        lines.append(f"  {ts} {side} {t['symbol']}{pnl}")
+                        lines.append(f"  {ts} {side} {t.get('name') or t['symbol']}{pnl}")
                     await _send_telegram("\n".join(lines), chat_id)
             except Exception as e:
                 await _send_telegram(f"❌ 이력 조회 실패: {e}", chat_id)

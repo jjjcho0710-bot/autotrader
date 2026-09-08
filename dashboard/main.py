@@ -169,31 +169,43 @@ async def _load_stock_cache():
                 return
     except Exception as e:
         logger.warning(f"종목 캐시 DB 로드 실패: {e}")
-    # 2) pykrx 우선 시도 (정확한 한글 종목명 보장)
+    # 2) pykrx 우선 시도 (정확한 한글 종목명 보장) — 시장별 독립 실행, 한쪽 실패해도 다른 쪽은 살림
     name_map = {}
     try:
         import asyncio
         from pykrx import stock as pykrx_stock
         loop = asyncio.get_event_loop()
 
-        def _fetch_pykrx():
+        def _fetch_market(market):
             result = {}
-            for market in ["KOSPI", "KOSDAQ"]:
-                tickers = pykrx_stock.get_market_ticker_list(market=market)
-                for ticker in tickers:
+            tickers = pykrx_stock.get_market_ticker_list(market=market)
+            for ticker in tickers:
+                try:
                     name = pykrx_stock.get_market_ticker_name(ticker)
                     if name:
                         result[name] = ticker
+                except Exception:
+                    continue
             return result
 
-        name_map = await loop.run_in_executor(None, _fetch_pykrx)
+        for market in ["KOSPI", "KOSDAQ"]:
+            try:
+                part = await loop.run_in_executor(None, _fetch_market, market)
+                name_map.update(part)
+                logger.info(f"pykrx {market} 로드: {len(part)}개")
+            except Exception as me:
+                logger.warning(f"pykrx {market} 로드 실패: {me}")
     except Exception as e:
         logger.warning(f"pykrx 종목 로드 실패: {e}")
+
+    # pykrx가 부분적으로만 성공(예: 한쪽 시장 누락)했으면 KIS 폴백으로 빈 자리를 보완
+    if len(name_map) < 2000:
+        logger.warning(f"pykrx 결과가 부족함({len(name_map)}개) — KIS 마스터파일로 보완 시도")
 
     # 3) pykrx 실패 시에만 KIS 마스터파일(zip) 폴백
     # 주의: KIS .mst 파일은 종목명이 정확히 20바이트(cp949) 고정폭 필드.
     #       단순 split()으로 자르면 ISIN/숫자 필드가 이름에 섞여 깨짐 — 반드시 고정폭으로 슬라이스.
-    if not name_map:
+    if len(name_map) < 2000:
       try:
         import zipfile, io, ssl as _ssl
         _c2 = _ssl.create_default_context(); _c2.check_hostname = False; _c2.verify_mode = _ssl.CERT_NONE
@@ -209,6 +221,7 @@ async def _load_stock_cache():
                     fn = zf.namelist()[0]
                     raw_bytes = zf.read(fn)
                     # 라인 단위로 바이트에서 직접 자름 (텍스트로 디코딩 후 자르면 멀티바이트 경계가 깨짐)
+                    added = 0
                     for line_bytes in raw_bytes.split(b"\n"):
                         if len(line_bytes) < 30:
                             continue
@@ -219,10 +232,12 @@ async def _load_stock_cache():
                             name_bytes = line_bytes[21:61]
                             name = name_bytes.decode(enc, errors="ignore").strip()
                             if code and name and code.isdigit() and len(code) == 6 and \
-                               not any(c.isdigit() for c in name[:1]):
+                               not any(c.isdigit() for c in name[:1]) and code not in name_map.values():
                                 name_map[name] = code
+                                added += 1
                         except Exception:
                             continue
+                    logger.info(f"KIS 마스터 보완({url.split('/')[-1]}): +{added}개")
                 except Exception as ie:
                     logger.warning(f"KIS 마스터 다운로드 실패({url}): {ie}")
       except Exception as e:

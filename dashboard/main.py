@@ -2945,6 +2945,7 @@ async def get_trades(limit: int = 50, bot: str = None):
                 nm = sym
                 if r["asset_type"] == "stock":
                     nm = _stock_code_cache.get(sym) or sym
+                _ts_kst = r["ts"].astimezone(KST) if r["ts"] else None
                 trades.append({
                     "id":         r["id"],
                     "bot":        r["bot"],
@@ -2957,7 +2958,7 @@ async def get_trades(limit: int = 50, bot: str = None):
                     "amount":     float(r["amount"] or 0),
                     "strategy":   r["strategy"],
                     "pnl":        float(r["pnl"] or 0) if r["pnl"] else None,
-                    "ts":         r["ts"].isoformat() if r["ts"] else None,
+                    "ts":         _ts_kst.isoformat() if _ts_kst else None,
                 })
             return {"success": True, "data": trades}
     except Exception as e:
@@ -3777,7 +3778,11 @@ async def get_portfolio_context() -> str:
             trades = trades_res["data"]
             ctx_parts.append(f"\n[최근 매매 {len(trades)}건]")
             for t in trades:
-                ts = t["ts"][:16] if t["ts"] else "-"
+                if t["ts"]:
+                    _dt = datetime.fromisoformat(t["ts"])
+                    ts = f"{_dt.month}/{_dt.day} {_dt.hour:02d}:{_dt.minute:02d} KST"
+                else:
+                    ts = "-"
                 pnl_str = f" 손익:{t['pnl']:+,.0f}원" if t.get("pnl") else " 보유중"
                 ctx_parts.append(
                     f"  {ts} [{t['bot']}] {t['side']} {t['symbol']} "
@@ -6470,7 +6475,8 @@ async def _get_journal_raw(days: int = 7):
         fills = sum(1 for r in rows if r["order_success"])
         data = []
         for r in rows:
-            d = dict(r) | {"ts": r["ts"].isoformat()}
+            _ts_kst = r["ts"].astimezone(KST) if r["ts"] else None
+            d = dict(r) | {"ts": _ts_kst.isoformat() if _ts_kst else None}
             if not d.get("name") and d.get("symbol"):
                 d["name"] = _stock_code_cache.get(d["symbol"]) or d["symbol"]
             data.append(d)

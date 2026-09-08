@@ -5147,6 +5147,21 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None, repl
     except Exception as e:
         logger.warning(f"텔레그램 전송 실패: {e}")
 
+    # 채널 동시 발송: 기본(개인) chat_id로 보내는 알림만 채널에도 복제
+    # (특정 대상 지정 발송(prop:/adv: 콜백 응답 등, chat_id가 명시된 경우)은 중복 방지 위해 제외)
+    channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+    if channel_id and not chat_id:
+        try:
+            import aiohttp as http
+            async with http.ClientSession() as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{_token}/sendMessage",
+                    json={"chat_id": channel_id, "text": text, "parse_mode": "HTML"},
+                    timeout=http.ClientTimeout(total=10),
+                )
+        except Exception as e:
+            logger.warning(f"텔레그램 채널 전송 실패: {e}")
+
 
 def _kb(rows: list) -> dict:
     """인라인 키보드 헬퍼: [[("라벨","data"),...],...]"""

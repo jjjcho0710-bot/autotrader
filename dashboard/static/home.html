@@ -365,6 +365,7 @@ async function loadTrades() {
           </div>
           <div class="trade-right">
             <div class="trade-amt mono">${won(t.amount)}</div>
+            <div class="trade-detail mono" style="font-size:11px;color:var(--text-dim,#8b949e);">${won(t.price)} × ${t.quantity}주</div>
             ${pnlHtml}
           </div>
         </div>`;

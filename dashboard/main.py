@@ -5385,6 +5385,17 @@ async def _ask_gemini_direct(message: str) -> str:
 async def telegram_webhook(body: dict):
     """텔레그램 Bot webhook — 메시지 수신 → Jarvis 처리"""
     try:
+        # [임시 디버그] 채널에 글이 올라오면 그 chat_id를 개인 채팅으로 알려줌 (확인 후 제거 예정)
+        cp = body.get("channel_post")
+        if cp:
+            ch_id = cp.get("chat", {}).get("id")
+            ch_title = cp.get("chat", {}).get("title", "")
+            await _send_telegram(
+                f"🔧 채널 chat_id 확인용\n채널명: {ch_title}\nchat_id: <code>{ch_id}</code>\n"
+                f"이 값을 Railway 공통변수 TELEGRAM_CHANNEL_ID에 넣으세요.",
+                store=False)
+            return {"ok": True}
+
         # 버튼 클릭(callback_query) 처리
         cq = body.get("callback_query")
         if cq:

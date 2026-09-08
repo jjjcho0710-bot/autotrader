@@ -3485,7 +3485,7 @@ score는 -2~+2, signal은 BUY/SELL/NEUTRAL"""
 async def market_checklist():
     """장중 테스트 체크리스트"""
     from datetime import time as dtime
-    now = datetime.now()
+    now = datetime.now(KST)
     cur_time = now.time()
     is_market = dtime(9, 0) <= cur_time <= dtime(15, 30) and now.weekday() < 5
 

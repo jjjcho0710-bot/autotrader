@@ -134,6 +134,7 @@ class CryptoTrader:
         asyncio.create_task(self._scan_loop())
         asyncio.create_task(self._price_loop())
         asyncio.create_task(self._price_monitor())
+        asyncio.create_task(self._ohlcv_update_loop())   # 1분봉 실시간 갱신
         # 코인 6시간 요약·일일 결산 리포트 비활성화 (주인 지시 — 통합 21:00 일일보고에 포함됨)
         # asyncio.create_task(self._six_hour_report_loop())
         # asyncio.create_task(self._daily_report_loop())
@@ -399,6 +400,12 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
+        # ── BTC 급락 시 전체 매수 차단 ──────────────────
+        if await self._is_btc_crashing():
+            logger.info("🚨 BTC 급락 중 → 신규 매수 전면 차단")
+            await self._update_status(krw_balance)
+            return
+
         # 최대 종목 수 초과 시 매수 중단
         if len(self.positions) >= MAX_POSITIONS:
             logger.info("🚫 최대 보유 종목 %d개 도달 → 신규 매수 중단", MAX_POSITIONS)
@@ -434,9 +441,22 @@ class CryptoTrader:
             rsi_now  = _calc_rsi(prices)
             rsi_prev = _calc_rsi(prices[:-1])
 
-            # RSI entry 이하이고 반등 중인지
+            # ── 1차: 1분봉 RSI 반등 확인 ──
             if not (rsi_prev <= rsi_entry and rsi_now > rsi_prev):
                 continue
+
+            # ── 2차: 5분봉 RSI 이중 확인 (가짜 신호 필터) ──
+            try:
+                rsi_5m = await self._get_5m_rsi(pair)
+                threshold_5m = rsi_entry + 15  # 낮 35→50, 야간 20→35
+                if rsi_5m > threshold_5m:
+                    logger.debug("⛔ [%s] 5분봉 RSI %.1f > %.0f → 과매도 아님, 진입 보류",
+                                 pair, rsi_5m, threshold_5m)
+                    continue
+                logger.info("✅ [%s] 1분봉 RSI %.1f + 5분봉 RSI %.1f → 이중 확인 통과",
+                            pair, rsi_now, rsi_5m)
+            except Exception as e:
+                logger.debug("5분봉 RSI 조회 실패 [%s]: %s → 1분봉만으로 진행", pair, e)
 
             # MACD 데드크로스면 보류
             try:
@@ -680,6 +700,87 @@ class CryptoTrader:
             logger.info("🎉 OHLCV 초기 수집 완료")
         except Exception as e:
             logger.error("OHLCV 초기 수집 오류: %s", e)
+
+    async def _is_btc_crashing(self) -> bool:
+        """BTC 최근 5분봉 기준 -2% 이상 급락 중이면 True"""
+        try:
+            import aiohttp as _aio
+            async with _aio.ClientSession() as s:
+                r = await s.get(
+                    "https://api.upbit.com/v1/candles/minutes/5",
+                    params={"market": "KRW-BTC", "count": 6},
+                    timeout=_aio.ClientTimeout(total=5),
+                )
+                candles = await r.json()
+            if not isinstance(candles, list) or len(candles) < 2:
+                return False
+            # 가장 최근 캔들 기준 30분 전 대비 변화율
+            latest = candles[0]["trade_price"]
+            before = candles[-1]["opening_price"]
+            change = (latest - before) / before * 100
+            if change <= -2.0:
+                logger.warning("⚠️ BTC 급락 감지 %.2f%% → 신규 매수 차단", change)
+                return True
+            return False
+        except Exception as e:
+            logger.debug("BTC 급락 체크 실패: %s", e)
+            return False
+
+    async def _get_5m_rsi(self, pair: str, period: int = 14) -> float:
+        """업비트에서 5분봉 직접 조회 → RSI 계산"""
+        import aiohttp as _aio
+        async with _aio.ClientSession() as s:
+            r = await s.get(
+                "https://api.upbit.com/v1/candles/minutes/5",
+                params={"market": pair, "count": period + 5},
+                timeout=_aio.ClientTimeout(total=5),
+            )
+            candles = await r.json()
+        if not isinstance(candles, list) or len(candles) < period + 1:
+            return 50.0  # 데이터 부족 시 중립값
+        prices = [c["trade_price"] for c in reversed(candles)]
+        return _calc_rsi(prices)
+
+    async def _ohlcv_update_loop(self):
+        """1분마다 전 코인 최신 캔들 1개 DB 적재 — 데이터 상시 최신화"""
+        import aiohttp as _aio
+        logger.info("✅ OHLCV 실시간 갱신 루프 시작")
+        while self.running:
+            try:
+                async with _aio.ClientSession() as s:
+                    for pair in list(self.active_pairs):
+                        try:
+                            r = await s.get(
+                                "https://api.upbit.com/v1/candles/minutes/1",
+                                params={"market": pair, "count": 3},
+                                timeout=_aio.ClientTimeout(total=5),
+                            )
+                            candles = await r.json()
+                            if not isinstance(candles, list) or not candles:
+                                continue
+                            rows = [
+                                (
+                                    pair,
+                                    datetime.fromisoformat(c["candle_date_time_kst"]),
+                                    c["opening_price"], c["high_price"],
+                                    c["low_price"],     c["trade_price"],
+                                    c["candle_acc_trade_volume"],
+                                )
+                                for c in candles
+                            ]
+                            async with db.pool.acquire() as conn:
+                                await conn.executemany(
+                                    "INSERT INTO crypto_ohlcv(pair,ts,open,high,low,close,volume) "
+                                    "VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(pair,ts) DO UPDATE "
+                                    "SET close=$7, high=GREATEST(high,$5), low=LEAST(low,$6), volume=$8",
+                                    [(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[6]) for r in rows],
+                                )
+                            await asyncio.sleep(0.05)
+                        except Exception as e:
+                            logger.debug("OHLCV 갱신 오류 [%s]: %s", pair, e)
+            except Exception as e:
+                logger.error("OHLCV 갱신 루프 오류: %s", e)
+            await asyncio.sleep(60)  # 1분마다 갱신
 
     async def _six_hour_report_loop(self):
         while self.running:

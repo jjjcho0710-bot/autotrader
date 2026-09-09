@@ -2055,6 +2055,21 @@ async def _jarvis_weekly_preview():
         logger.error(f"주간 예습 오류: {e}")
 
 
+@app.get("/api/strategy/current")
+async def get_current_strategy_config():
+    """현재 활성 전략 설정 전체 조회 (설정 변경 여부 확인용)"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT bot, name, is_active, params, updated_at FROM strategy_config ORDER BY bot, name")
+        return {"success": True, "data": [
+            {"bot": r["bot"], "name": r["name"], "is_active": r["is_active"],
+             "params": r["params"], "updated_at": r["updated_at"].astimezone(KST).isoformat()}
+            for r in rows]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.api_route("/api/jarvis/reconcile_trades", methods=["GET", "POST"])
 async def reconcile_trades_with_kis():
     """오늘자 trade_history를 실제 KIS 계좌와 대조해 불일치 기록을 찾아 표시(정정)한다.

@@ -1159,11 +1159,19 @@ class CryptoTrader:
                 f"친근하게 한국어로 간결하게 답해줘. 2~3문장 이내로."
             )
 
-            # Jarvis API 호출
+            # 코인 전용 시스템 프롬프트 (세션 분리)
+            crypto_context = (
+                "[코인봇 AI 역할] 너는 업비트 코인 단타 트레이딩 전문 AI야. "
+                "RSI 과매도 반등 전략 기반으로 판단하고 BTC 시황 중심으로 분석해. "
+                "주식 시장과는 독립적으로 판단하고 친근하게 한국어로 2~3문장 이내로 답해.\n\n"
+                + context
+            )
+
+            # Jarvis API 호출 — 코인 전용 세션(jarvis_crypto)
             async with aiohttp.ClientSession() as s:
                 resp = await s.post(
                     DASHBOARD_URL + "/api/jarvis/chat",
-                    json={"message": context, "session_id": "crypto_telegram", "_no_mirror": True},
+                    json={"message": crypto_context, "session_id": "jarvis_crypto", "_no_mirror": True},
                     timeout=aiohttp.ClientTimeout(total=30)
                 )
                 if resp.status == 200:

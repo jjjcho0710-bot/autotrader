@@ -67,7 +67,7 @@ DAWN_PAIRS = {"KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"}
 
 # 주말 보수 모드
 WEEKEND_NIGHT_BUY = False  # 주말 야간: 매수 중단
-BUY_AMOUNT_KRW   = 500_000  # 1회 매수 고정금액 50만원
+BUY_AMOUNT_KRW   = 250_000  # 1회 매수 고정금액 25만원 (100만원 테스트 운용 기준)
 MAX_POSITIONS    = 4        # 최대 동시 보유 종목 수 (기본)
 MIN_NET_PROFIT   = 1_000    # 매도 시 최소 순수익 (수수료 제외 1천원)
 UPBIT_FEE_RATE   = 0.0005  # 업비트 수수료 0.05% (왕복 0.1%)
@@ -144,6 +144,12 @@ class CryptoTrader:
         # 연속 손절 감지
         self.consec_stoploss  = 0           # 연속 손절 횟수
         self.buy_paused_until = None        # 매수 중단 해제 시각
+        # 배포 없이 즉시 조정 가능한 런타임 설정 (DB: strategy_config.name='런타임설정')
+        self.runtime_config = {
+            "buy_amount_krw": BUY_AMOUNT_KRW,
+            "max_positions":  MAX_POSITIONS,
+            "min_net_profit": MIN_NET_PROFIT,
+        }
 
     async def start(self):
         self.running = True
@@ -179,6 +185,11 @@ class CryptoTrader:
         defaults = [
             ("MACD",   True, {"fast":12,"slow":26,"signal":9,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
             ("RSI반등", True, {"period":14,"entry":35,"exit":65,"stop_loss":-0.05,"take_profit":0.01,"buy_amount":10000}),
+            ("런타임설정", True, {
+                "buy_amount_krw": BUY_AMOUNT_KRW,
+                "max_positions":  MAX_POSITIONS,
+                "min_net_profit": MIN_NET_PROFIT,
+            }),
         ]
         async with db.pool.acquire() as conn:
             for name, active, params in defaults:
@@ -200,15 +211,37 @@ class CryptoTrader:
                 self.strategies[r["name"]] = {"is_active": r["is_active"], "params": params or {}}
             active = [n for n, s in self.strategies.items() if s["is_active"]]
             logger.info("📋 전략 로드: %s", active)
+
+            # 런타임설정 반영 (배포 없이 즉시 값 변경용)
+            rt = self.strategies.get("런타임설정", {}).get("params", {})
+            if rt:
+                old_amt = self.runtime_config.get("buy_amount_krw")
+                self.runtime_config["buy_amount_krw"] = int(rt.get("buy_amount_krw", self.runtime_config["buy_amount_krw"]))
+                self.runtime_config["max_positions"]  = int(rt.get("max_positions",  self.runtime_config["max_positions"]))
+                self.runtime_config["min_net_profit"] = int(rt.get("min_net_profit", self.runtime_config["min_net_profit"]))
+                if old_amt != self.runtime_config["buy_amount_krw"]:
+                    logger.info("💰 런타임설정 변경 반영: 매수금액=%s원 최대종목=%s개 최소순수익=%s원",
+                                f"{self.runtime_config['buy_amount_krw']:,}",
+                                self.runtime_config["max_positions"],
+                                f"{self.runtime_config['min_net_profit']:,}")
         except Exception as e:
             logger.error("전략 로드 실패: %s", e)
 
     async def _subscribe_strategy_changes(self):
+        """전략 변경 알림 구독 — 기존 'strategy_changes' 채널과
+        대시보드 API가 실제로 쓰는 'strategy:update' 채널 둘 다 구독 (배포 없이 설정 반영)"""
         try:
             pubsub = cache.client.pubsub()
-            await pubsub.subscribe("strategy_changes")
+            await pubsub.subscribe("strategy_changes", "strategy:update")
             async for msg in pubsub.listen():
                 if msg["type"] == "message":
+                    # strategy:update는 다른 bot(stock_trader) 알림도 섞여 오므로 필터링
+                    try:
+                        data = json.loads(msg["data"])
+                        if isinstance(data, dict) and data.get("bot") not in (None, "crypto_trader"):
+                            continue
+                    except Exception:
+                        pass
                     logger.info("🔄 전략 변경 → 재로드")
                     await self.load_strategies()
         except Exception as e:
@@ -371,11 +404,12 @@ class CryptoTrader:
                                         pair, pnl_rate*100, peak_rate*100)
                         continue
 
-                    # tp ~ +1.5% : 일반 익절 — 수수료 제외 순수익 1천원 이상일 때만
+                    # tp ~ +1.5% : 일반 익절 — 수수료 제외 순수익 최소치 이상일 때만 (런타임설정)
                     if tp <= pnl_rate < trail_activate:
-                        if net_profit < MIN_NET_PROFIT:
+                        min_net_profit = self.runtime_config["min_net_profit"]
+                        if net_profit < min_net_profit:
                             logger.debug("⏸ [%s] 익절 조건 충족 but 순수익 %s원 < %s원 → 대기",
-                                        pair, f"{net_profit:,.0f}", f"{MIN_NET_PROFIT:,.0f}")
+                                        pair, f"{net_profit:,.0f}", f"{min_net_profit:,.0f}")
                             continue
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
@@ -406,7 +440,8 @@ class CryptoTrader:
         rsi_entry = params["rsi_entry"]
         tp        = params["take_profit"]
         sl        = params["stop_loss"]
-        max_pos   = params["max_pos"]
+        # 시간대별 기본값과 런타임설정(전역 상한) 중 더 작은 값 사용 — 배포 없이 조정 가능
+        max_pos   = min(params["max_pos"], self.runtime_config["max_positions"])
 
         band_labels = {
             "asia":  "🌅아시아",
@@ -489,9 +524,10 @@ class CryptoTrader:
             return
 
         # 잔고 부족 시 매수 중단
-        if krw_balance < BUY_AMOUNT_KRW:
+        buy_amount_krw = self.runtime_config["buy_amount_krw"]
+        if krw_balance < buy_amount_krw:
             logger.info("💸 KRW 잔고 부족 (%s원 < %s원) → 매수 중단",
-                        f"{krw_balance:,.0f}", f"{BUY_AMOUNT_KRW:,.0f}")
+                        f"{krw_balance:,.0f}", f"{buy_amount_krw:,.0f}")
             await self._update_status(krw_balance)
             return
 
@@ -510,7 +546,7 @@ class CryptoTrader:
                 break
 
             # ── 잔고 체크 ──
-            if krw_balance < BUY_AMOUNT_KRW:
+            if krw_balance < buy_amount_krw:
                 break
 
             rows = await db.get_recent_ohlcv(pair, limit=50, asset="crypto")
@@ -552,8 +588,8 @@ class CryptoTrader:
             if cur_price <= 0:
                 continue
 
-            # ── 50만원 고정 매수 ──
-            actual_amount = BUY_AMOUNT_KRW
+            # ── 런타임설정 매수금액 (배포 없이 조정 가능) ──
+            actual_amount = buy_amount_krw
             fee = actual_amount * UPBIT_FEE_RATE * 2  # 왕복 수수료
             name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
             logger.info("📈 [%s] %s 신호 RSI:%.1f 금액:%s원 TP:+%.1f%% SL:%.1f%% (수수료약 %s원)",
@@ -1060,6 +1096,14 @@ class CryptoTrader:
             await self._cmd_pnl(reply)
         elif cmd in ("/night", "야간", "밤"):
             await self._cmd_night(reply)
+        elif cmd == "/setbuy":
+            await self._cmd_set_buy_amount(text, reply)
+        elif cmd == "/setmax":
+            await self._cmd_set_max_positions(text, reply)
+        elif cmd == "/setminprofit":
+            await self._cmd_set_min_profit(text, reply)
+        elif cmd in ("/config", "설정"):
+            await self._cmd_show_config(reply)
         elif cmd in ("/help", "도움말"):
             await reply(
                 "🤖 <b>코인봇 대화 방법</b>\n\n"
@@ -1073,11 +1117,81 @@ class CryptoTrader:
                 "단축 명령어:\n"
                 "/status — 현재 포지션\n"
                 "/pnl — 오늘 수익\n"
-                "/night — 야간 요약"
+                "/night — 야간 요약\n"
+                "/config — 현재 매매 설정 확인\n\n"
+                "설정 변경 (배포 없이 즉시 반영):\n"
+                "/setbuy 250000 — 1회 매수금액 변경\n"
+                "/setmax 4 — 최대 보유 종목수 변경\n"
+                "/setminprofit 1000 — 최소 순수익 기준 변경"
             )
         else:
             # ── 자연어 → Jarvis AI 대화 ──────────────────
             await self._cmd_chat(text, reply)
+
+    async def _publish_runtime_config(self):
+        """런타임설정을 DB에 저장하고 변경 신호 발행 (배포 없이 즉시 반영)"""
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE strategy_config SET params=$1, updated_at=NOW() "
+                "WHERE bot='crypto_trader' AND name='런타임설정'",
+                json.dumps(self.runtime_config)
+            )
+        try:
+            await cache.client.publish("strategy_changes", "crypto_runtime_update")
+        except Exception as e:
+            logger.warning("설정 변경 알림 발행 실패: %s", e)
+
+    async def _cmd_show_config(self, reply):
+        rt = self.runtime_config
+        await reply(
+            "⚙️ <b>현재 매매 설정</b>\n\n"
+            f"1회 매수금액: {rt['buy_amount_krw']:,}원\n"
+            f"최대 보유종목: {rt['max_positions']}개\n"
+            f"최소 순수익: {rt['min_net_profit']:,}원\n\n"
+            "변경: /setbuy /setmax /setminprofit"
+        )
+
+    async def _cmd_set_buy_amount(self, text: str, reply):
+        parts = text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await reply("사용법: /setbuy 250000  (1회 매수금액, 원 단위)")
+            return
+        value = int(parts[1])
+        # 안전 범위: 5만원 ~ 200만원
+        if not (50_000 <= value <= 2_000_000):
+            await reply(f"⚠️ {value:,}원은 허용 범위(5만~200만원)를 벗어나 적용하지 않았어.")
+            return
+        self.runtime_config["buy_amount_krw"] = value
+        await self._publish_runtime_config()
+        await reply(f"✅ 1회 매수금액을 {value:,}원으로 변경했어 (배포 없이 즉시 반영)")
+
+    async def _cmd_set_max_positions(self, text: str, reply):
+        parts = text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await reply("사용법: /setmax 4  (최대 보유 종목수)")
+            return
+        value = int(parts[1])
+        # 안전 범위: 1~10개
+        if not (1 <= value <= 10):
+            await reply(f"⚠️ {value}개는 허용 범위(1~10개)를 벗어나 적용하지 않았어.")
+            return
+        self.runtime_config["max_positions"] = value
+        await self._publish_runtime_config()
+        await reply(f"✅ 최대 보유 종목수를 {value}개로 변경했어 (배포 없이 즉시 반영)")
+
+    async def _cmd_set_min_profit(self, text: str, reply):
+        parts = text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await reply("사용법: /setminprofit 1000  (최소 순수익, 원 단위)")
+            return
+        value = int(parts[1])
+        # 안전 범위: 0 ~ 5만원
+        if not (0 <= value <= 50_000):
+            await reply(f"⚠️ {value:,}원은 허용 범위(0~5만원)를 벗어나 적용하지 않았어.")
+            return
+        self.runtime_config["min_net_profit"] = value
+        await self._publish_runtime_config()
+        await reply(f"✅ 최소 순수익 기준을 {value:,}원으로 변경했어 (배포 없이 즉시 반영)")
 
     async def _cmd_chat(self, text: str, reply):
         """자연어 질문 → 현재 데이터 수집 → Jarvis AI → 답변"""

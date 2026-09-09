@@ -365,6 +365,10 @@ class StockTrader:
                                 except Exception:
                                     pass
                                 continue
+                            if await self._recently_sold(symbol):
+                                logger.info(f"⏭️ [{symbol}] 최근 10분 내 매도 기록 있음 — KIS 잔고 반영 지연으로 판단, 재시도 스킵")
+                                self.positions.pop(symbol, None)
+                                continue
                             logger.info(f"⚡ [{symbol}] {direction} 감지: {pnl_rate:+.1f}% → Jarvis 판단")
                             await self._jarvis_exit_check(
                                 symbol=symbol,
@@ -377,6 +381,23 @@ class StockTrader:
                 logger.debug(f"가격 모니터 오류: {e}")
 
             await asyncio.sleep(3)
+
+    async def _recently_sold(self, symbol: str) -> bool:
+        """최근 10분 내 이 종목 SELL 체결 기록이 있는지 확인
+        (KIS 잔고 반영 지연으로 이미 판 종목이 self.positions에 잠깐 남아있는 경우
+         중복 매도 시도를 막기 위함 — 매도 성공 직후 몇 분간 재시도 방지)"""
+        try:
+            async with db.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT 1 FROM trade_history
+                    WHERE bot='stock_trader' AND symbol=$1 AND side='SELL'
+                      AND created_at >= NOW() - INTERVAL '10 minutes'
+                    LIMIT 1
+                """, symbol)
+            return row is not None
+        except Exception as e:
+            logger.debug(f"최근 매도 이력 확인 실패 [{symbol}]: {e}")
+            return False
 
     async def _jarvis_exit_check(self, symbol: str, cur_price: int,
                                   avg_price: int, pnl_rate: float, qty: int):

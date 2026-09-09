@@ -55,7 +55,10 @@ NIGHT_PARAMS = {"rsi_entry": 20, "take_profit": 0.03, "stop_loss": -0.05}
 # 주말 보수 모드 (거래량 적어 하락 위험 큼)
 WEEKEND_DAY_RSI   = 30    # 주말 낮: RSI 35→30 더 빡세게
 WEEKEND_NIGHT_BUY = False # 주말 야간(금·토 22시~): 매수 중단
-MIN_BUY_KRW  = 150_000   # 최소 매수금액 15만원
+BUY_AMOUNT_KRW   = 500_000  # 1회 매수 고정금액 50만원
+MAX_POSITIONS    = 4        # 최대 동시 보유 종목 수
+MIN_NET_PROFIT   = 1_000    # 매도 시 최소 순수익 (수수료 제외 1천원)
+UPBIT_FEE_RATE   = 0.0005  # 업비트 수수료 0.05% (왕복 0.1%)
 
 # 코인 목록 자동 갱신 설정
 MAX_EXTRA_PAIRS   = 0           # 메이저 외 신규 코인 최대 개수 (0=메이저만, 아르고 등 부실코인 차단)
@@ -258,24 +261,28 @@ class CryptoTrader:
                     if qty <= 0 or cur_price * qty < 5000:
                         continue
 
-                    # 손절 — 현재 중단 (기본 false). 켜려면 CRYPTO_STOPLOSS_ENABLED=true
-                    stoploss_on = os.getenv("CRYPTO_STOPLOSS_ENABLED", "false").lower() == "true"
-                    if stoploss_on and pnl_rate <= sl:
+                    # ── 수수료 계산 ──────────────────────────────
+                    buy_amount  = float(pos.get("amount", avg_price * qty))
+                    fee_total   = buy_amount * UPBIT_FEE_RATE + cur_price * qty * UPBIT_FEE_RATE
+                    pnl_krw     = (cur_price - avg_price) * qty
+                    net_profit  = pnl_krw - fee_total  # 수수료 제외 순수익
+
+                    # ── 손절 (-5%) — 항상 활성화 ────────────────────
+                    if pnl_rate <= sl:
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
-                            pnl_krw = (cur_price - avg_price) * qty
                             await db.insert_trade(
                                 bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
                                 price=cur_price, quantity=qty, amount=cur_price * qty,
                                 strategy="손절", pnl=pnl_krw,
                             )
-                            logger.info("🛑 손절 [%s] %.1f%% | %s원", pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
+                            logger.info("🛑 손절 [%s] %.1f%% | 손실 %s원 (수수료포함)", pair, pnl_rate*100, f"{net_profit:+,.0f}")
                             await cache.client.delete("crypto:peak:" + pair)
                             self.positions.pop(pair, None)
                         continue
 
                     # ── 하이브리드 트레일링 익절 ──────────────────
-                    # tp% ~ +1.5% : 트레일링 발동 전, 도달 즉시 익절 (작은 익절 확보)
+                    # tp% ~ +1.5% : 트레일링 발동 전, 도달 즉시 익절 (수수료 제외 순수익 1천원 이상)
                     # +1.5% 이상  : 트레일링 발동 → 고점 추적, 고점 -0.7% 시 매도
                     peak_key = "crypto:peak:" + pair
 
@@ -291,18 +298,17 @@ class CryptoTrader:
                             peak_rate = pnl_rate
                             await cache.client.setex(peak_key, 86400, str(peak_rate))
 
-                        # 고점 대비 TRAIL_GAP 이상 하락 → 매도
+                        # 고점 대비 TRAIL_GAP 이상 하락 → 매도 (순수익 무조건 실행)
                         if pnl_rate <= peak_rate - TRAIL_GAP:
                             result = await self.trader.sell_market(pair, qty)
                             if result.get("success"):
-                                pnl_krw = (cur_price - avg_price) * qty
                                 await db.insert_trade(
                                     bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
                                     price=cur_price, quantity=qty, amount=cur_price * qty,
                                     strategy="트레일링익절", pnl=pnl_krw,
                                 )
-                                logger.info("🎯 트레일링익절 [%s] %.1f%% (고점%.1f%%) | %s원",
-                                            pair, pnl_rate*100, peak_rate*100, f"{pnl_krw:+,.0f}")
+                                logger.info("🎯 트레일링익절 [%s] %.1f%% (고점%.1f%%) | 순수익 %s원",
+                                            pair, pnl_rate*100, peak_rate*100, f"{net_profit:+,.0f}")
                                 await cache.client.delete(peak_key)
                                 self.positions.pop(pair, None)
                         else:
@@ -310,18 +316,21 @@ class CryptoTrader:
                                         pair, pnl_rate*100, peak_rate*100)
                         continue
 
-                    # tp ~ +1.5% : 일반 익절 (트레일링 발동 전)
+                    # tp ~ +1.5% : 일반 익절 — 수수료 제외 순수익 1천원 이상일 때만
                     if tp <= pnl_rate < TRAIL_ACTIVATE:
+                        if net_profit < MIN_NET_PROFIT:
+                            logger.debug("⏸ [%s] 익절 조건 충족 but 순수익 %s원 < %s원 → 대기",
+                                        pair, f"{net_profit:,.0f}", f"{MIN_NET_PROFIT:,.0f}")
+                            continue
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
-                            pnl_krw = (cur_price - avg_price) * qty
                             label = "야간익절" if night else "단타익절"
                             await db.insert_trade(
                                 bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
                                 price=cur_price, quantity=qty, amount=cur_price * qty,
                                 strategy=label, pnl=pnl_krw,
                             )
-                            logger.info("🎯 %s [%s] %.1f%% | %s원", label, pair, pnl_rate*100, f"{pnl_krw:+,.0f}")
+                            logger.info("🎯 %s [%s] %.1f%% | 순수익 %s원", label, pair, pnl_rate*100, f"{net_profit:+,.0f}")
                             await cache.client.delete(peak_key)
                             self.positions.pop(pair, None)
                         continue
@@ -390,9 +399,31 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
+        # 최대 종목 수 초과 시 매수 중단
+        if len(self.positions) >= MAX_POSITIONS:
+            logger.info("🚫 최대 보유 종목 %d개 도달 → 신규 매수 중단", MAX_POSITIONS)
+            await self._update_status(krw_balance)
+            return
+
+        # 잔고 부족 시 매수 중단
+        if krw_balance < BUY_AMOUNT_KRW:
+            logger.info("💸 KRW 잔고 부족 (%s원 < %s원) → 매수 중단",
+                        f"{krw_balance:,.0f}", f"{BUY_AMOUNT_KRW:,.0f}")
+            await self._update_status(krw_balance)
+            return
+
         for pair in self.active_pairs:
+            # ── 중복 매수 완전 차단 ──
             if pair in self.positions:
                 continue
+
+            # ── 최대 종목 수 체크 (루프 중에도) ──
+            if len(self.positions) >= MAX_POSITIONS:
+                break
+
+            # ── 잔고 체크 ──
+            if krw_balance < BUY_AMOUNT_KRW:
+                break
 
             rows = await db.get_recent_ohlcv(pair, limit=50, asset="crypto")
             if len(rows) < 40:
@@ -420,26 +451,12 @@ class CryptoTrader:
             if cur_price <= 0:
                 continue
 
-            if rsi_now <= 20:
-                ratio, strength = 0.40, "강함(RSI%.0f)" % rsi_now
-            elif rsi_now <= 25:
-                ratio, strength = 0.25, "보통(RSI%.0f)" % rsi_now
-            elif rsi_now <= 30:
-                ratio, strength = 0.15, "약함(RSI%.0f)" % rsi_now
-            else:
-                ratio, strength = 0.10, "최소(RSI%.0f)" % rsi_now
-
-            # 잔고가 15만원 이하면 잔고 전액 매수 (기회 놓치지 않음)
-            if krw_balance < MIN_BUY_KRW:
-                actual_amount = krw_balance * 0.99   # 수수료 여유분
-                logger.info("⚡ [%s] 잔고 전액 매수 모드 (%s원)", pair, f"{actual_amount:,.0f}")
-            else:
-                actual_amount = max(krw_balance * ratio, MIN_BUY_KRW)
-                actual_amount = min(actual_amount, krw_balance * 0.95)
-
+            # ── 50만원 고정 매수 ──
+            actual_amount = BUY_AMOUNT_KRW
+            fee = actual_amount * UPBIT_FEE_RATE * 2  # 왕복 수수료
             name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
-            logger.info("📈 %s 신호 [%s] RSI:%.1f 금액:%s원 (%s)",
-                        mode_label, name, rsi_now, f"{actual_amount:,.0f}", strength)
+            logger.info("📈 %s 신호 [%s] RSI:%.1f 금액:%s원 (수수료약 %s원)",
+                        mode_label, name, rsi_now, f"{actual_amount:,.0f}", f"{fee:,.0f}")
 
             if trade_mode == "swing":
                 execute = await self._ask_jarvis(pair=pair, rsi=rsi_now, cur_price=cur_price,
@@ -458,8 +475,6 @@ class CryptoTrader:
                 self.positions[pair] = {"pair":pair,"avg_price":cur_price,"qty":qty,"amount":actual_amount}
                 krw_balance -= actual_amount
                 logger.info("✅ 매수 [%s] %s원 × %.6f = %s원", name, f"{cur_price:,.0f}", qty, f"{actual_amount:,.0f}")
-                if krw_balance < MIN_BUY_KRW:
-                    break
             else:
                 logger.error("❌ 매수 실패 [%s]: %s", pair, result.get("error","알 수 없음"))
 

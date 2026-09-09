@@ -279,7 +279,9 @@ class KISTrader:
     # ── 매도 주문 ───────────────────────────────────────
     async def sell(self, symbol: str, price: int, qty: int) -> dict:
         """시장가 매도 (토큰 만료 시 자동 재시도)
-        지정가(00)는 가격이 안 맞으면 미체결/거부될 수 있어 매도는 시장가(01)로 확실히 체결"""
+        지정가(00)는 가격이 안 맞으면 미체결/거부될 수 있어 매도는 시장가(01)로 확실히 체결
+        주문 접수(rt_cd=0)는 '접수'만 의미하고 실제 체결을 보장하지 않으므로,
+        접수 후 실제 체결 수량을 재조회해 진짜 성공 여부를 판정한다."""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0801U" if config.KIS_IS_PAPER else "TTTC0801U"
         payload = {
@@ -296,12 +298,60 @@ class KISTrader:
           ) as resp:
             data = await resp.json()
             rt_cd = data.get("rt_cd")
-            if rt_cd == "0":
-                logger.info(f"✅ 매도 체결: {symbol} {price:,}원 × {qty}주")
-                return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
-            else:
-                logger.error(f"❌ 매도 실패: {symbol} — {data.get('msg1')}")
+            if rt_cd != "0":
+                logger.error(f"❌ 매도 주문 접수 실패: {symbol} — {data.get('msg1')}")
                 return {"success": False, "error": data.get("msg1")}
+
+            order_no = data.get("output", {}).get("ODNO")
+            logger.info(f"📝 매도 주문 접수: {symbol} × {qty}주 (주문번호 {order_no}) — 체결 확인 중")
+
+        # 접수 성공 ≠ 체결 성공. 잠시 대기 후 실제 체결 수량을 재조회해 확정한다.
+        import asyncio as _aio
+        await _aio.sleep(1.5)
+        filled_qty = await self._get_filled_qty(order_no, symbol)
+        if filled_qty is None:
+            # 체결 조회 자체가 실패하면 판정 불가 — 접수는 됐으니 보수적으로 성공 처리하되 표시
+            logger.warning(f"⚠️ 체결 확인 API 실패 [{symbol}] — 접수 결과만으로 판정")
+            return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
+        if filled_qty <= 0:
+            logger.error(f"❌ 매도 미체결: {symbol} 주문 {qty}주 접수됐으나 체결 0주")
+            return {"success": False, "error": f"주문 접수됐으나 미체결(체결수량 0)"}
+        if filled_qty < qty:
+            logger.warning(f"⚠️ 매도 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
+            return {"success": True, "order_no": order_no, "filled_qty": filled_qty, "partial": True}
+        logger.info(f"✅ 매도 체결 확인: {symbol} {price:,}원 × {filled_qty}주")
+        return {"success": True, "order_no": order_no, "filled_qty": filled_qty}
+
+    async def _get_filled_qty(self, order_no: str, symbol: str):
+        """당일 주문체결내역조회로 특정 주문번호의 실제 체결수량 확인. 실패 시 None."""
+        if not order_no:
+            return None
+        try:
+            today = datetime.now().strftime("%Y%m%d")
+            tr_id = "VTTC0081R" if config.KIS_IS_PAPER else "TTTC0081R"
+            params = {
+                "CANO": self._cano, "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                "INQR_STRT_DT": today, "INQR_END_DT": today,
+                "SLL_BUY_DVSN_CD": "01", "INQR_DVSN": "00",
+                "PDNO": symbol, "CCLD_DVSN": "00",
+                "ORD_GNO_BRNO": "", "ODNO": order_no,
+                "INQR_DVSN_3": "00", "INQR_DVSN_1": "",
+                "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+            }
+            async with self._new_session() as sess:
+              async with sess.get(
+                f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                headers=self._headers(tr_id), params=params
+              ) as resp:
+                data = await resp.json()
+            rows = data.get("output1", []) or []
+            for row in rows:
+                if row.get("odno") == order_no:
+                    return int(row.get("tot_ccld_qty", 0) or 0)
+            return 0
+        except Exception as e:
+            logger.warning(f"체결 조회 오류 [{symbol}]: {e}")
+            return None
 
     # ── 일봉 데이터 조회 ────────────────────────────────
     async def get_daily_ohlcv(self, symbol: str, start: str, end: str) -> list:

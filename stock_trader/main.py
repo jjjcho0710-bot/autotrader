@@ -550,10 +550,12 @@ class StockTrader:
                         await asyncio.sleep(1.2)
                         result = await self.trader.sell(symbol, cur_price, qty)
                     if result.get("success"):
+                        _fq = result.get("filled_qty", qty)
+                        _fpnl = int((cur_price - avg_price) * _fq)
                         await db.insert_trade(
                             bot="stock_trader", asset_type="stock",
-                            symbol=symbol, side="SELL", price=cur_price, quantity=qty,
-                            amount=cur_price * qty, strategy=f"{strat_name}_손절", pnl=pnl,
+                            symbol=symbol, side="SELL", price=cur_price, quantity=_fq,
+                            amount=cur_price * _fq, strategy=f"{strat_name}_손절", pnl=_fpnl,
                         )
                         await self._invalidate_position_cache()
                         try:
@@ -600,6 +602,7 @@ class StockTrader:
                     half_qty = qty // 2
                     result = await self.trader.sell(symbol, cur_price, half_qty)
                     if result["success"]:
+                        half_qty = result.get("filled_qty", half_qty)
                         half_pnl = int((cur_price - avg_price) * half_qty)
                         await db.insert_trade(
                             bot="stock_trader", asset_type="stock",
@@ -654,6 +657,7 @@ class StockTrader:
                             finally:
                                 self._selling.discard(symbol)
                             if result.get("success"):
+                                sell_qty = result.get("filled_qty", sell_qty)
                                 s_pnl = int((cur_price - avg_price) * sell_qty)
                                 await db.insert_trade(
                                     bot="stock_trader", asset_type="stock",

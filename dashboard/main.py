@@ -4737,6 +4737,21 @@ async def _summarize_old_chats():
         logger.error(f"대화 요약 오류: {e}")
 
 
+
+@app.post("/api/crypto/chat")
+async def crypto_chat(body: dict):
+    """코인봇 전용 채팅 — 주식봇 설정변경/ACTION 로직을 전혀 거치지 않는 순수 질의응답.
+    Open-WebUI를 직접 호출하며 'jarvis_crypto' 세션으로 대화 기록만 분리 유지."""
+    user_msg = (body.get("message") or "").strip()
+    if not user_msg:
+        return {"success": False, "error": "메시지가 없어요"}
+    try:
+        reply = await _ask_openwebui(user_msg, session_id="jarvis_crypto")
+        return {"success": True, "reply": reply}
+    except Exception as e:
+        logger.error(f"코인봇 채팅 오류: {e}")
+        return {"success": False, "error": str(e)}
+
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
     """채팅 엔트리 — 웹 대화는 텔레그램으로 미러 전달"""
@@ -4753,7 +4768,7 @@ async def jarvis_chat(body: dict):
 
 
 async def _jarvis_chat_impl(body: dict):
-    """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유)"""
+    """Jarvis AI 채팅 — Open-WebUI 통해서 (텔레그램과 대화 공유). 주식봇 전용."""
     user_msg = body.get("message", "").strip()
     # 텔레그램과 완전히 같은 세션 공유
     session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")

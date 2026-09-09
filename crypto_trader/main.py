@@ -128,6 +128,10 @@ def _calc_rsi(prices: list, period: int = 14) -> float:
     return 100 - (100 / (1 + ag / al))
 
 
+# 연속 손절 감지 설정
+CONSEC_STOPLOSS_LIMIT = 3      # 연속 손절 N회 시 매수 일시 중단
+CONSEC_STOPLOSS_PAUSE = 60 * 60  # 중단 시간 (초) — 1시간
+
 class CryptoTrader:
     def __init__(self):
         self.running          = False
@@ -135,8 +139,11 @@ class CryptoTrader:
         self.positions        = {}
         self.strategies       = {}
         self.report_sent_date = None
-        self.active_pairs     = list(MAJOR_PAIRS)   # 메이저 20개 + 신규(스캔으로 추가)
-        self.extra_pairs      = []                  # 스캔으로 추가된 신규 코인
+        self.active_pairs     = list(MAJOR_PAIRS)
+        self.extra_pairs      = []
+        # 연속 손절 감지
+        self.consec_stoploss  = 0           # 연속 손절 횟수
+        self.buy_paused_until = None        # 매수 중단 해제 시각
 
     async def start(self):
         self.running = True
@@ -297,7 +304,7 @@ class CryptoTrader:
                     pnl_krw     = (cur_price - avg_price) * qty
                     net_profit  = pnl_krw - fee_total  # 수수료 제외 순수익
 
-                    # ── 손절 (-5%) — 항상 활성화 ────────────────────
+                    # ── 손절 (-% 시간대별) — 항상 활성화 ────────────────
                     if pnl_rate <= sl:
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
@@ -306,9 +313,26 @@ class CryptoTrader:
                                 price=cur_price, quantity=qty, amount=cur_price * qty,
                                 strategy="손절", pnl=pnl_krw,
                             )
-                            logger.info("🛑 손절 [%s] %.1f%% | 손실 %s원 (수수료포함)", pair, pnl_rate*100, f"{net_profit:+,.0f}")
+                            logger.info("🛑 손절 [%s] %.1f%% | 손실 %s원", pair, pnl_rate*100, f"{net_profit:+,.0f}")
                             await cache.client.delete("crypto:peak:" + pair)
                             self.positions.pop(pair, None)
+
+                            # ── 연속 손절 감지 ──────────────────────
+                            self.consec_stoploss += 1
+                            logger.warning("⚠️ 연속 손절 %d회", self.consec_stoploss)
+                            if self.consec_stoploss >= CONSEC_STOPLOSS_LIMIT:
+                                from common.telegram import send_crypto
+                                pause_until = datetime.now(KST) + timedelta(seconds=CONSEC_STOPLOSS_PAUSE)
+                                self.buy_paused_until = pause_until
+                                self.consec_stoploss  = 0  # 카운터 초기화
+                                pause_str = pause_until.strftime("%H:%M")
+                                logger.warning("🚨 연속 손절 %d회 → 매수 %s까지 중단",
+                                               CONSEC_STOPLOSS_LIMIT, pause_str)
+                                await send_crypto(
+                                    f"🚨 <b>연속 손절 {CONSEC_STOPLOSS_LIMIT}회 감지</b>\n"
+                                    f"신규 매수 {pause_str}까지 1시간 중단\n"
+                                    f"보유 포지션 손절/익절은 계속 작동"
+                                )
                         continue
 
                     # ── 하이브리드 트레일링 익절 ──────────────────
@@ -341,6 +365,7 @@ class CryptoTrader:
                                             pair, pnl_rate*100, peak_rate*100, f"{net_profit:+,.0f}")
                                 await cache.client.delete(peak_key)
                                 self.positions.pop(pair, None)
+                                self.consec_stoploss = 0  # 익절 시 연속 손절 카운터 리셋
                         else:
                             logger.info("📈 트레일링 추적중 [%s] 현재%.1f%% 고점%.1f%%",
                                         pair, pnl_rate*100, peak_rate*100)
@@ -365,6 +390,7 @@ class CryptoTrader:
                             logger.info("🎯 %s [%s] %.1f%% | 순수익 %s원", label, pair, pnl_rate*100, f"{net_profit:+,.0f}")
                             await cache.client.delete(peak_key)
                             self.positions.pop(pair, None)
+                            self.consec_stoploss = 0  # 익절 시 연속 손절 카운터 리셋
                         continue
 
             except Exception as e:
@@ -437,6 +463,18 @@ class CryptoTrader:
             logger.info("📉 주말 야간 보수 모드 → 신규 매수 중단 (거래량 최저)")
             await self._update_status(krw_balance)
             return
+
+        # ── 연속 손절로 인한 매수 일시 중단 체크 ──────────
+        if self.buy_paused_until and datetime.now(KST) < self.buy_paused_until:
+            remain = int((self.buy_paused_until - datetime.now(KST)).total_seconds() / 60)
+            logger.info("⏸ 연속 손절 매수 중단 중 (해제까지 %d분)", remain)
+            await self._update_status(krw_balance)
+            return
+        elif self.buy_paused_until and datetime.now(KST) >= self.buy_paused_until:
+            self.buy_paused_until = None
+            logger.info("✅ 연속 손절 중단 해제 → 매수 재개")
+            from common.telegram import send_crypto
+            await send_crypto("✅ <b>매수 재개</b> — 연속 손절 중단 해제")
 
         # ── BTC 급락 시 전체 매수 차단 ──────────────────
         if await self._is_btc_crashing():

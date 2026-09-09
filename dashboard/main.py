@@ -5890,6 +5890,95 @@ async def _get_stock_positions_raw():
         return {"success": False, "error": str(e), "data": []}
 
 
+
+@app.get("/api/crypto/stats")
+async def get_crypto_stats():
+    """코인 수익 통계 — 일별/주별/코인별 성과"""
+    try:
+        async with db_pool.acquire() as conn:
+            # 일별 수익 (최근 14일)
+            daily = await conn.fetch("""
+                SELECT DATE(created_at AT TIME ZONE 'Asia/Seoul') AS d,
+                       SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS pnl,
+                       COUNT(CASE WHEN side='BUY' THEN 1 END)  AS buys,
+                       COUNT(CASE WHEN side='SELL' THEN 1 END) AS sells,
+                       COUNT(CASE WHEN side='SELL' AND pnl > 0 THEN 1 END) AS wins,
+                       COUNT(CASE WHEN side='SELL' AND pnl < 0 THEN 1 END) AS losses
+                FROM trade_history
+                WHERE bot='crypto_trader'
+                  AND created_at >= NOW() - INTERVAL '14 days'
+                GROUP BY d ORDER BY d
+            """)
+
+            # 코인별 성과 (최근 30일)
+            by_coin = await conn.fetch("""
+                SELECT symbol,
+                       SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS total_pnl,
+                       COUNT(CASE WHEN side='SELL' THEN 1 END) AS trades,
+                       COUNT(CASE WHEN side='SELL' AND pnl > 0 THEN 1 END) AS wins,
+                       COUNT(CASE WHEN side='SELL' AND pnl < 0 THEN 1 END) AS losses
+                FROM trade_history
+                WHERE bot='crypto_trader'
+                  AND created_at >= NOW() - INTERVAL '30 days'
+                GROUP BY symbol ORDER BY total_pnl DESC
+            """)
+
+            # 오늘 요약
+            today_row = await conn.fetchrow("""
+                SELECT SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS pnl,
+                       COUNT(CASE WHEN side='BUY' THEN 1 END)  AS buys,
+                       COUNT(CASE WHEN side='SELL' THEN 1 END) AS sells,
+                       COUNT(CASE WHEN side='SELL' AND pnl > 0 THEN 1 END) AS wins,
+                       COUNT(CASE WHEN side='SELL' AND pnl < 0 THEN 1 END) AS losses
+                FROM trade_history
+                WHERE bot='crypto_trader'
+                  AND created_at >= NOW() AT TIME ZONE 'Asia/Seoul' - INTERVAL '1 day'
+                  AND DATE(created_at AT TIME ZONE 'Asia/Seoul') = CURRENT_DATE AT TIME ZONE 'Asia/Seoul'
+            """)
+
+            # 누적 손익
+            total_row = await conn.fetchrow("""
+                SELECT SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS total_pnl
+                FROM trade_history WHERE bot='crypto_trader'
+            """)
+
+        return {
+            "success": True,
+            "today": {
+                "pnl":    float(today_row["pnl"] or 0),
+                "buys":   today_row["buys"]   or 0,
+                "sells":  today_row["sells"]  or 0,
+                "wins":   today_row["wins"]   or 0,
+                "losses": today_row["losses"] or 0,
+            },
+            "total_pnl": float(total_row["total_pnl"] or 0),
+            "daily": [
+                {
+                    "date":   str(r["d"]),
+                    "pnl":    float(r["pnl"] or 0),
+                    "buys":   r["buys"]   or 0,
+                    "sells":  r["sells"]  or 0,
+                    "wins":   r["wins"]   or 0,
+                    "losses": r["losses"] or 0,
+                }
+                for r in daily
+            ],
+            "by_coin": [
+                {
+                    "symbol":    r["symbol"],
+                    "name":      COIN_NAMES.get(r["symbol"], r["symbol"].replace("KRW-","")),
+                    "total_pnl": float(r["total_pnl"] or 0),
+                    "trades":    r["trades"] or 0,
+                    "wins":      r["wins"]   or 0,
+                    "losses":    r["losses"] or 0,
+                    "win_rate":  round(r["wins"] / r["trades"] * 100, 1) if r["trades"] else 0,
+                }
+                for r in by_coin
+            ],
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.get("/api/positions/crypto")
 async def get_crypto_positions():
     """업비트 코인 보유 포지션 + 계좌 요약"""

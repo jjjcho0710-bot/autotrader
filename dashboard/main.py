@@ -946,46 +946,39 @@ async def _trigger_ohlcv_collect():
 
 
 async def _jarvis_closing_report():
-    """장 마감 후 오늘 거래 결과 + 내일 전략 업데이트 텔레그램 리포트"""
+    """장 마감 후 오늘 거래 결과 텔레그램 리포트 (실제 KIS 계좌 기준)"""
     try:
         from datetime import timezone, timedelta
         KST = timezone(timedelta(hours=9))
         now_kst = datetime.now(KST)
-        today_str = now_kst.strftime("%Y-%m-%d")
 
         if not db_pool:
             return
 
         async with db_pool.acquire() as conn:
-            # 오늘 거래 실적
             trades = await conn.fetch("""
-                SELECT symbol, side, price, quantity, amount, pnl, strategy, created_at
+                SELECT symbol, side, price, quantity, amount, pnl, strategy, ts
                 FROM trade_history
                 WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = $1
                   AND asset_type = 'stock'
                 ORDER BY ts DESC
             """, now_kst.date())
-
-            # watchlist 현황
             wl_count = await conn.fetchval("SELECT COUNT(*) FROM watchlist WHERE is_active=TRUE")
 
-            # 보유 포지션 (trades 기반 집계)
-            positions = await conn.fetch("""
-                SELECT symbol,
-                       SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) as net_qty,
-                       AVG(CASE WHEN side='BUY' THEN price END) as avg_buy
-                FROM trade_history
-                WHERE asset_type='stock'
-                GROUP BY symbol
-                HAVING SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) > 0
-            """)
+        # 보유 현황은 추정치가 아닌 실제 KIS 계좌 조회로 (DB 누적 추정은 부정확할 수 있음)
+        real_positions = []
+        try:
+            pos_res = await get_stock_positions()
+            if pos_res.get("success"):
+                real_positions = pos_res.get("data") or []
+        except Exception:
+            pass
 
-        # 오늘 거래 요약
         buy_trades = [t for t in trades if t["side"] == "BUY"]
         sell_trades = [t for t in trades if t["side"] == "SELL"]
         total_pnl = sum(float(t["pnl"] or 0) for t in sell_trades)
 
-        msg = f"📊 Jarvis 일일 결산 [{now_kst.strftime('%m/%d')}]\n"
+        msg = f"📊 <b>Jarvis 마감 결산</b> [{now_kst.strftime('%m/%d')}]\n"
         msg += f"{'='*25}\n"
 
         if trades:
@@ -994,23 +987,18 @@ async def _jarvis_closing_report():
                 pnl_emoji = "📈" if total_pnl >= 0 else "📉"
                 msg += f"{pnl_emoji} 실현손익: {total_pnl:+,.0f}원\n"
             if buy_trades:
-                buy_list = "\n".join([f"  🟢 {_stock_code_cache.get(t['symbol']) or t['symbol']} {int(t['price']):,}원×{int(t['quantity'])}주" 
+                buy_list = "\n".join([f"  🟢 {_stock_code_cache.get(t['symbol']) or t['symbol']} {int(t['price']):,}원×{int(t['quantity'])}주"
                                        for t in buy_trades[:5]])
                 msg += f"신규 매수:\n{buy_list}\n"
         else:
             msg += "오늘 거래 없음\n"
 
-        msg += f"\n📋 watchlist: {wl_count}종목"
-        if positions:
-            msg += f" | 보유: {len(positions)}종목"
-
-        # 내일 전략 방향
-        msg += f"\n\n🔮 내일 전략 [{(now_kst + timedelta(days=1)).strftime('%m/%d')}]\n"
-        msg += f"• 08:30 전종목 스캔 (RSI+모멘텀+거래량)\n"
-        msg += f"• ML 재학습 완료 종목 우선 매매\n"
-        msg += f"• 손절 -2% / MA 데드크로스 매도 유지\n"
-        msg += f"• 최대 보유 10종목 제한\n"
-        msg += f"\n✅ ML 자동 학습 진행 중..."
+        msg += f"\n📋 감시종목 {wl_count}개 | 실보유 {len(real_positions)}종목"
+        if real_positions:
+            hold_list = "\n".join(
+                f"  · {p.get('name') or p.get('symbol')} {p.get('qty')}주 ({p.get('pnl_rate', 0):+.1f}%)"
+                for p in real_positions[:8])
+            msg += f"\n{hold_list}"
 
         await _send_telegram(msg, broadcast=True)
         logger.info("✅ Jarvis 마감 리포트 전송 완료")

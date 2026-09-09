@@ -6701,6 +6701,23 @@ async def jarvis_signal(request: Request):
             except Exception:
                 pass
 
+        # 당일 2회 이상 손절 → 신규 매수 강제 차단 (지금까지 프롬프트 텍스트로만 존재해
+        # AI 판단에만 의존했던 안전장치를 코드 레벨에서 강제 집행으로 전환)
+        if bot == "stock_trader" and action in ("buy", "BUY"):
+            try:
+                async with db_pool.acquire() as conn:
+                    _sc = await conn.fetchval("""
+                        SELECT COUNT(*) FROM trade_history
+                        WHERE bot='stock_trader' AND side='SELL' AND strategy LIKE '%손절%'
+                          AND DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                    """)
+                if int(_sc or 0) >= 2:
+                    logger.info(f"🛑 당일 손절 {_sc}회 — 신규 매수 강제 차단: {symbol}")
+                    return {"success": True, "executed": False, "blocked": "daily_stop_loss_limit"}
+            except Exception as e:
+                logger.error(f"당일 손절횟수 확인 실패(안전을 위해 매수 차단): {e}")
+                return {"success": False, "error": "안전장치 확인 실패로 매수 보류"}
+
         action_kr = "매수" if action == "buy" else "매도"
         token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
         chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID

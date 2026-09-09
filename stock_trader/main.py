@@ -489,17 +489,20 @@ class StockTrader:
             return True, ""
 
     async def _daily_stop_count(self) -> int:
-        """오늘 손절 횟수 (2회 이상이면 당일 신규 매수 중단)"""
+        """오늘 손절 횟수 (2회 이상이면 당일 신규 매수 중단)
+        조회 자체가 실패하면 안전장치가 무력화된 것이므로, 실전에서는 통과(0)가 아니라
+        차단 방향(큰 값)으로 fail-safe 처리한다."""
         try:
             async with db.pool.acquire() as conn:
                 n = await conn.fetchval("""
                     SELECT COUNT(*) FROM trade_history
                     WHERE bot='stock_trader' AND side='SELL' AND strategy LIKE '%손절%'
-                      AND DATE(created_at AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                      AND DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
                 """)
             return int(n or 0)
-        except Exception:
-            return 0
+        except Exception as e:
+            logger.error(f"⚠️ 당일 손절횟수 조회 실패 — 안전을 위해 신규매수 차단 처리: {e}")
+            return 999
 
     # ── 매매 사이클 ───────────────────────────────────────
     async def _run_cycle(self):

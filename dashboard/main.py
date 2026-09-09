@@ -2019,6 +2019,63 @@ async def _jarvis_weekly_preview():
         logger.error(f"주간 예습 오류: {e}")
 
 
+@app.api_route("/api/jarvis/reconcile_trades", methods=["GET", "POST"])
+async def reconcile_trades_with_kis():
+    """오늘자 trade_history를 실제 KIS 계좌와 대조해 불일치 기록을 찾아 표시(정정)한다.
+    체결확인 로직(fix b2d7192) 배포 이전에 생성된 '접수=성공 오판정' 잔재 정리용, 일회성 점검."""
+    try:
+        real = await get_stock_positions()
+        real_symbols = {p["symbol"]: p for p in (real.get("data") or [])}
+
+        async with db_pool.acquire() as conn:
+            today_trades = await conn.fetch("""
+                SELECT id, symbol, side, price, quantity, amount, pnl, strategy, ts
+                FROM trade_history
+                WHERE asset_type='stock' AND DATE(ts AT TIME ZONE 'Asia/Seoul') = CURRENT_DATE
+                ORDER BY ts
+            """)
+
+        findings = []
+        for t in today_trades:
+            sym = t["symbol"]
+            nm = _stock_code_cache.get(sym) or sym
+            if t["side"] == "BUY" and sym not in real_symbols:
+                findings.append({
+                    "id": t["id"], "issue": "매수 기록 있으나 실계좌에 보유 없음(가짜 매수 의심)",
+                    "symbol": sym, "name": nm, "side": "BUY",
+                    "qty": float(t["quantity"]), "amount": float(t["amount"] or 0), "ts": t["ts"].isoformat(),
+                })
+            elif t["side"] == "SELL":
+                # 매도 기록이 있는데, 그 종목이 실계좌에 매도 시도한 수량만큼 안 줄었는지는
+                # 정확히 알 수 없으므로(부분매도 가능), 오늘 SELL 자체를 참고용으로 표시만 함
+                findings.append({
+                    "id": t["id"], "issue": "오늘 매도 기록 (실계좌 잔량과 대조 필요)",
+                    "symbol": sym, "name": nm, "side": "SELL",
+                    "qty": float(t["quantity"]), "pnl": float(t["pnl"] or 0), "ts": t["ts"].isoformat(),
+                    "real_qty_now": real_symbols.get(sym, {}).get("qty"),
+                })
+
+        return {"success": True, "today_trade_count": len(today_trades),
+                "real_position_count": len(real_symbols), "findings": findings,
+                "note": "findings의 각 id를 확인 후 /api/jarvis/reconcile_trades/delete?id=N 으로 개별 삭제 가능"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.api_route("/api/jarvis/reconcile_trades/delete", methods=["GET", "POST"])
+async def reconcile_trades_delete(id: int):
+    """reconcile_trades에서 확인된 오염 레코드를 id 지정 삭제 (되돌릴 수 없음, 신중히 사용)"""
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM trade_history WHERE id=$1", id)
+            if not row:
+                return {"success": False, "error": "해당 id 없음"}
+            await conn.execute("DELETE FROM trade_history WHERE id=$1", id)
+        return {"success": True, "deleted": dict(row) | {"ts": row["ts"].isoformat()}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.api_route("/api/jarvis/knowledge/clean_placeholders", methods=["GET", "POST"])
 async def clean_knowledge_placeholders():
     """정제본에 잘못 저장된 자리채움 문구('없음/추후 추가 필요' 등) 제거"""

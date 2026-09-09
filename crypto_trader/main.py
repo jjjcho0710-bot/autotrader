@@ -61,9 +61,16 @@ MIN_NET_PROFIT   = 1_000    # 매도 시 최소 순수익 (수수료 제외 1천
 UPBIT_FEE_RATE   = 0.0005  # 업비트 수수료 0.05% (왕복 0.1%)
 
 # 코인 목록 자동 갱신 설정
-MAX_EXTRA_PAIRS   = 0           # 메이저 외 신규 코인 최대 개수 (0=메이저만, 아르고 등 부실코인 차단)
-MIN_TRADE_VALUE   = 50_000_000_000   # 최소 24h 거래대금 500억
+MAX_EXTRA_PAIRS   = 10          # 메이저 외 거래량 상위 코인 최대 추가 개수
+MIN_TRADE_VALUE   = 100_000_000_000  # 최소 24h 거래대금 1000억 (잡코인 차단 강화)
 MIN_LISTING_DAYS  = 180         # 최소 상장 경과일 (6개월)
+TOP_N_SCAN        = 40          # 거래량 상위 N개 안에서만 선택 (잡코인 차단)
+
+# 블랙리스트 — 밈코인/부실코인/스테이블 제외
+COIN_BLACKLIST = {
+    "KRW-USDT","KRW-USDC","KRW-BUSD","KRW-DAI","KRW-TUSD",  # 스테이블
+    "KRW-SLX","KRW-RE","KRW-BORA","KRW-MED","KRW-CRE",      # 부실 전력
+}
 
 # 하이브리드 트레일링 익절 설정
 TRAIL_ACTIVATE    = 0.015       # +1.5% 넘으면 트레일링 발동
@@ -544,41 +551,33 @@ class CryptoTrader:
 
     async def _scan_coins(self):
         """
-        업비트 전체 KRW 코인 스캔 → 필터 → active_pairs 갱신
-        메이저 20개는 항상 포함, 조건 통과 신규 코인 최대 MAX_EXTRA_PAIRS개 추가
-        필터: 거래대금 500억 이상 + 상장 6개월 이상 + 거래정지 아님
+        업비트 전체 KRW 코인 스캔 → 필터 강화 → active_pairs 갱신
+        - 거래량 상위 TOP_N_SCAN(40개) 안에서만 후보 선정
+        - 유의종목/블랙리스트/스테이블/1000억 미만 제외
+        - 상장 6개월 이상
+        - 메이저 20개 항상 포함, 추가 최대 MAX_EXTRA_PAIRS(10개)
         """
-        # 신규 추가 0개면 스캔 자체를 건너뛰고 메이저만 사용
-        if MAX_EXTRA_PAIRS <= 0:
-            self.extra_pairs  = []
-            self.active_pairs = list(MAJOR_PAIRS)
-            await cache.client.setex("crypto:top_pairs", 86400, json.dumps(self.active_pairs))
-            logger.info("🔒 메이저 %d개만 사용 (신규 스캔 비활성)", len(MAJOR_PAIRS))
-            return
         try:
             import aiohttp as _aio
             async with _aio.ClientSession() as s:
-                # 1) 전체 KRW 마켓 목록
+                # 1) 전체 KRW 마켓 목록 + 유의종목 필터
                 r = await s.get("https://api.upbit.com/v1/market/all",
                                 params={"isDetails": "true"},
                                 timeout=_aio.ClientTimeout(total=10))
                 markets = await r.json()
                 if not isinstance(markets, list):
-                    logger.warning("업비트 마켓 목록 응답 이상 → 메이저 유지")
-                    self.active_pairs = list(MAJOR_PAIRS)
+                    logger.warning("업비트 마켓 목록 응답 이상 → 기존 목록 유지")
                     return
-                # 유의종목(CAUTION)/거래정지 제외한 정상 KRW 마켓만
+
                 krw_markets = []
-                warning_set = set()
                 for m in markets:
                     if not isinstance(m, dict):
                         continue
                     mk = m.get("market", "")
                     if not mk.startswith("KRW-"):
                         continue
-                    # market_warning이 CAUTION이면 유의종목 → 제외
                     if m.get("market_warning") == "CAUTION":
-                        warning_set.add(mk)
+                        logger.debug("⚠️ 유의종목 제외: %s", mk)
                         continue
                     krw_markets.append(mk)
 
@@ -590,29 +589,45 @@ class CryptoTrader:
                                      params={"markets": ",".join(chunk)},
                                      timeout=_aio.ClientTimeout(total=10))
                     data = await rt.json()
-                    # 정상 응답은 list[dict]. 에러 시 dict 반환될 수 있음
                     if isinstance(data, list):
                         tickers.extend([t for t in data if isinstance(t, dict) and t.get("market")])
                     await asyncio.sleep(0.1)
 
-            # 3) 거래대금 내림차순 정렬
+            # 3) 거래대금 내림차순 정렬 → 상위 TOP_N_SCAN개만 후보
             tickers.sort(key=lambda t: t.get("acc_trade_price_24h", 0) or 0, reverse=True)
+            top_pairs = {t["market"] for t in tickers[:TOP_N_SCAN]}
+            logger.info("📊 거래량 상위 %d개 후보: %s", TOP_N_SCAN,
+                        [t["market"].replace("KRW-","") for t in tickers[:TOP_N_SCAN]])
 
-            STABLE = ["USDT", "USDC", "BUSD", "DAI", "TUSD"]
             new_extra = []
             for t in tickers:
                 pair = t["market"]
-                if pair in MAJOR_PAIRS:
+
+                # 거래량 상위 TOP_N 밖이면 중단
+                if pair not in top_pairs:
+                    break
+
+                # 메이저는 이미 포함
+                if pair in set(MAJOR_PAIRS):
                     continue
-                if any(stbl in pair for stbl in STABLE):
+
+                # 블랙리스트 + 스테이블 제외
+                if pair in COIN_BLACKLIST:
                     continue
-                # 거래대금 필터 (500억 이상)
+
+                # 거래대금 1000억 미만 제외
                 if t.get("acc_trade_price_24h", 0) < MIN_TRADE_VALUE:
                     continue
-                # 상장 경과일 필터 (6개월 이상)
+
+                # 상장 6개월 미만 제외
                 if not await self._check_listing_age(pair):
+                    logger.info("🚫 상장 6개월 미만 제외: %s", pair)
                     continue
+
                 new_extra.append(pair)
+                logger.info("✅ 감시 추가: %s (거래대금 %s억)",
+                            pair, f"{t.get('acc_trade_price_24h',0)/1e8:,.0f}")
+
                 if len(new_extra) >= MAX_EXTRA_PAIRS:
                     break
 
@@ -643,19 +658,28 @@ class CryptoTrader:
             return False
 
     async def _scan_loop(self):
-        """6시간마다 (00, 06, 12, 18시) 코인 목록 자동 갱신"""
+        """매일 새벽 04:05 코인 목록 자동 갱신 (거래량 기준 재편성)"""
         # 시작 즉시 1회 스캔
         await self._scan_coins()
         while self.running:
             now = datetime.now(KST)
-            next_hour = ((now.hour // 6) + 1) * 6
-            if next_hour >= 24:
-                next_run = now.replace(hour=0, minute=5, second=0, microsecond=0) + timedelta(days=1)
-            else:
-                next_run = now.replace(hour=next_hour, minute=5, second=0, microsecond=0)
-            await asyncio.sleep((next_run - now).total_seconds())
+            # 다음 04:05 계산
+            next_run = now.replace(hour=4, minute=5, second=0, microsecond=0)
+            if now >= next_run:
+                next_run += timedelta(days=1)
+            wait_sec = (next_run - now).total_seconds()
+            logger.info("🕐 다음 코인 목록 갱신: %s (%.0f분 후)",
+                        next_run.strftime("%m/%d %H:%M"), wait_sec / 60)
+            await asyncio.sleep(wait_sec)
             try:
                 await self._scan_coins()
+                from common.telegram import send_crypto
+                names = [p.replace("KRW-","") for p in self.active_pairs]
+                now_str = datetime.now(KST).strftime("%m/%d %H:%M")
+                await send_crypto(
+                    f"🔄 <b>코인 감시 목록 갱신</b> ({now_str})\n"
+                    f"총 {len(self.active_pairs)}개: {', '.join(names)}"
+                )
             except Exception as e:
                 logger.error("스캔 루프 오류: %s", e)
 

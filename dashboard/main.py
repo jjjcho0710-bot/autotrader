@@ -2055,6 +2055,29 @@ async def _jarvis_weekly_preview():
         logger.error(f"주간 예습 오류: {e}")
 
 
+@app.api_route("/api/strategy/fix_units", methods=["GET", "POST"])
+async def fix_strategy_units():
+    """단위변환 버그로 오염된 stock_trader 설정을 정상값(-7%)으로 일괄 정정 (일회성)"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, name, params FROM strategy_config WHERE bot='stock_trader'")
+            fixed = []
+            for r in rows:
+                params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
+                before = dict(params)
+                params["stop_loss"] = -7
+                # take_profit은 AI(HOLD/HALF/ALL) 판단 방식이라 실제로 코드에서 읽어 쓰지 않음 — 혼란 방지로 제거
+                params.pop("take_profit", None)
+                await conn.execute(
+                    "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
+                    json.dumps(params), r["id"])
+                fixed.append({"name": r["name"], "before": before, "after": params})
+        return {"success": True, "fixed": fixed}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/strategy/current")
 async def get_current_strategy_config():
     """현재 활성 전략 설정 전체 조회 (설정 변경 여부 확인용)"""
@@ -4605,12 +4628,10 @@ async def _handle_setting_command(user_msg: str):
         for r in rows:
             params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
             for k, v in changes.items():
-                # 기존 단위 관례 유지 (|기존값|<=1 이면 소수 단위로 저장)
-                old = params.get(k)
-                if k in ("stop_loss", "take_profit") and old is not None and abs(float(old)) <= 1:
-                    params[k] = v / 100.0
-                else:
-                    params[k] = v
+                # 단위는 항상 '퍼센트 숫자 그대로'(-7, 5 등)로 저장한다.
+                # 예전엔 기존값 크기로 단위를 추측하다가 한 번 잘못 변환되면 계속 더 잘못되는
+                # 연쇄 버그가 있었음(예: take_profit이 0.01까지 줄어듦) — 추측 로직 완전 제거.
+                params[k] = v
             await conn.execute(
                 "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
                 json.dumps(params), r["id"])
@@ -4641,11 +4662,8 @@ async def _apply_strategy_settings(changes: dict) -> list:
         for r in rows:
             params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
             for k, v in changes.items():
-                old = params.get(k)
-                if k in ("stop_loss", "take_profit") and old is not None and abs(float(old)) <= 1:
-                    params[k] = v / 100.0
-                else:
-                    params[k] = v
+                # 단위 추측 로직 제거 — 항상 퍼센트 숫자 그대로 저장 (위 함수와 동일 사유)
+                params[k] = v
             await conn.execute(
                 "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
                 json.dumps(params), r["id"])

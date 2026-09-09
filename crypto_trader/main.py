@@ -48,15 +48,27 @@ COIN_NAMES = {
     "KRW-AXS":"엑시인피니티","KRW-XLM":"스텔라루멘",
 }
 
-# 시간대별 전략 파라미터
-DAY_PARAMS   = {"rsi_entry": 35, "take_profit": 0.01, "stop_loss": -0.05}
-NIGHT_PARAMS = {"rsi_entry": 20, "take_profit": 0.03, "stop_loss": -0.05}
+# ── 시간대별 전략 파라미터 (5구간) ─────────────────────────
+# 구간      시간         RSI  익절   손절  트레일발동  대상
+# ASIA    06~11시   ≤35  +1.0%  -3%  +1.5%   전체
+# LUNCH   11~20시   ≤30  +1.5%  -3%  +1.5%   전체 (횡보장)
+# US      20~22시   ≤35  +1.0%  -3%  +1.5%   전체
+# NIGHT   22~00시   ≤20  +3.0%  -5%  +3.0%   전체
+# DAWN    00~06시   ≤20  +2.0%  -3%  +2.0%   메이저4개만
+TIME_PARAMS = {
+    "asia":  {"rsi_entry": 35, "take_profit": 0.010, "stop_loss": -0.03, "trail_activate": 0.015, "max_pos": 4},
+    "lunch": {"rsi_entry": 30, "take_profit": 0.015, "stop_loss": -0.03, "trail_activate": 0.015, "max_pos": 2},
+    "us":    {"rsi_entry": 35, "take_profit": 0.010, "stop_loss": -0.03, "trail_activate": 0.015, "max_pos": 4},
+    "night": {"rsi_entry": 20, "take_profit": 0.030, "stop_loss": -0.05, "trail_activate": 0.030, "max_pos": 4},
+    "dawn":  {"rsi_entry": 20, "take_profit": 0.020, "stop_loss": -0.03, "trail_activate": 0.020, "max_pos": 2},
+}
+# 새벽 줍기 전용 메이저 (BTC/ETH/XRP/SOL만)
+DAWN_PAIRS = {"KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"}
 
-# 주말 보수 모드 (거래량 적어 하락 위험 큼)
-WEEKEND_DAY_RSI   = 30    # 주말 낮: RSI 35→30 더 빡세게
-WEEKEND_NIGHT_BUY = False # 주말 야간(금·토 22시~): 매수 중단
+# 주말 보수 모드
+WEEKEND_NIGHT_BUY = False  # 주말 야간: 매수 중단
 BUY_AMOUNT_KRW   = 500_000  # 1회 매수 고정금액 50만원
-MAX_POSITIONS    = 4        # 최대 동시 보유 종목 수
+MAX_POSITIONS    = 4        # 최대 동시 보유 종목 수 (기본)
 MIN_NET_PROFIT   = 1_000    # 매도 시 최소 순수익 (수수료 제외 1천원)
 UPBIT_FEE_RATE   = 0.0005  # 업비트 수수료 0.05% (왕복 0.1%)
 
@@ -72,15 +84,24 @@ COIN_BLACKLIST = {
     "KRW-SLX","KRW-RE","KRW-BORA","KRW-MED","KRW-CRE",      # 부실 전력
 }
 
-# 하이브리드 트레일링 익절 설정
-TRAIL_ACTIVATE    = 0.015       # +1.5% 넘으면 트레일링 발동
-TRAIL_GAP         = 0.007       # 고점 대비 -0.7% 떨어지면 매도
+# 트레일링 갭 (고점 대비 하락 시 매도) — 시간대 무관 고정
+TRAIL_GAP = 0.007  # 고점 대비 -0.7% 떨어지면 매도
+
+
+def _get_time_band(now_kst: datetime) -> str:
+    """현재 시각 → 시간대 구간 반환"""
+    h = now_kst.hour
+    if 6 <= h < 11:   return "asia"   # 06~11시 아시아 회복장
+    if 11 <= h < 20:  return "lunch"  # 11~20시 횡보장
+    if 20 <= h < 22:  return "us"     # 20~22시 미국장
+    if h >= 22:       return "night"  # 22~00시 야간
+    return "dawn"                      # 00~06시 새벽 줍기
 
 
 def _is_night(now_kst: datetime) -> bool:
-    """22:00~04:00 야간 여부"""
+    """22:00~06:00 야간/새벽 여부 (매도 판단용)"""
     h = now_kst.hour
-    return h >= 22 or h < 4
+    return h >= 22 or h < 6
 
 
 def _is_weekend(now_kst: datetime) -> bool:
@@ -236,9 +257,12 @@ class CryptoTrader:
                     continue
 
                 now_kst = datetime.now(KST)
-                night = _is_night(now_kst)
-                tp = NIGHT_PARAMS["take_profit"] if night else DAY_PARAMS["take_profit"]
-                sl = NIGHT_PARAMS["stop_loss"]   if night else DAY_PARAMS["stop_loss"]
+                night   = _is_night(now_kst)
+                band    = _get_time_band(now_kst)
+                params  = TIME_PARAMS[band]
+                tp      = params["take_profit"]
+                sl      = params["stop_loss"]
+                trail_activate = params["trail_activate"]
 
                 try:
                     cached = await cache.client.get("crypto:prices")
@@ -292,7 +316,7 @@ class CryptoTrader:
                     # +1.5% 이상  : 트레일링 발동 → 고점 추적, 고점 -0.7% 시 매도
                     peak_key = "crypto:peak:" + pair
 
-                    if pnl_rate >= TRAIL_ACTIVATE:
+                    if pnl_rate >= trail_activate:
                         # 트레일링 구간: 고점 갱신
                         try:
                             prev_peak = await cache.client.get(peak_key)
@@ -323,14 +347,16 @@ class CryptoTrader:
                         continue
 
                     # tp ~ +1.5% : 일반 익절 — 수수료 제외 순수익 1천원 이상일 때만
-                    if tp <= pnl_rate < TRAIL_ACTIVATE:
+                    if tp <= pnl_rate < trail_activate:
                         if net_profit < MIN_NET_PROFIT:
                             logger.debug("⏸ [%s] 익절 조건 충족 but 순수익 %s원 < %s원 → 대기",
                                         pair, f"{net_profit:,.0f}", f"{MIN_NET_PROFIT:,.0f}")
                             continue
                         result = await self.trader.sell_market(pair, qty)
                         if result.get("success"):
-                            label = "야간익절" if night else "단타익절"
+                            band_label_map = {"asia":"아시아익절","lunch":"횡보익절",
+                                              "us":"미국장익절","night":"야간익절","dawn":"새벽익절"}
+                            label = band_label_map.get(band, "단타익절")
                             await db.insert_trade(
                                 bot="crypto_trader", asset_type="crypto", symbol=pair, side="SELL",
                                 price=cur_price, quantity=qty, amount=cur_price * qty,
@@ -346,24 +372,31 @@ class CryptoTrader:
             await asyncio.sleep(3)
 
     async def _run_cycle(self):
-        now_kst = datetime.now(KST)
-        night = _is_night(now_kst)
-        weekend = _is_weekend(now_kst)
-        rsi_entry  = NIGHT_PARAMS["rsi_entry"]  if night else DAY_PARAMS["rsi_entry"]
-        tp         = NIGHT_PARAMS["take_profit"] if night else DAY_PARAMS["take_profit"]
-        sl         = NIGHT_PARAMS["stop_loss"]   if night else DAY_PARAMS["stop_loss"]
-        mode_label = "🌙야간" if night else "☀️낮"
+        now_kst  = datetime.now(KST)
+        band     = _get_time_band(now_kst)
+        params   = TIME_PARAMS[band]
+        weekend  = _is_weekend(now_kst)
+
+        rsi_entry = params["rsi_entry"]
+        tp        = params["take_profit"]
+        sl        = params["stop_loss"]
+        max_pos   = params["max_pos"]
+
+        band_labels = {
+            "asia":  "🌅아시아",
+            "lunch": "😴횡보",
+            "us":    "🌆미국장",
+            "night": "🌙야간",
+            "dawn":  "🌃새벽줍기",
+        }
+        mode_label = band_labels.get(band, band)
 
         # ── 주말 보수 모드 ────────────────────────────────
         weekend_block_buy = False
         if weekend:
-            mode_label = "📉주말" + mode_label
-            if night and not WEEKEND_NIGHT_BUY:
-                # 주말 야간: 매수 완전 중단 (거래량 최저, 하락 위험 최대)
+            mode_label = "📉주말_" + mode_label
+            if band in ("night", "dawn") and not WEEKEND_NIGHT_BUY:
                 weekend_block_buy = True
-            elif not night:
-                # 주말 낮: RSI 기준 더 빡세게 (35→30)
-                rsi_entry = min(rsi_entry, WEEKEND_DAY_RSI)
 
         trade_mode = "scalping"
         try:
@@ -411,9 +444,9 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
-        # 최대 종목 수 초과 시 매수 중단
-        if len(self.positions) >= MAX_POSITIONS:
-            logger.info("🚫 최대 보유 종목 %d개 도달 → 신규 매수 중단", MAX_POSITIONS)
+        # 최대 종목 수 초과 시 매수 중단 (시간대별 max_pos 적용)
+        if len(self.positions) >= max_pos:
+            logger.info("🚫 최대 보유 종목 %d개 도달 [%s] → 신규 매수 중단", max_pos, mode_label)
             await self._update_status(krw_balance)
             return
 
@@ -424,13 +457,18 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
-        for pair in self.active_pairs:
+        # 새벽 구간은 메이저 4개만
+        scan_pairs = self.active_pairs if band != "dawn" else [
+            p for p in self.active_pairs if p in DAWN_PAIRS
+        ]
+
+        for pair in scan_pairs:
             # ── 중복 매수 완전 차단 ──
             if pair in self.positions:
                 continue
 
-            # ── 최대 종목 수 체크 (루프 중에도) ──
-            if len(self.positions) >= MAX_POSITIONS:
+            # ── 최대 종목 수 체크 (루프 중에도, 시간대별) ──
+            if len(self.positions) >= max_pos:
                 break
 
             # ── 잔고 체크 ──
@@ -480,8 +518,9 @@ class CryptoTrader:
             actual_amount = BUY_AMOUNT_KRW
             fee = actual_amount * UPBIT_FEE_RATE * 2  # 왕복 수수료
             name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
-            logger.info("📈 %s 신호 [%s] RSI:%.1f 금액:%s원 (수수료약 %s원)",
-                        mode_label, name, rsi_now, f"{actual_amount:,.0f}", f"{fee:,.0f}")
+            logger.info("📈 [%s] %s 신호 RSI:%.1f 금액:%s원 TP:+%.1f%% SL:%.1f%% (수수료약 %s원)",
+                        mode_label, name, rsi_now, f"{actual_amount:,.0f}",
+                        tp*100, sl*100, f"{fee:,.0f}")
 
             if trade_mode == "swing":
                 execute = await self._ask_jarvis(pair=pair, rsi=rsi_now, cur_price=cur_price,

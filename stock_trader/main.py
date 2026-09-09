@@ -59,6 +59,7 @@ class StockTrader:
         self.positions  = {}
         self.strategies = {}
         self.ml_trained_date = None
+        self._selling   = set()  # 현재 매도 처리중인 심볼 (동시 매도 주문 충돌 방지)
 
     # ── DB에서 전략 설정 로드 ────────────────────────────
     async def load_strategies(self):
@@ -373,14 +374,21 @@ class StockTrader:
                             if _sellable <= 0:
                                 logger.info(f"⏸️ [{symbol}] 주문가능수량 0 — 급등 매도 판단 스킵")
                                 continue
-                            logger.info(f"⚡ [{symbol}] {direction} 감지: {pnl_rate:+.1f}% → Jarvis 판단")
-                            await self._jarvis_exit_check(
-                                symbol=symbol,
-                                cur_price=cur_price,
-                                avg_price=avg_price,
-                                pnl_rate=pnl_rate,
-                                qty=_sellable,
-                            )
+                            if symbol in self._selling:
+                                logger.info(f"⏭️ [{symbol}] 다른 경로에서 매도 처리중 — 중복 시도 스킵")
+                                continue
+                            self._selling.add(symbol)
+                            try:
+                                logger.info(f"⚡ [{symbol}] {direction} 감지: {pnl_rate:+.1f}% → Jarvis 판단")
+                                await self._jarvis_exit_check(
+                                    symbol=symbol,
+                                    cur_price=cur_price,
+                                    avg_price=avg_price,
+                                    pnl_rate=pnl_rate,
+                                    qty=_sellable,
+                                )
+                            finally:
+                                self._selling.discard(symbol)
             except Exception as e:
                 logger.debug(f"가격 모니터 오류: {e}")
 
@@ -618,7 +626,7 @@ class StockTrader:
                 logger.warning(f"급등 절반익절 처리 오류 [{symbol}]: {e}")
 
             # 익절 AI 판단: +3% 이상이면 자비스가 HOLD/HALF/ALL 판단 (30분 쿨다운)
-            if pnl_rate >= 3.0 and qty >= 1:
+            if pnl_rate >= 3.0 and qty >= 1 and symbol not in self._selling:
                 try:
                     if not await cache.client.get(f"exit_ai_cool:{symbol}"):
                         await cache.client.setex(f"exit_ai_cool:{symbol}", 1800, "1")
@@ -638,9 +646,13 @@ class StockTrader:
                         except Exception as de:
                             logger.warning(f"익절 판단 요청 실패 [{symbol}]: {de}")
 
-                        if decision in ("HALF", "ALL"):
+                        if decision in ("HALF", "ALL") and symbol not in self._selling:
+                            self._selling.add(symbol)
                             sell_qty = max(1, qty // 2) if (decision == "HALF" and qty >= 2) else qty
-                            result = await self.trader.sell(symbol, cur_price, sell_qty)
+                            try:
+                                result = await self.trader.sell(symbol, cur_price, sell_qty)
+                            finally:
+                                self._selling.discard(symbol)
                             if result.get("success"):
                                 s_pnl = int((cur_price - avg_price) * sell_qty)
                                 await db.insert_trade(

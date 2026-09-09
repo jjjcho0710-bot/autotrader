@@ -658,30 +658,37 @@ class CryptoTrader:
             return False
 
     async def _scan_loop(self):
-        """매일 새벽 04:05 코인 목록 자동 갱신 (거래량 기준 재편성)"""
+        """하루 2회 코인 목록 자동 갱신 — 09:05 (아시아장) / 21:05 (미국장 진입 전)
+        새벽 시간대는 거래량 최저 + 하락 압력 강해서 제외
+        """
+        SCAN_HOURS = (9, 21)  # 갱신 시각 (시)
+        last_scan_date = {h: None for h in SCAN_HOURS}
+
         # 시작 즉시 1회 스캔
         await self._scan_coins()
+
         while self.running:
+            await asyncio.sleep(60)
             now = datetime.now(KST)
-            # 다음 04:05 계산
-            next_run = now.replace(hour=4, minute=5, second=0, microsecond=0)
-            if now >= next_run:
-                next_run += timedelta(days=1)
-            wait_sec = (next_run - now).total_seconds()
-            logger.info("🕐 다음 코인 목록 갱신: %s (%.0f분 후)",
-                        next_run.strftime("%m/%d %H:%M"), wait_sec / 60)
-            await asyncio.sleep(wait_sec)
-            try:
-                await self._scan_coins()
-                from common.telegram import send_crypto
-                names = [p.replace("KRW-","") for p in self.active_pairs]
-                now_str = datetime.now(KST).strftime("%m/%d %H:%M")
-                await send_crypto(
-                    f"🔄 <b>코인 감시 목록 갱신</b> ({now_str})\n"
-                    f"총 {len(self.active_pairs)}개: {', '.join(names)}"
-                )
-            except Exception as e:
-                logger.error("스캔 루프 오류: %s", e)
+            today = now.date()
+
+            for hour in SCAN_HOURS:
+                # 해당 시각 05분 (±1분 오차 허용)
+                if now.hour == hour and now.minute == 5 and last_scan_date[hour] != today:
+                    last_scan_date[hour] = today
+                    try:
+                        label = "🌅 아시아장" if hour == 9 else "🌆 미국장 진입 전"
+                        logger.info("%s 코인 목록 갱신 시작", label)
+                        await self._scan_coins()
+                        from common.telegram import send_crypto
+                        names = [p.replace("KRW-","") for p in self.active_pairs]
+                        now_str = now.strftime("%m/%d %H:%M")
+                        await send_crypto(
+                            f"🔄 <b>코인 감시 목록 갱신</b> {label} ({now_str})\n"
+                            f"총 {len(self.active_pairs)}개: {', '.join(names)}"
+                        )
+                    except Exception as e:
+                        logger.error("스캔 루프 오류: %s", e)
 
     async def _init_ohlcv(self):
         try:

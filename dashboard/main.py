@@ -1620,6 +1620,39 @@ async def run_daily_report_now():
         return {"success": False, "error": str(e)}
 
 
+async def _priority_watch_check():
+    """관심종목(priority=TRUE) 15분마다 개별 확인 — 강한 신호 시 알림
+    (자동매매 신호 파이프라인과 별개, '지켜봐달라'는 요청에 대한 순수 관찰·알림용)"""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS priority BOOLEAN DEFAULT FALSE")
+            rows = await conn.fetch(
+                "SELECT symbol, name FROM watchlist WHERE is_active=TRUE AND priority=TRUE")
+        if not rows:
+            return
+        for r in rows:
+            symbol, name = r["symbol"], r["name"] or r["symbol"]
+            try:
+                if await redis_client.get(f"priority_alert_cool:{symbol}"):
+                    continue
+                ana = await _analyze_chart(symbol, name)
+                if not ana:
+                    continue
+                # 차트 분석 텍스트에 강신호 근거(정배열+거래량 급증 등)가 여럿 겹칠 때만 알림
+                strong_signals = sum(1 for kw in ("정배열", "골든크로스", "거래량 급증", "강한 매수", "지지 반등")
+                                      if kw in ana)
+                if strong_signals >= 2:
+                    await redis_client.setex(f"priority_alert_cool:{symbol}", 3600 * 3, "1")
+                    await _send_telegram(
+                        f"⭐ <b>관심종목 알림: {name}({symbol})</b>\n{ana}\n"
+                        f"(요청하신 대로 지켜보다가 신호 포착 시 알려드려요. 자동 매수는 하지 않았습니다.)",
+                        broadcast=True)
+            except Exception as e:
+                logger.debug(f"관심종목 확인 오류 [{symbol}]: {e}")
+    except Exception as e:
+        logger.error(f"관심종목 점검 오류: {e}")
+
+
 async def _intraday_scan():
     """장중 감시종목 보충: 그 시점 거래량 상위에서 조건 통과 종목 추가
     (아침 종목 유지, 신규만 추가 — 기준 동일: score≥4, 스팩/칼날 제외)"""
@@ -2058,6 +2091,10 @@ async def _jarvis_scheduler():
             last_daily_report = today
             asyncio.create_task(_jarvis_unified_daily_report())
             asyncio.create_task(_summarize_old_chats())  # 장기 기억 이관 (하루 1일치)
+
+        # 관심종목(우선순위) 15분마다 확인 — 장중에만
+        if now.weekday() < 5 and dtime(9, 0) <= cur_time <= dtime(15, 30) and now.minute % 15 == 0:
+            asyncio.create_task(_priority_watch_check())
 
         if now.weekday() >= 5:
             # 주말 스터디: 토 10:00 주간복습 / 일 20:00 다음주예습
@@ -4856,12 +4893,15 @@ async def _jarvis_chat_impl(body: dict):
                     "포트폴리오·보유·수익·계좌 등 사용자 자신의 상황을 묻는 질문에는 이 태그를 절대 쓰지 마라. "
                     "일반 잡담이나 이미 답을 아는 질문에도 쓰지 마라.\n"
                     "[액션 프로토콜] 사용자의 말에 앞으로 계속 적용해야 할 지시(매매 원칙·선호·제한)나 "
-                    "구체적 숫자가 포함된 전략 설정 변경(예: '손절 -5%로', '매수금액 100만원으로')이 담겨 있으면, "
-                    "자연스러운 답변 후 마지막 줄에 딱 한 줄로:\n"
-                    '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}, "watch_add": "종목명 또는 코드(감시 추가 요청 시)"}\n'
+                    "구체적 숫자가 포함된 전략 설정 변경(예: '손절 -5%로', '매수금액 100만원으로')이 담겨 있거나, "
+                    "특정 종목에 관심을 표하며 지켜봐달라는 취지(예: '지켜봐줘', '관심있게 봐줘', '눈여겨봐줘', "
+                    "'좋은 기회 오면 알려줘')가 담겨 있으면, 자연스러운 답변 후 마지막 줄에 딱 한 줄로:\n"
+                    '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}, "watch_add": "종목명 또는 코드(감시 추가 요청 시)", "watch_interest": "종목명 또는 코드(관심 표명 시 — 더 자주 확인)"}\n'
                     "형식으로 출력하라. settings는 사용자가 구체적 숫자를 말했을 때만 포함하고, "
                     "'공격적으로', '적극적으로', '보수적으로' 같은 정성적 표현은 숫자로 억지 변환하지 말고 "
-                    "directive(지시 문구)로만 저장하라. "
+                    "directive(지시 문구)로만 저장하라. watch_add와 watch_interest는 문맥으로 스스로 판단하라 — "
+                    "특정 키워드가 있어야만 반응하지 말고, '이 종목을 더 챙겨봐달라는 취지구나'라고 읽히면 "
+                    "watch_interest를 채워라. "
                     "해당 없으면 [[ACTION]] 줄을 출력하지 마라. 일회성 질문·잡담엔 절대 출력 금지.\n"
                     "[응답 형식 — 반드시 준수] 최종 결론만 출력하라. 최대 4문장. "
                     "사고 과정, 규칙/지시 인용, 검토 중얼거림, '~라고 답변해야 한다' 류 초안, 같은 내용 반복을 절대 출력하지 마라. "
@@ -4908,6 +4948,22 @@ async def _jarvis_chat_impl(body: dict):
                             notes.append(f"⚠️ 감시 추가 실패: '{wa}' 종목을 찾지 못함")
                     except Exception as we:
                         notes.append(f"⚠️ 감시 추가 오류: {str(we)[:60]}")
+                # 관심 표명 — 문맥상 '지켜봐달라'는 취지면 자비스가 스스로 채움 (키워드 매칭 아님)
+                wi = (action.get("watch_interest") or "").strip()
+                if wi:
+                    try:
+                        _is, _in = await _resolve_stock_symbol(wi)
+                        if _is:
+                            async with db_pool.acquire() as conn:
+                                await conn.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS priority BOOLEAN DEFAULT FALSE")
+                                await conn.execute(
+                                    "INSERT INTO watchlist (symbol, name, is_active, priority) VALUES ($1, $2, TRUE, TRUE) "
+                                    "ON CONFLICT (symbol) DO UPDATE SET is_active=TRUE, priority=TRUE, name=EXCLUDED.name", _is, _in)
+                            notes.append(f"⭐ 관심종목 등록: {_in}({_is}) — 더 자주 확인합니다")
+                        else:
+                            notes.append(f"⚠️ 관심종목 등록 실패: '{wi}' 종목을 찾지 못함")
+                    except Exception as we:
+                        notes.append(f"⚠️ 관심종목 등록 오류: {str(we)[:60]}")
                 d = (action.get("directive") or "").strip()
                 if d and len(d) >= 4:
                     async with db_pool.acquire() as conn:

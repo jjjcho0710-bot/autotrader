@@ -165,7 +165,9 @@ async def _load_stock_cache():
             _stock_name_cache = {r["name"]: r["symbol"] for r in rows if r["name"]}
             _stock_code_cache = {r["symbol"]: r["name"] for r in rows}
             logger.info(f"✅ 종목 캐시 DB 로드: {len(rows)}개")
-            if age is not None and age.days < 7:
+            # 한국 상장종목은 최소 2000개 이상이어야 정상. 그보다 적으면 이전 부분실패 데이터로 보고
+            # '최신이니 그냥 씀' 판정을 내리지 않고 반드시 재적재를 시도한다.
+            if age is not None and age.days < 7 and len(rows) >= 2000:
                 return
     except Exception as e:
         logger.warning(f"종목 캐시 DB 로드 실패: {e}")

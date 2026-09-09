@@ -6797,6 +6797,12 @@ async def jarvis_signal(request: Request):
                 )
                 await _send_telegram(msg, chat_id, token)
                 logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")
+                # 체결 즉시 보유/계좌 캐시 무효화 (화면 즉시 반영)
+                try:
+                    for _k in ("cache:positions:stock", "cache:account:stock"):
+                        await redis_client.delete(_k)
+                except Exception:
+                    pass
 
                 # Jarvis 메모리에 매매 기록 저장
                 await _save_trade_memory(

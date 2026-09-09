@@ -386,6 +386,15 @@ class StockTrader:
 
             await asyncio.sleep(3)
 
+    async def _invalidate_position_cache(self):
+        """체결 직후 대시보드 보유/계좌 캐시 즉시 삭제 → 화면에 옛 수량이 남지 않게
+        (대시보드는 Redis cache:positions:stock 을 20초 캐시로 사용)"""
+        try:
+            for k in ("cache:positions:stock", "cache:account:stock"):
+                await cache.client.delete(k)
+        except Exception:
+            pass
+
     async def _recently_sold(self, symbol: str) -> bool:
         """최근 10분 내 이 종목 SELL 체결 기록이 있는지 확인
         (KIS 잔고 반영 지연으로 이미 판 종목이 self.positions에 잠깐 남아있는 경우
@@ -538,6 +547,7 @@ class StockTrader:
                             symbol=symbol, side="SELL", price=cur_price, quantity=qty,
                             amount=cur_price * qty, strategy=f"{strat_name}_손절", pnl=pnl,
                         )
+                        await self._invalidate_position_cache()
                         try:
                             await cache.client.delete(f"half_tp:{symbol}")
                         except Exception:
@@ -590,6 +600,7 @@ class StockTrader:
                             amount=cur_price * half_qty,
                             strategy=f"{strat_name}_급등절반익절", pnl=half_pnl,
                         )
+                        await self._invalidate_position_cache()
                         await cache.client.setex(f"surge_tp:{symbol}", 86400, "1")
                         try:
                             from common.telegram import send_stock
@@ -639,6 +650,7 @@ class StockTrader:
                                     amount=cur_price * sell_qty,
                                     strategy=f"{strat_name}_AI익절{decision}", pnl=s_pnl,
                                 )
+                                await self._invalidate_position_cache()
                                 from common.telegram import send_stock
                                 remain = qty - sell_qty
                                 await send_stock(

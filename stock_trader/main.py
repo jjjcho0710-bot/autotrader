@@ -201,6 +201,12 @@ class StockTrader:
                 await asyncio.sleep(60)
                 continue
 
+            # 개장 직후 5분은 KIS 잔고 동기화가 불안정해 매도 실패가 잦음 — 판단만 하고 매매는 스킵
+            if cur_time < time(9, 5):
+                logger.info("🕐 개장 직후 5분 — KIS 잔고 동기화 대기")
+                await asyncio.sleep(30)
+                continue
+
             logger.info(f"🔄 매매 사이클 [{now.strftime('%H:%M:%S')}]")
 
             try:
@@ -316,6 +322,9 @@ class StockTrader:
                 _ct = _now.time().replace(tzinfo=None)
                 if _now.weekday() >= 5 or not (MARKET_OPEN <= _ct <= MARKET_CLOSE):
                     await asyncio.sleep(60)
+                    continue
+                if _ct < time(9, 5):
+                    await asyncio.sleep(10)
                     continue
                 if self.positions:
                     for symbol, pos in list(self.positions.items()):

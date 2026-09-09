@@ -135,9 +135,7 @@ class CryptoTrader:
         asyncio.create_task(self._price_loop())
         asyncio.create_task(self._price_monitor())
         asyncio.create_task(self._ohlcv_update_loop())   # 1분봉 실시간 갱신
-        # 코인 6시간 요약·일일 결산 리포트 비활성화 (주인 지시 — 통합 21:00 일일보고에 포함됨)
-        # asyncio.create_task(self._six_hour_report_loop())
-        # asyncio.create_task(self._daily_report_loop())
+        asyncio.create_task(self._six_hour_report_loop())  # 6시간 요약
         asyncio.create_task(self._telegram_polling_loop())
 
         await self._loop()
@@ -783,54 +781,76 @@ class CryptoTrader:
             await asyncio.sleep(60)  # 1분마다 갱신
 
     async def _six_hour_report_loop(self):
+        """코인 6시간 요약 리포트 — 00:00 / 06:00 / 12:00 / 18:00"""
         while self.running:
             now = datetime.now(KST)
             next_hour = ((now.hour // 6) + 1) * 6
             if next_hour >= 24:
-                next_run = now.replace(hour=0,minute=0,second=0,microsecond=0) + timedelta(days=1)
+                next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
             else:
-                next_run = now.replace(hour=next_hour,minute=0,second=0,microsecond=0)
+                next_run = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
             await asyncio.sleep((next_run - now).total_seconds())
             try:
                 from common.telegram import send_crypto
                 now = datetime.now(KST)
                 async with db.pool.acquire() as conn:
                     trades = await conn.fetch(
-                        "SELECT side,symbol,amount,pnl,strategy,created_at FROM trade_history WHERE bot='crypto_trader' AND created_at >= NOW() - INTERVAL '6 hours' ORDER BY created_at DESC"
+                        "SELECT side,symbol,amount,pnl,strategy,created_at FROM trade_history "
+                        "WHERE bot='crypto_trader' AND created_at >= NOW() - INTERVAL '6 hours' "
+                        "ORDER BY created_at DESC"
                     )
-                buys = [t for t in trades if t["side"]=="BUY"]
-                sells = [t for t in trades if t["side"]=="SELL"]
-                total_pnl = sum(float(t["pnl"] or 0) for t in trades)
+                buys   = [t for t in trades if t["side"] == "BUY"]
+                sells  = [t for t in trades if t["side"] == "SELL"]
+                wins   = [t for t in sells if float(t["pnl"] or 0) > 0]
+                losses = [t for t in sells if float(t["pnl"] or 0) < 0]
+                total_pnl = sum(float(t["pnl"] or 0) for t in sells)
+                win_rate  = (len(wins) / len(sells) * 100) if sells else 0
                 krw = await self.trader.get_balance("KRW")
+
+                # 보유 포지션 현황
                 pos_lines = []
-                for p, pos in self.positions.items():
-                    n = COIN_NAMES.get(p, p.replace("KRW-",""))
-                    r = float(pos.get("pnl_rate",0))
-                    pos_lines.append(n + " " + ("%+.1f%%" % r))
+                for pair, pos in list(self.positions.items())[:6]:
+                    avg = float(pos.get("avg_price", 0))
+                    try:
+                        cached = await cache.client.get("crypto:prices")
+                        import json as _json
+                        pd = _json.loads(cached) if cached else {}
+                        cur = float(pd.get(pair, {}).get("price", 0)) or avg
+                    except:
+                        cur = avg
+                    rate = (cur - avg) / avg * 100 if avg > 0 else 0
+                    emoji = "🟢" if rate >= 0 else "🔴"
+                    pos_lines.append(f"{emoji} {pair.replace('KRW-','')} {rate:+.1f}%")
+
+                emoji_total = "📈" if total_pnl >= 0 else "📉"
                 lines = [
-                    "📊 코인 6시간 리포트 (" + now.strftime('%m/%d %H:%M') + ")",
+                    f"🕐 <b>코인 6시간 리포트</b> ({now.strftime('%m/%d %H:%M')})",
                     "",
-                    "매수 %d건 / 매도 %d건" % (len(buys), len(sells)),
-                    f"손익: {total_pnl:+,.0f}원",
-                    "",
-                    "보유: " + (", ".join(pos_lines) if pos_lines else "없음"),
-                    f"KRW: {krw:,.0f}원",
+                    f"매수 {len(buys)}건 / 매도 {len(sells)}건",
                 ]
+                if sells:
+                    lines.append(f"익절 {len(wins)} / 손절 {len(losses)}  (승률 {win_rate:.0f}%)")
+                lines.append(f"{emoji_total} 6h 손익: {total_pnl:+,.0f}원")
+                lines.append("")
+                lines.append(f"💰 KRW 잔고: {krw:,.0f}원")
+                lines.append(f"📦 보유: {len(self.positions)}종목" +
+                              (f"  {' | '.join(pos_lines)}" if pos_lines else ""))
+
                 if trades:
                     lines.append("")
                     lines.append("최근 매매:")
                     for t in list(trades)[:5]:
-                        pnl = float(t["pnl"] or 0)
-                        side = "🔴매수" if t["side"]=="BUY" else "🔵매도"
-                        coin = t["symbol"].replace("KRW-","")
-                        line = side + " " + coin + " " + f"{float(t['amount']):,.0f}원"
-                        if pnl:
-                            line += " (" + f"{pnl:+,.0f}원" + ")"
-                        lines.append(line)
+                        side_e = "🟢" if t["side"] == "BUY" else "🔴"
+                        pnl_str = f" ({float(t['pnl']):+,.0f}원)" if t["side"] == "SELL" and t["pnl"] else ""
+                        t_time = t["created_at"].astimezone(KST).strftime("%H:%M")
+                        lines.append(f"{side_e} {t['symbol'].replace('KRW-','')} "
+                                     f"{float(t['amount']):,.0f}원{pnl_str} [{t_time}]")
+
                 await send_crypto("\n".join(lines))
-                logger.info("📨 6시간 코인 리포트 전송")
+                logger.info("📨 코인 6시간 리포트 전송")
             except Exception as e:
-                logger.error("코인 리포트 실패: %s", e)
+                logger.error("코인 6시간 리포트 실패: %s", e)
+
 
     async def _daily_report_loop(self):
         while self.running:

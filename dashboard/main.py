@@ -1587,8 +1587,44 @@ async def _jarvis_unified_daily_report():
         crypto_txt, crypto_pnl = _fmt(crypto_trades, is_stock=False)
         total_pnl = stock_pnl + crypto_pnl
 
+        # ── 코인 상세 통계 ────────────────────────────────
+        crypto_wins   = [t for t in crypto_trades if t["side"] == "SELL" and float(t["pnl"] or 0) > 0]
+        crypto_losses = [t for t in crypto_trades if t["side"] == "SELL" and float(t["pnl"] or 0) < 0]
+        crypto_buys   = [t for t in crypto_trades if t["side"] == "BUY"]
+        crypto_sells  = [t for t in crypto_trades if t["side"] == "SELL"]
+        win_rate      = (len(crypto_wins) / len(crypto_sells) * 100) if crypto_sells else 0
+        best_trade    = max(crypto_wins,  key=lambda t: float(t["pnl"] or 0), default=None)
+        worst_trade   = min(crypto_losses, key=lambda t: float(t["pnl"] or 0), default=None)
+
+        # 코인별 수익 집계
+        coin_pnl = {}
+        for t in crypto_trades:
+            if t["side"] == "SELL" and t["pnl"] is not None:
+                sym = t["symbol"].replace("KRW-","")
+                coin_pnl[sym] = coin_pnl.get(sym, 0) + float(t["pnl"])
+
+        coin_rank = sorted(coin_pnl.items(), key=lambda x: x[1], reverse=True)
+
+        # 코인 상세 섹션 구성
+        crypto_detail = ""
+        if crypto_trades:
+            crypto_detail += f"  매수 {len(crypto_buys)}건 / 매도 {len(crypto_sells)}건"
+            if crypto_sells:
+                crypto_detail += f"  (승률 {win_rate:.0f}% · 익절 {len(crypto_wins)} / 손절 {len(crypto_losses)})"
+            if best_trade:
+                crypto_detail += f"\n  🏆 최고: {best_trade['symbol'].replace('KRW-','')} +{float(best_trade['pnl']):,.0f}원"
+            if worst_trade:
+                crypto_detail += f"\n  💔 최저: {worst_trade['symbol'].replace('KRW-','')} {float(worst_trade['pnl']):,.0f}원"
+            if coin_rank:
+                rank_str = "  / ".join(
+                    f"{sym} {pnl:+,.0f}원" for sym, pnl in coin_rank[:4]
+                )
+                crypto_detail += f"\n  코인별: {rank_str}"
+        else:
+            crypto_detail = "  매매 없음"
+
         raw = (f"[주식봇 보고]\n{stock_txt}\n\n"
-               f"[코인봇 보고]\n{crypto_txt}\n\n"
+               f"[코인봇 보고] 손익 {crypto_pnl:+,.0f}원\n{crypto_detail}\n\n"
                f"[자비스 판단 활동] 판단 {journal['total']}건 (실행 {journal['ex']} / 보류 {journal['sk']})\n"
                f"[오늘 총 손익] {total_pnl:+,.0f}원")
 

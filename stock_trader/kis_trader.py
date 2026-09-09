@@ -278,16 +278,17 @@ class KISTrader:
 
     # ── 매도 주문 ───────────────────────────────────────
     async def sell(self, symbol: str, price: int, qty: int) -> dict:
-        """지정가 매도 (토큰 만료 시 자동 재시도)"""
+        """시장가 매도 (토큰 만료 시 자동 재시도)
+        지정가(00)는 가격이 안 맞으면 미체결/거부될 수 있어 매도는 시장가(01)로 확실히 체결"""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0801U" if config.KIS_IS_PAPER else "TTTC0801U"
         payload = {
             "CANO": self._cano,
             "ACNT_PRDT_CD": self._acnt_prdt_cd,
             "PDNO": symbol,
-            "ORD_DVSN": "00",
+            "ORD_DVSN": "01",
             "ORD_QTY": str(qty),
-            "ORD_UNPR": str(price),
+            "ORD_UNPR": "0",
         }
         async with self._new_session() as sess:
           async with sess.post(

@@ -685,6 +685,26 @@ class StockTrader:
                                             max(60, int((_eod - _now).total_seconds())), "tp")
                                     except Exception:
                                         pass
+                            else:
+                                # 매도 실패: 원인을 로그·매매일지에 남기고, 반복 재시도 방지 위해 쿨다운 대폭 연장
+                                _err = result.get("error", "알 수 없음")
+                                logger.warning(f"AI 익절 매도 실패 [{symbol}]: {_err}")
+                                await cache.client.setex(f"exit_ai_cool:{symbol}", 6 * 3600, "1")
+                                await db.insert_trade(
+                                    bot="stock_trader", asset_type="stock",
+                                    symbol=symbol, side="SELL",
+                                    price=cur_price, quantity=0,
+                                    amount=0,
+                                    strategy=f"{strat_name}_AI익절{decision}_실패:{_err[:40]}", pnl=0,
+                                )
+                                try:
+                                    from common.telegram import send_stock
+                                    await send_stock(
+                                        f"⚠️ <b>{pos.get('name', symbol)} AI 익절 매도 실패</b>\n"
+                                        f"판단: {decision} {sell_qty}주 시도\n사유: {_err}\n"
+                                        f"6시간 동안 이 종목 재시도를 중단합니다.")
+                                except Exception:
+                                    pass
                                 continue
                 except Exception as e:
                     logger.warning(f"AI 익절 판단 처리 오류 [{symbol}]: {e}")

@@ -4183,8 +4183,13 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
         tr_id = "VTTC0802U" if is_buy else "VTTC0801U"
     else:
         tr_id = "TTTC0802U" if is_buy else "TTTC0801U"
-    payload = {"CANO": cano, "ACNT_PRDT_CD": prdt, "PDNO": symbol,
-               "ORD_DVSN": "00", "ORD_QTY": str(qty), "ORD_UNPR": str(price)}
+    # 매도는 시장가(01)로 확실히 체결 — 지정가(00)는 가격이 안 맞으면 거부/미체결될 수 있음
+    if is_buy:
+        payload = {"CANO": cano, "ACNT_PRDT_CD": prdt, "PDNO": symbol,
+                   "ORD_DVSN": "00", "ORD_QTY": str(qty), "ORD_UNPR": str(price)}
+    else:
+        payload = {"CANO": cano, "ACNT_PRDT_CD": prdt, "PDNO": symbol,
+                   "ORD_DVSN": "01", "ORD_QTY": str(qty), "ORD_UNPR": "0"}
     import ssl as _ssl
     _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
     try:
@@ -4841,6 +4846,9 @@ async def _jarvis_chat_impl(body: dict):
                     "'했다'고 말하지 마라 — 할 수 있으면 [[ACTION]]으로 요청하고, 없으면 '못 한다'고 말하라. "
                     "손절선(-7%) 도달 시 시스템이 승인 없이 즉시 자동 매도하며, 익절(+3% 이상)은 차트·거래량·추세를 "
                     "분석해 HOLD/HALF/ALL 중 자동 판단·실행한다 — 위 [주식 계좌] 상태를 근거로 정확히 답하라.\n"
+                    "[사실 기반 답변 필수] 오늘 매수/매도한 종목을 묻는 질문에는 반드시 위에 제공된 [주식 계좌]·"
+                    "[최근 매매] 데이터에 실제로 등장하는 종목만 말하라. 데이터에 없는 종목을 '매수했다'고 "
+                    "지어내는 것은 심각한 오류다. 확실하지 않으면 '데이터에서 확인되지 않는다'고 답하라.\n"
                     "[용어 사용 금지] EXECUTE/EXECUTE_SMALL/SKIP/PROPOSE 같은 매매 신호 판정 용어는 "
                     "자동매매 시스템 내부에서 신호를 처리할 때만 쓰는 표시이며, 사람과의 대화 응답에는 "
                     "절대 포함하지 마라. 종목에 대한 의견을 묻는 질문(예: 'OO 어때?')에는 이런 판정 접두어 "

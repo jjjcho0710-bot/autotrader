@@ -2094,6 +2094,12 @@ async def clean_knowledge_placeholders():
         return {"success": False, "error": str(e)}
 
 
+@app.api_route("/api/jarvis/daily_report/run", methods=["GET", "POST"])
+async def run_daily_report():
+    await _jarvis_unified_daily_report()
+    return {"success": True}
+
+
 @app.api_route("/api/jarvis/closing_report/run", methods=["GET", "POST"])
 async def run_closing_report():
     await _jarvis_closing_report()

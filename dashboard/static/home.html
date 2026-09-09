@@ -317,7 +317,7 @@ async function loadSummary() {
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <div class="pos-left">
                 <div class="name">${name}</div>
-                <div class="sub mono">${p.qty}주 · 평단 ${won(avg)}</div>
+                <div class="sub mono">${p.qty}주 · 평단 ${won(avg)}${(p.sellable_qty !== undefined && p.sellable_qty < p.qty) ? ` <span style="color:#f0b90b;">⏳정산중 ${p.qty - p.sellable_qty}주</span>` : ''}</div>
               </div>
               <div class="pos-right">
                 <div class="amt mono">${won(cur)}</div>

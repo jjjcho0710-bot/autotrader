@@ -369,13 +369,17 @@ class StockTrader:
                                 logger.info(f"⏭️ [{symbol}] 최근 10분 내 매도 기록 있음 — KIS 잔고 반영 지연으로 판단, 재시도 스킵")
                                 self.positions.pop(symbol, None)
                                 continue
+                            _sellable = pos.get("sellable_qty", pos.get("qty", 0))
+                            if _sellable <= 0:
+                                logger.info(f"⏸️ [{symbol}] 주문가능수량 0 — 급등 매도 판단 스킵")
+                                continue
                             logger.info(f"⚡ [{symbol}] {direction} 감지: {pnl_rate:+.1f}% → Jarvis 판단")
                             await self._jarvis_exit_check(
                                 symbol=symbol,
                                 cur_price=cur_price,
                                 avg_price=avg_price,
                                 pnl_rate=pnl_rate,
-                                qty=pos.get("qty", 0),
+                                qty=_sellable,
                             )
             except Exception as e:
                 logger.debug(f"가격 모니터 오류: {e}")
@@ -505,9 +509,13 @@ class StockTrader:
         for symbol, pos in list(self.positions.items()):
             cur_price = pos["cur_price"]
             avg_price = pos["avg_price"]
-            qty = pos.get("qty", 0)
+            # 매도 판단·실행은 '주문가능수량' 기준 (미체결/정산중 물량은 KIS가 매도 거부함)
+            qty = pos.get("sellable_qty", pos.get("qty", 0))
 
             if not default_strategy or cur_price <= 0 or avg_price <= 0:
+                continue
+            if qty <= 0:
+                logger.info(f"⏸️ [{symbol}] 주문가능수량 0 (미체결/정산중) — 매도 판단 스킵")
                 continue
 
             pnl = (cur_price - avg_price) * qty

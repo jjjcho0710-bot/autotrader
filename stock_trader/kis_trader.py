@@ -203,10 +203,16 @@ class KISTrader:
                     qty = int(row.get("hldg_qty", 0))
                     if qty <= 0:
                         continue
+                    # 주문가능수량: 미체결/정산중 물량은 보유수량엔 잡혀도 실제로는 매도 불가
+                    try:
+                        sellable = int(row.get("ord_psbl_qty", qty) or qty)
+                    except Exception:
+                        sellable = qty
                     positions.append({
                         "symbol":    row.get("pdno"),
                         "name":      row.get("prdt_name"),
                         "qty":       qty,
+                        "sellable_qty": sellable,
                         "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
                         "cur_price": int(row.get("prpr", 0)),
                         "pnl":       int(row.get("evlu_pfls_amt", 0)),

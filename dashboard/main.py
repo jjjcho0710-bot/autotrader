@@ -5671,10 +5671,15 @@ async def _get_stock_positions_raw():
                 qty = int(row.get("hldg_qty", 0))
                 if qty <= 0:
                     continue
+                try:
+                    sellable = int(row.get("ord_psbl_qty", qty) or qty)
+                except Exception:
+                    sellable = qty
                 positions.append({
                     "symbol":    row.get("pdno"),
                     "name":      row.get("prdt_name"),
                     "qty":       qty,
+                    "sellable_qty": sellable,
                     "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
                     "cur_price": int(row.get("prpr", 0)),
                     "pnl":       int(row.get("evlu_pfls_amt", 0)),
@@ -6560,6 +6565,19 @@ async def jarvis_signal(request: Request):
         if not symbol:
             return {"success": False, "error": "종목코드 없음"}
 
+        # 이름이 코드 그대로 들어온 경우 서버 캐시로 보정
+        if not name or name == symbol:
+            name = _stock_code_cache.get(symbol) or symbol
+
+        # 매도 신호인데 이미 '잔고 없음'으로 당일 차단된 종목이면 판단 자체를 건너뜀 (반복 방지)
+        if action in ("sell", "SELL"):
+            try:
+                if await redis_client.get(f"sell_fail_suppress:{symbol}"):
+                    logger.info(f"⏸️ 매도 신호 무시 (당일 잔고없음 차단): {symbol}")
+                    return {"success": True, "executed": False, "suppressed": True}
+            except Exception:
+                pass
+
         action_kr = "매수" if action == "buy" else "매도"
         token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
         chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
@@ -6791,10 +6809,32 @@ async def jarvis_signal(request: Request):
                                    jarvis_reply, True, True, price, qty)
                 return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
             else:
-                await _send_telegram(
-                    f"❌ {name} {action_kr} 실패\n{result.get('error')}",
-                    chat_id, token
-                )
+                _err = str(result.get("error") or "")
+                _disp = _stock_code_cache.get(symbol) or name
+                # '잔고 없음' 류 실패는 재시도해도 소용없음 → 당일 재시도·재알림 차단 (반복 스팸 방지)
+                _is_no_balance = any(k in _err for k in ("잔고", "보유", "수량이 부족", "매도가능"))
+                _suppress_key = f"sell_fail_suppress:{symbol}"
+                if _is_no_balance:
+                    try:
+                        already = await redis_client.get(_suppress_key)
+                    except Exception:
+                        already = None
+                    if not already:
+                        try:
+                            await redis_client.setex(_suppress_key, 6 * 3600, "1")
+                        except Exception:
+                            pass
+                        await _send_telegram(
+                            f"❌ {_disp} {action_kr} 실패\n{_err}\n"
+                            f"⚠️ 시스템 보유목록과 KIS 실계좌가 불일치할 수 있어요. "
+                            f"보유목록 새로고침 후 계속 보이면 알려주세요. (당일 재시도 중단)",
+                            chat_id, token
+                        )
+                else:
+                    await _send_telegram(
+                        f"❌ {_disp} {action_kr} 실패\n{_err}",
+                        chat_id, token
+                    )
                 await _log_journal(bot, symbol, name, action, strategy, reason,
                                    "EXECUTE_SMALL" if is_small else "EXECUTE",
                                    jarvis_reply, True, False, price, qty)

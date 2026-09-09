@@ -4774,12 +4774,13 @@ async def _summarize_old_chats():
 @app.post("/api/crypto/chat")
 async def crypto_chat(body: dict):
     """코인봇 전용 채팅 — 주식봇 설정변경/ACTION 로직을 전혀 거치지 않는 순수 질의응답.
-    Open-WebUI를 직접 호출하며 'jarvis_crypto' 세션으로 대화 기록만 분리 유지."""
+    독립된 'coin-assistant' 모델(자비스와 다른 정체성)을 'jarvis_crypto' 세션으로 호출."""
     user_msg = (body.get("message") or "").strip()
     if not user_msg:
         return {"success": False, "error": "메시지가 없어요"}
     try:
-        reply = await _ask_openwebui(user_msg, session_id="jarvis_crypto")
+        coin_model = os.getenv("CRYPTO_MODEL", "coin-assistant")
+        reply = await _ask_openwebui(user_msg, session_id="jarvis_crypto", model=coin_model)
         return {"success": True, "reply": reply}
     except Exception as e:
         logger.error(f"코인봇 채팅 오류: {e}")
@@ -5484,13 +5485,14 @@ async def _save_trade_memory(symbol: str, action: str, price: float,
     logger.info(f"🧠 Jarvis 메모리 저장: {memory_content}")
 
 
-async def _ask_openwebui(message: str, session_id: str = "telegram") -> str:
-    """Open-WebUI Jarvis 모델 호출 — Tools + 대화 히스토리 포함"""
+async def _ask_openwebui(message: str, session_id: str = "telegram", model: str = None) -> str:
+    """Open-WebUI 모델 호출 — Tools + 대화 히스토리 포함.
+    model을 명시하면 그 모델을, 없으면 기본 JARVIS_MODEL(자비스)을 사용."""
     import aiohttp as http
     import os
     openwebui_url   = os.getenv("OPENWEBUI_URL", "https://open-webui-production-5843.up.railway.app")
     openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
-    jarvis_model    = os.getenv("JARVIS_MODEL", "autotrader-jarvis")
+    jarvis_model    = model or os.getenv("JARVIS_MODEL", "autotrader-jarvis")
 
     if not openwebui_token:
         return await _ask_gemini_direct(message)

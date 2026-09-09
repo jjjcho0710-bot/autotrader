@@ -1038,7 +1038,7 @@ class CryptoTrader:
                 await asyncio.sleep(5)
 
     async def _handle_telegram_command(self, text: str, chat_id: str, token: str):
-        """텔레그램 명령어 처리"""
+        """텔레그램 명령어 + 자연어 대화 처리"""
         import aiohttp
         cmd = text.lower().split()[0] if text else ""
 
@@ -1053,6 +1053,7 @@ class CryptoTrader:
             except Exception as e:
                 logger.error(f"텔레그램 응답 전송 실패: {e}")
 
+        # ── 단축 명령어 ──────────────────────────────────
         if cmd in ("/status", "상태"):
             await self._cmd_status(reply)
         elif cmd in ("/pnl", "수익"):
@@ -1061,12 +1062,122 @@ class CryptoTrader:
             await self._cmd_night(reply)
         elif cmd in ("/help", "도움말"):
             await reply(
-                "🤖 <b>코인봇 명령어</b>\n\n"
-                "/status — 현재 보유 포지션\n"
-                "/pnl — 오늘 수익 현황\n"
-                "/night — 야간 요약\n"
-                "/help — 도움말"
+                "🤖 <b>코인봇 대화 방법</b>\n\n"
+                "그냥 말하듯이 물어보면 돼!\n\n"
+                "예시:\n"
+                "• 지금 어때?\n"
+                "• BTC 살만해?\n"
+                "• 오늘 얼마 벌었어?\n"
+                "• XRP 언제 팔아?\n"
+                "• 손절 몇 번 났어?\n\n"
+                "단축 명령어:\n"
+                "/status — 현재 포지션\n"
+                "/pnl — 오늘 수익\n"
+                "/night — 야간 요약"
             )
+        else:
+            # ── 자연어 → Jarvis AI 대화 ──────────────────
+            await self._cmd_chat(text, reply)
+
+    async def _cmd_chat(self, text: str, reply):
+        """자연어 질문 → 현재 데이터 수집 → Jarvis AI → 답변"""
+        import aiohttp
+        import json as _json
+        try:
+            # 현재 상태 데이터 수집
+            krw = await self.trader.get_balance("KRW")
+
+            # 보유 포지션
+            pos_lines = []
+            for pair, pos in list(self.positions.items()):
+                avg = float(pos.get("avg_price", 0))
+                try:
+                    cached = await cache.client.get("crypto:prices")
+                    pd = _json.loads(cached) if cached else {}
+                    cur = float(pd.get(pair, {}).get("price", 0)) or avg
+                except:
+                    cur = avg
+                rate = (cur - avg) / avg * 100 if avg > 0 else 0
+                name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
+                pos_lines.append(f"{name} {rate:+.1f}%")
+
+            # 오늘 수익
+            try:
+                async with db.pool.acquire() as conn:
+                    today_stats = await conn.fetchrow(
+                        "SELECT SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS pnl, "
+                        "COUNT(CASE WHEN side='SELL' AND pnl>0 THEN 1 END) AS wins, "
+                        "COUNT(CASE WHEN side='SELL' AND pnl<0 THEN 1 END) AS losses, "
+                        "COUNT(CASE WHEN side='BUY' THEN 1 END) AS buys "
+                        "FROM trade_history WHERE bot='crypto_trader' "
+                        "AND created_at >= NOW() - INTERVAL '24 hours'"
+                    )
+                today_pnl  = float(today_stats["pnl"] or 0)
+                today_wins = today_stats["wins"] or 0
+                today_losses = today_stats["losses"] or 0
+                today_buys = today_stats["buys"] or 0
+            except:
+                today_pnl = today_wins = today_losses = today_buys = 0
+
+            # BTC 시황
+            btc_rate = 0
+            try:
+                cached = await cache.client.get("crypto:prices")
+                if cached:
+                    pm = _json.loads(cached)
+                    btc_rate = float(pm.get("KRW-BTC", {}).get("change_rate", 0))
+            except:
+                pass
+
+            # 시간대
+            from datetime import datetime, timezone, timedelta
+            KST = timezone(timedelta(hours=9))
+            now = datetime.now(KST)
+            band = _get_time_band(now)
+            band_map = {"asia":"아시아장(06~11시)","lunch":"횡보장(11~20시)",
+                       "us":"미국장(20~22시)","night":"야간(22~00시)","dawn":"새벽줍기(00~06시)"}
+            params = TIME_PARAMS[band]
+
+            # 연속 손절 상태
+            pause_msg = ""
+            if self.buy_paused_until and now < self.buy_paused_until:
+                remain = int((self.buy_paused_until - now).total_seconds() / 60)
+                pause_msg = f"현재 연속손절로 매수 중단 중 ({remain}분 후 재개)"
+
+            # Jarvis에게 보낼 컨텍스트
+            context = (
+                f"[코인봇 현재 상태]\n"
+                f"시간대: {band_map[band]} RSI≤{params['rsi_entry']} 익절+{params['take_profit']*100:.0f}% 손절{params['stop_loss']*100:.0f}%\n"
+                f"KRW잔고: {krw:,.0f}원\n"
+                f"보유코인({len(self.positions)}개): {', '.join(pos_lines) if pos_lines else '없음'}\n"
+                f"오늘 매수{today_buys}건 익절{today_wins}건 손절{today_losses}건 손익{today_pnl:+,.0f}원\n"
+                f"BTC시황: {btc_rate:+.2f}%\n"
+                f"연속손절카운터: {self.consec_stoploss}회\n"
+                f"{pause_msg}\n\n"
+                f"[사용자 질문] {text}\n\n"
+                f"코인봇 AI 트레이딩 어시스턴트로서 위 데이터를 바탕으로 "
+                f"친근하게 한국어로 간결하게 답해줘. 2~3문장 이내로."
+            )
+
+            # Jarvis API 호출
+            async with aiohttp.ClientSession() as s:
+                resp = await s.post(
+                    DASHBOARD_URL + "/api/jarvis/chat",
+                    json={"message": context, "session_id": "crypto_telegram", "_no_mirror": True},
+                    timeout=aiohttp.ClientTimeout(total=30)
+                )
+                if resp.status == 200:
+                    data = await resp.json()
+                    answer = data.get("reply", "").strip()
+                    if answer:
+                        await reply(f"🤖 {answer}")
+                        return
+
+            await reply("잠깐 생각 중이야... 다시 물어봐 😅")
+
+        except Exception as e:
+            logger.error("자연어 대화 오류: %s", e)
+            await reply("지금 데이터 가져오는 중에 오류가 났어. 잠깐 후에 다시 물어봐!")
 
     async def _cmd_status(self, reply):
         """현재 보유 포지션 + 잔고"""

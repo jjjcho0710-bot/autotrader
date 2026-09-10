@@ -1624,12 +1624,12 @@ async def _jarvis_unified_daily_report():
         best_trade    = max(crypto_wins,  key=lambda t: float(t["pnl"] or 0), default=None)
         worst_trade   = min(crypto_losses, key=lambda t: float(t["pnl"] or 0), default=None)
 
-        # 코인별 수익 집계
+        # 코인별 수익 집계 — 한글명으로 표시
         coin_pnl = {}
         for t in crypto_trades:
             if t["side"] == "SELL" and t["pnl"] is not None:
-                sym = t["symbol"].replace("KRW-","")
-                coin_pnl[sym] = coin_pnl.get(sym, 0) + float(t["pnl"])
+                name = COIN_NAMES.get(t["symbol"], t["symbol"].replace("KRW-",""))
+                coin_pnl[name] = coin_pnl.get(name, 0) + float(t["pnl"])
 
         coin_rank = sorted(coin_pnl.items(), key=lambda x: x[1], reverse=True)
 
@@ -1640,12 +1640,14 @@ async def _jarvis_unified_daily_report():
             if crypto_sells:
                 crypto_detail += f"  (승률 {win_rate:.0f}% · 익절 {len(crypto_wins)} / 손절 {len(crypto_losses)})"
             if best_trade:
-                crypto_detail += f"\n  🏆 최고: {best_trade['symbol'].replace('KRW-','')} +{float(best_trade['pnl']):,.0f}원"
+                best_name = COIN_NAMES.get(best_trade['symbol'], best_trade['symbol'].replace('KRW-',''))
+                crypto_detail += f"\n  🏆 최고: {best_name} +{float(best_trade['pnl']):,.0f}원"
             if worst_trade:
-                crypto_detail += f"\n  💔 최저: {worst_trade['symbol'].replace('KRW-','')} {float(worst_trade['pnl']):,.0f}원"
+                worst_name = COIN_NAMES.get(worst_trade['symbol'], worst_trade['symbol'].replace('KRW-',''))
+                crypto_detail += f"\n  💔 최저: {worst_name} {float(worst_trade['pnl']):,.0f}원"
             if coin_rank:
                 rank_str = "  / ".join(
-                    f"{sym} {pnl:+,.0f}원" for sym, pnl in coin_rank[:4]
+                    f"{name} {pnl:+,.0f}원" for name, pnl in coin_rank[:4]
                 )
                 crypto_detail += f"\n  코인별: {rank_str}"
         else:

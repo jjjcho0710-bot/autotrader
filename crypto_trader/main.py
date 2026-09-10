@@ -523,11 +523,12 @@ class CryptoTrader:
             await self._update_status(krw_balance)
             return
 
-        # 잔고 부족 시 매수 중단
+        # 잔고 부족 시 매수 중단 (기준금액 미만이어도 최소잔고 이상이면 잔액매수로 계속 진행)
         buy_amount_krw = self.runtime_config["buy_amount_krw"]
-        if krw_balance < buy_amount_krw:
-            logger.info("💸 KRW 잔고 부족 (%s원 < %s원) → 매수 중단",
-                        f"{krw_balance:,.0f}", f"{buy_amount_krw:,.0f}")
+        MIN_LEFTOVER_BUY = 50_000
+        if krw_balance < MIN_LEFTOVER_BUY:
+            logger.info("💸 KRW 잔고 부족 (%s원 < 최소 %s원) → 매수 중단",
+                        f"{krw_balance:,.0f}", f"{MIN_LEFTOVER_BUY:,.0f}")
             await self._update_status(krw_balance)
             return
 
@@ -545,8 +546,8 @@ class CryptoTrader:
             if len(self.positions) >= max_pos:
                 break
 
-            # ── 잔고 체크 ──
-            if krw_balance < buy_amount_krw:
+            # ── 잔고 체크 (최소잔고 미만이면 중단, 그 사이는 잔액매수로 처리) ──
+            if krw_balance < MIN_LEFTOVER_BUY:
                 break
 
             rows = await db.get_recent_ohlcv(pair, limit=50, asset="crypto")
@@ -589,7 +590,15 @@ class CryptoTrader:
                 continue
 
             # ── 런타임설정 매수금액 (배포 없이 조정 가능) ──
-            actual_amount = buy_amount_krw
+            # 잔고가 기준금액보다 적으면(단, 최소잔고 이상) 남은 잔고 전액 매수 — 자투리 자금 낭비 방지
+            if krw_balance < buy_amount_krw:
+                if krw_balance < MIN_LEFTOVER_BUY:
+                    logger.debug("💸 잔고 %s원 < 최소 %s원 → 매수 스킵", f"{krw_balance:,.0f}", f"{MIN_LEFTOVER_BUY:,.0f}")
+                    break
+                actual_amount = krw_balance * 0.999  # 수수료 여유분
+                logger.info("💰 잔고 부족 → 잔액 전체 매수 모드 (%s원)", f"{actual_amount:,.0f}")
+            else:
+                actual_amount = buy_amount_krw
             fee = actual_amount * UPBIT_FEE_RATE * 2  # 왕복 수수료
             name = COIN_NAMES.get(pair, pair.replace("KRW-",""))
             logger.info("📈 [%s] %s 신호 RSI:%.1f 금액:%s원 TP:+%.1f%% SL:%.1f%% (수수료약 %s원)",

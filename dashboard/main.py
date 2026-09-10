@@ -151,6 +151,28 @@ async def get_kis_token(force_new: bool = False) -> str:
 _stock_name_cache: dict = {}  # {종목명: 종목코드}
 _stock_code_cache: dict = {}  # {종목코드: 종목명}
 
+
+def _code_to_name_sync(code: str) -> str:
+    """메모리 캐시만으로 즉시 조회 (동기, DB 접근 없음) — 실패 시 code 그대로 반환.
+    급하지 않은 표시용(로그, 텔레그램 메시지 등)에 사용. 확실한 이름이 필요하면 _code_to_name 사용."""
+    return _stock_code_cache.get(code) or code
+
+
+async def _code_to_name(code: str) -> str:
+    """종목코드→이름, 메모리 캐시 실패 시 stock_master·watchlist DB까지 확인하는 완전한 조회.
+    종목마스터 캐시가 불완전해도(재적재 중 등) watchlist에 등록된 종목이면 정확한 이름을 찾는다."""
+    name = _stock_code_cache.get(code)
+    if name:
+        return name
+    try:
+        async with db_pool.acquire() as conn:
+            name = await conn.fetchval("SELECT name FROM stock_master WHERE symbol=$1", code)
+            if not name:
+                name = await conn.fetchval("SELECT name FROM watchlist WHERE symbol=$1", code)
+    except Exception:
+        name = None
+    return name or code
+
 async def _load_stock_cache():
     """전체 종목 목록: DB(stock_master) 즉시 로드 → 7일 이상 오래됐거나 비어있으면 pykrx로 갱신 후 DB 저장"""
     global _stock_name_cache, _stock_code_cache
@@ -989,8 +1011,11 @@ async def _jarvis_closing_report():
                 pnl_emoji = "📈" if total_pnl >= 0 else "📉"
                 msg += f"{pnl_emoji} 실현손익: {total_pnl:+,.0f}원\n"
             if buy_trades:
-                buy_list = "\n".join([f"  🟢 {_stock_code_cache.get(t['symbol']) or t['symbol']} {int(t['price']):,}원×{int(t['quantity'])}주"
-                                       for t in buy_trades[:5]])
+                buy_list_items = []
+                for t in buy_trades[:5]:
+                    _nm = await _code_to_name(t['symbol'])
+                    buy_list_items.append(f"  🟢 {_nm} {int(t['price']):,}원×{int(t['quantity'])}주")
+                buy_list = "\n".join(buy_list_items)
                 msg += f"신규 매수:\n{buy_list}\n"
         else:
             msg += "오늘 거래 없음\n"
@@ -1393,7 +1418,7 @@ async def _jarvis_evening_review(target_date=None):
             + (f" (이후 {float(r['eval_pnl_rate']):+.1f}%)" if r['eval_pnl_rate'] is not None else "")
             for r in jdg[:20]) or "(판단 없음)"
         t_txt = "\n".join(
-            f"- {t['side']} {_stock_code_cache.get(t['symbol']) or t['symbol']} {float(t['amount']):,.0f}원"
+            f"- {t['side']} {await _code_to_name(t['symbol'])} {float(t['amount']):,.0f}원"
             + (f" 손익 {float(t['pnl'] or 0):+,.0f}원" if t['pnl'] is not None else "")
             + f" ({t['strategy']})" for t in trades) if trades else ""
         total_pnl = sum(float(t['pnl'] or 0) for t in trades) if trades else 0
@@ -1496,7 +1521,7 @@ async def _jarvis_weekend_study_report():
         if miss_rows:
             def _disp(nm):
                 # name이 비어 코드가 온 경우 캐시로 한글명 보완
-                return _stock_code_cache.get(nm, nm) if (nm and nm.isdigit()) else nm
+                return _code_to_name_sync(nm) if (nm and nm.isdigit()) else nm
             parts.append("반복 놓친 종목: " + ", ".join(
                 f"{_disp(r['nm'])}({int(r['n'])}회, 평균 {float(r['avg_r'] or 0):+.1f}%)" for r in miss_rows))
         if lessons:
@@ -1564,27 +1589,30 @@ async def _jarvis_unified_daily_report():
                 FROM trade_journal
                 WHERE DATE(ts AT TIME ZONE 'Asia/Seoul')=$1""", today)
 
-        def _fmt(trades, is_stock=False):
+        async def _fmt(trades, is_stock=False):
             if not trades:
                 return "매매 없음", 0.0
             pnl = sum(float(t["pnl"] or 0) for t in trades)
             buys = sum(1 for t in trades if t["side"] == "BUY")
             sells = len(trades) - buys
-            def _nm(t):
+            async def _nm(t):
                 sym = t["symbol"]
                 if is_stock:
-                    return _stock_code_cache.get(sym) or sym
+                    return await _code_to_name(sym)
                 return sym.replace('KRW-', '')
-            lines = "\n".join(
-                f"  · {t['side']} {_nm(t)} "
-                f"{float(t['amount']):,.0f}원"
-                + (f" ({float(t['pnl']):+,.0f}원)" if t["pnl"] is not None else "")
-                for t in trades[:6])
+            line_items = []
+            for t in trades[:6]:
+                _n = await _nm(t)
+                line_items.append(
+                    f"  · {t['side']} {_n} "
+                    f"{float(t['amount']):,.0f}원"
+                    + (f" ({float(t['pnl']):+,.0f}원)" if t["pnl"] is not None else ""))
+            lines = "\n".join(line_items)
             more = f"\n  ...외 {len(trades)-6}건" if len(trades) > 6 else ""
             return f"매수 {buys} / 매도 {sells} (손익 {pnl:+,.0f}원)\n{lines}{more}", pnl
 
-        stock_txt, stock_pnl = _fmt(stock_trades, is_stock=True)
-        crypto_txt, crypto_pnl = _fmt(crypto_trades, is_stock=False)
+        stock_txt, stock_pnl = await _fmt(stock_trades, is_stock=True)
+        crypto_txt, crypto_pnl = await _fmt(crypto_trades, is_stock=False)
         total_pnl = stock_pnl + crypto_pnl
 
         # ── 코인 상세 통계 ────────────────────────────────
@@ -2112,7 +2140,7 @@ async def reconcile_trades_with_kis():
         findings = []
         for t in today_trades:
             sym = t["symbol"]
-            nm = _stock_code_cache.get(sym) or sym
+            nm = await _code_to_name(sym)
             if t["side"] == "BUY" and sym not in real_symbols:
                 findings.append({
                     "id": t["id"], "issue": "매수 기록 있으나 실계좌에 보유 없음(가짜 매수 의심)",
@@ -3119,7 +3147,7 @@ async def get_trades(limit: int = 50, bot: str = None):
                 # 주식은 종목코드→한글명, 코인은 심볼 그대로
                 nm = sym
                 if r["asset_type"] == "stock":
-                    nm = _stock_code_cache.get(sym) or sym
+                    nm = await _code_to_name(sym)
                 _ts_kst = r["ts"].astimezone(KST) if r["ts"] else None
                 trades.append({
                     "id":         r["id"],
@@ -6469,7 +6497,8 @@ async def run_review_now():
 
 @app.get("/api/stock/name")
 async def stock_name_lookup(code: str):
-    """종목코드 → 종목명 (역방향 조회, 내부 서비스용)"""
+    """종목코드 → 종목명 (역방향 조회, 내부 서비스용)
+    종목마스터 캐시/DB에 없어도 watchlist에 등록돼 있으면 그 이름을 사용 (감시종목은 항상 이름이 있음)"""
     name = _stock_code_cache.get(code)
     if not name:
         try:
@@ -6477,6 +6506,12 @@ async def stock_name_lookup(code: str):
                 name = await conn.fetchval("SELECT name FROM stock_master WHERE symbol=$1", code)
         except Exception:
             name = None
+    if not name:
+        try:
+            async with db_pool.acquire() as conn:
+                name = await conn.fetchval("SELECT name FROM watchlist WHERE symbol=$1", code)
+        except Exception:
+            pass
     return {"code": code, "name": name or code}
 
 
@@ -6786,7 +6821,7 @@ async def _get_journal_raw(days: int = 7):
             _ts_kst = r["ts"].astimezone(KST) if r["ts"] else None
             d = dict(r) | {"ts": _ts_kst.isoformat() if _ts_kst else None}
             if not d.get("name") and d.get("symbol"):
-                d["name"] = _stock_code_cache.get(d["symbol"]) or d["symbol"]
+                d["name"] = await _code_to_name(d["symbol"])
             data.append(d)
         return {"success": True,
                 "summary": {"total_signals": total, "executes": executes,
@@ -6865,7 +6900,7 @@ async def jarvis_signal(request: Request):
 
         # 이름이 코드 그대로 들어온 경우 서버 캐시로 보정
         if not name or name == symbol:
-            name = _stock_code_cache.get(symbol) or symbol
+            name = await _code_to_name(symbol)
 
         # 매도 신호인데 이미 '잔고 없음'으로 당일 차단된 종목이면 판단 자체를 건너뜀 (반복 방지)
         if action in ("sell", "SELL"):
@@ -7131,7 +7166,7 @@ async def jarvis_signal(request: Request):
                 return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
             else:
                 _err = str(result.get("error") or "")
-                _disp = _stock_code_cache.get(symbol) or name
+                _disp = await _code_to_name(symbol)
                 # '잔고 없음' 류 실패는 재시도해도 소용없음 → 당일 재시도·재알림 차단 (반복 스팸 방지)
                 _is_no_balance = any(k in _err for k in ("잔고", "보유", "수량이 부족", "매도가능"))
                 _suppress_key = f"sell_fail_suppress:{symbol}"

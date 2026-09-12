@@ -1519,11 +1519,13 @@ async def _jarvis_weekend_study_report():
         parts.append(f"[이번 주 복습]\n판단 {total}건 (실행 {int(wk['ex'] or 0)} / 보류 {sk})\n"
                      f"SKIP 정확도 {skip_acc}% (잘거름 {good_skip} / 놓침 {missed})")
         if miss_rows:
-            def _disp(nm):
-                # name이 비어 코드가 온 경우 캐시로 한글명 보완
-                return _code_to_name_sync(nm) if (nm and nm.isdigit()) else nm
-            parts.append("반복 놓친 종목: " + ", ".join(
-                f"{_disp(r['nm'])}({int(r['n'])}회, 평균 {float(r['avg_r'] or 0):+.1f}%)" for r in miss_rows))
+            _miss_items = []
+            for r in miss_rows:
+                _nm = r["nm"]
+                if _nm and _nm.isdigit():
+                    _nm = await _code_to_name(_nm)
+                _miss_items.append(f"{_nm}({int(r['n'])}회, 평균 {float(r['avg_r'] or 0):+.1f}%)")
+            parts.append("반복 놓친 종목: " + ", ".join(_miss_items))
         if lessons:
             parts.append("\n[이번 주 교훈]\n" + "\n".join(f"- {r['content'][:200]}" for r in lessons[:4]))
         parts.append(f"\n[지식 정리]\n학습 원칙 누적 {total_raw}개 (이번 주 +{new_raw}) → 핵심 {len(core)}개 정제")
@@ -1548,11 +1550,14 @@ async def _jarvis_weekend_study_report():
         # 자비스 총평 (이번 주 배운 것 한 줄 요약)
         summary_prompt = (f"다음은 자비스의 이번 주 학습 요약이다.\n" + "\n".join(parts[1:]) +
                           "\n\n주인에게 보고하듯 이번 주 배운 핵심을 2~3문장으로 정리하라. "
-                          "숫자 반복 말고 '무엇을 깨달았고 다음 주에 무엇을 다르게 할지' 중심으로.")
+                          "숫자 반복 말고 '무엇을 깨달았고 다음 주에 무엇을 다르게 할지' 중심으로. "
+                          "[[FINAL]] 같은 내부 표식이나 사고과정 없이 최종 문장만 출력하라.")
         comment = ""
         try:
             c = await _ask_openwebui(summary_prompt, session_id="daily_plan")
             if c and not c.startswith("❌"):
+                if "[[FINAL]]" in c:
+                    c = c.split("[[FINAL]]")[-1]
                 comment = f"\n\n💬 자비스 총평:\n{c.strip()[:600]}"
         except Exception:
             pass
@@ -1813,8 +1818,10 @@ async def _jarvis_weekly_review():
         if review and not review.startswith("❌"):
             async with db_pool.acquire() as conn:
                 for line in review.split("\n"):
-                    line = line.strip()
-                    if "교훈" in line and len(line) > 10 and saved < 3:
+                    line = line.strip().lstrip("-").strip()
+                    # 정확히 지시한 접두어로 시작하는 줄만 교훈으로 인정
+                    # (예: 인사말에 '교훈'이란 단어만 섞인 문장이 통째로 저장되는 것 방지)
+                    if line.startswith("주간 교훈:") and len(line) > 10 and saved < 3:
                         await conn.execute(
                             "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)",
                             f"[주간] {line[:280]}")
@@ -5570,9 +5577,10 @@ async def _ask_openwebui(message: str, session_id: str = "telegram", model: str 
         if True:
             if True:
                 reply = data["choices"][0]["message"]["content"]
-                # [[FINAL]] 이후만 사용 (사고과정 제거)
-                if "[[FINAL]]" in reply:
-                    reply = reply.split("[[FINAL]]")[-1].strip()
+                # [[FINAL]] 이후만 사용 (사고과정 제거) — 대소문자/공백 변형까지 견고하게 처리
+                _final_m = _re_mod.search(r"\[\[\s*FINAL\s*\]\]", reply, _re_mod.IGNORECASE)
+                if _final_m:
+                    reply = reply[_final_m.end():].strip()
                 else:
                     # 메타 유출 감지: THINK / [최종 답변 구성] / "규칙을 지킨다" 등
                     _head = reply.strip()[:300]

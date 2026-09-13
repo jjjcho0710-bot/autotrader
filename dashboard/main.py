@@ -2187,6 +2187,30 @@ async def reconcile_trades_delete(id: int):
         return {"success": False, "error": str(e)}
 
 
+@app.api_route("/api/jarvis/knowledge/clean_bad_lessons", methods=["GET", "POST"])
+async def clean_bad_lessons():
+    """형식을 안 지킨 교훈(인사말이 통째로 저장된 것 등) 정리 — '주간 교훈:' 형식이 아니면서
+    너무 길거나(80자+) 인사성 표현이 섞인 lesson 항목을 비활성화"""
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, content FROM jarvis_notes WHERE category='lesson' AND is_active=TRUE")
+            bad_ids = []
+            for r in rows:
+                c = r["content"]
+                inner = c[5:].strip() if c.startswith("[주간]") else c
+                is_proper = inner.startswith("주간 교훈:") or (not c.startswith("[주간]") and c.startswith("교훈:"))
+                _greeting_markers = ("주인님", "습니다만", "😊", "안녕하세요")
+                if not is_proper or (len(inner) > 150 and any(m in inner for m in _greeting_markers)):
+                    bad_ids.append(r["id"])
+            if bad_ids:
+                await conn.execute(
+                    "UPDATE jarvis_notes SET is_active=FALSE WHERE id = ANY($1::int[])", bad_ids)
+        return {"success": True, "removed": len(bad_ids), "ids": bad_ids}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.api_route("/api/jarvis/knowledge/clean_placeholders", methods=["GET", "POST"])
 async def clean_knowledge_placeholders():
     """정제본에 잘못 저장된 자리채움 문구('없음/추후 추가 필요' 등) 제거"""

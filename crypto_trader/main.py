@@ -152,34 +152,51 @@ class CryptoTrader:
         }
 
     async def start(self):
-        self.running = True
-        await db.connect()
-        await cache.connect()
-        await self.trader.start()
-        await self._init_default_strategies()
-        await self.load_strategies()
-
-        # 초기 코인 스캔 (메이저 20 + 신규 최대 5)
-        await self._scan_coins()
-        config.CRYPTO_PAIRS = self.active_pairs
-        logger.info("✅ 활성 코인 %d개 (메이저 20 + 신규 %d)",
-                    len(self.active_pairs), len(self.extra_pairs))
-
-        asyncio.create_task(self._init_ohlcv())
-
+        # ══════════════════════════════════════════════════════
+        # 🛑 코인 시스템 전체 중단 (주인 지시 — 당분간 코인 미사용)
+        # 매수/매도, 텔레그램 알림/대화, 리포트, 학습 전부 중단.
+        # 재개하려면 아래 원래 코드 블록의 주석을 해제하면 됨.
+        # ══════════════════════════════════════════════════════
+        self.running = False
         logger.info("=" * 50)
-        logger.info("🚀 AutoTrader crypto-trader 시작")
+        logger.info("🛑 crypto-trader 전체 중단 상태 (주인 지시)")
+        logger.info("   매매/알림/대화/리포트 모두 비활성화됨")
         logger.info("=" * 50)
+        # 컨테이너가 죽지 않도록 대기만 하고 아무 작업도 하지 않음
+        while True:
+            await asyncio.sleep(3600)
 
-        asyncio.create_task(self._subscribe_strategy_changes())
-        asyncio.create_task(self._scan_loop())
-        asyncio.create_task(self._price_loop())
-        asyncio.create_task(self._price_monitor())
-        asyncio.create_task(self._ohlcv_update_loop())   # 1분봉 실시간 갱신
-        asyncio.create_task(self._six_hour_report_loop())  # 6시간 요약
-        asyncio.create_task(self._telegram_polling_loop())
-
-        await self._loop()
+        # ──────────────────────────────────────────────────────
+        # 아래는 기존 정상 동작 코드 (재개 시 위 중단 블록을 지우고 복원)
+        # ──────────────────────────────────────────────────────
+        # self.running = True
+        # await db.connect()
+        # await cache.connect()
+        # await self.trader.start()
+        # await self._init_default_strategies()
+        # await self.load_strategies()
+        #
+        # # 초기 코인 스캔 (메이저 20 + 신규 최대 5)
+        # await self._scan_coins()
+        # config.CRYPTO_PAIRS = self.active_pairs
+        # logger.info("✅ 활성 코인 %d개 (메이저 20 + 신규 %d)",
+        #             len(self.active_pairs), len(self.extra_pairs))
+        #
+        # asyncio.create_task(self._init_ohlcv())
+        #
+        # logger.info("=" * 50)
+        # logger.info("🚀 AutoTrader crypto-trader 시작")
+        # logger.info("=" * 50)
+        #
+        # asyncio.create_task(self._subscribe_strategy_changes())
+        # asyncio.create_task(self._scan_loop())
+        # asyncio.create_task(self._price_loop())
+        # asyncio.create_task(self._price_monitor())
+        # asyncio.create_task(self._ohlcv_update_loop())   # 1분봉 실시간 갱신
+        # asyncio.create_task(self._six_hour_report_loop())  # 6시간 요약
+        # asyncio.create_task(self._telegram_polling_loop())
+        #
+        # await self._loop()
 
     async def _init_default_strategies(self):
         defaults = [

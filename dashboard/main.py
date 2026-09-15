@@ -1658,10 +1658,10 @@ async def _jarvis_unified_daily_report():
         else:
             crypto_detail = "  매매 없음"
 
+        # 🛑 코인봇 당분간 미사용 (주인 지시) — 일일보고에서 코인 섹션 제외
         raw = (f"[주식봇 보고]\n{stock_txt}\n\n"
-               f"[코인봇 보고] 손익 {crypto_pnl:+,.0f}원\n{crypto_detail}\n\n"
                f"[자비스 판단 활동] 판단 {journal['total']}건 (실행 {journal['ex']} / 보류 {journal['sk']})\n"
-               f"[오늘 총 손익] {total_pnl:+,.0f}원")
+               f"[오늘 총 손익] {stock_pnl:+,.0f}원")
 
         # 자비스 총평 (AI 1회)
         comment = ""

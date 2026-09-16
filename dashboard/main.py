@@ -2097,16 +2097,17 @@ async def check_buy_feasibility(code: str, price: int = 0):
     """특정 종목의 매수가능조회(inquire-psbl-order) — KIS가 이 종목/계좌를 어떻게 보는지 직접 확인
     ('주문이 불가한 계좌입니다' 같은 에러의 원인이 종목 자체 문제인지 확인하는 진단용"""
     try:
-        from stock_trader.kis_trader import KISTrader
-        trader = KISTrader()
         token = await get_kis_token()
         if not token:
             return {"success": False, "error": "KIS 토큰 발급 실패"}
+        acct = (config.KIS_ACCOUNT_NO or "").split("-")
+        cano = acct[0] if acct else ""
+        prdt = acct[1] if len(acct) > 1 else "01"
         import ssl as _ssl
         _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
         tr_id = "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R"
         params = {
-            "CANO": trader._cano, "ACNT_PRDT_CD": trader._acnt_prdt_cd,
+            "CANO": cano, "ACNT_PRDT_CD": prdt,
             "PDNO": code, "ORD_UNPR": str(price), "ORD_DVSN": "01" if price == 0 else "00",
             "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N",
         }

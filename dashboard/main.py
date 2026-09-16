@@ -2092,6 +2092,38 @@ async def _jarvis_weekly_preview():
         logger.error(f"주간 예습 오류: {e}")
 
 
+@app.get("/api/stock/buy_feasibility")
+async def check_buy_feasibility(code: str, price: int = 0):
+    """특정 종목의 매수가능조회(inquire-psbl-order) — KIS가 이 종목/계좌를 어떻게 보는지 직접 확인
+    ('주문이 불가한 계좌입니다' 같은 에러의 원인이 종목 자체 문제인지 확인하는 진단용"""
+    try:
+        from stock_trader.kis_trader import KISTrader
+        trader = KISTrader()
+        token = await get_kis_token()
+        if not token:
+            return {"success": False, "error": "KIS 토큰 발급 실패"}
+        import ssl as _ssl
+        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+        tr_id = "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R"
+        params = {
+            "CANO": trader._cano, "ACNT_PRDT_CD": trader._acnt_prdt_cd,
+            "PDNO": code, "ORD_UNPR": str(price), "ORD_DVSN": "01" if price == 0 else "00",
+            "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N",
+        }
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            async with sess.get(
+                f"{config.kis_base_url}/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+                headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                         "appsecret": config.kis_app_secret, "tr_id": tr_id, "custtype": "P"},
+                params=params, timeout=_aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                data = await resp.json()
+        return {"success": True, "code": code, "rt_cd": data.get("rt_cd"),
+                "msg": data.get("msg1"), "output": data.get("output")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.api_route("/api/strategy/fix_units", methods=["GET", "POST"])
 async def fix_strategy_units():
     """단위변환 버그로 오염된 stock_trader 설정을 정상값(-7%)으로 일괄 정정 (일회성)"""

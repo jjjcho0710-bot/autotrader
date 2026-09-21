@@ -3641,52 +3641,6 @@ async def reset_crypto_pairs(background_tasks: fastapi.background.BackgroundTask
     background_tasks.add_task(_reset_and_collect)
     return {"success": True, "message": f"메이저 코인 {len(MAJOR_PAIRS)}개 초기화 + 데이터 수집 시작!"}
 
-@app.post("/api/collect/crypto/ohlcv")
-async def collect_crypto_ohlcv(background_tasks: fastapi.background.BackgroundTasks):
-    """코인 OHLCV 데이터 수집 (TOP 20 코인 200개 캔들)"""
-    async def _collect():
-        try:
-            import aiohttp, json as _json
-            cached = await redis_client.get("crypto:top_pairs")
-            pairs = _json.loads(cached) if cached else [
-                "KRW-BTC","KRW-ETH","KRW-XRP","KRW-SOL","KRW-ADA",
-                "KRW-DOGE","KRW-AVAX","KRW-DOT","KRW-LINK","KRW-SUI",
-                "KRW-TRX","KRW-SHIB","KRW-ARB","KRW-NEAR","KRW-MATIC",
-            ]
-            logger.info(f"📊 코인 OHLCV 수집 시작: {len(pairs)}개")
-            total = 0
-            async with aiohttp.ClientSession() as s:
-                for pair in pairs:
-                    try:
-                        r = await s.get(
-                            "https://api.upbit.com/v1/candles/minutes/1",
-                            params={"market": pair, "count": 200},
-                            timeout=aiohttp.ClientTimeout(total=10)
-                        )
-                        candles = await r.json()
-                        if isinstance(candles, list) and candles:
-                            rows = [(pair, c["candle_date_time_kst"],
-                                     c["opening_price"], c["high_price"],
-                                     c["low_price"], c["trade_price"],
-                                     c["candle_acc_trade_volume"]) for c in candles]
-                            async with db_pool.acquire() as conn:
-                                await conn.executemany("""
-                                    INSERT INTO crypto_ohlcv(pair,ts,open,high,low,close,volume)
-                                    VALUES($1,$2,$3,$4,$5,$6,$7)
-                                    ON CONFLICT(pair,ts) DO NOTHING
-                                """, rows)
-                            total += len(rows)
-                            logger.info(f"✅ {pair}: {len(rows)}개")
-                        await asyncio.sleep(0.2)
-                    except Exception as e:
-                        logger.error(f"❌ {pair}: {e}")
-            logger.info(f"🎉 코인 OHLCV 수집 완료: {total}개")
-        except Exception as e:
-            logger.error(f"코인 OHLCV 수집 오류: {e}")
-
-    background_tasks.add_task(_collect)
-    return {"success": True, "message": "코인 OHLCV 수집 시작! 잠시 후 완료됩니다."}
-
 @app.post("/api/data/collect")
 async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
     """수동 데이터 수집 트리거 (수급/공시/뉴스)"""
@@ -7572,31 +7526,6 @@ async def mock_stock_positions():
     return {"success": True, "data": positions}
 
 
-@app.get("/api/mock/positions/crypto")
-async def mock_crypto_positions():
-    """모의 코인 보유 포지션"""
-    pairs = random.sample(list(_CRYPTO_BASE.keys()), k=random.randint(1, 3))
-    positions = []
-    for pair in pairs:
-        info = _CRYPTO_BASE[pair]
-        avg  = round(info["price"] * random.uniform(0.85, 1.08))
-        cur  = _jitter(info["price"])
-        qty  = round(random.uniform(0.001, 0.5) if "BTC" in pair else random.uniform(0.1, 10), 6)
-        pnl  = (cur - avg) * qty
-        currency = pair.replace("KRW-", "")
-        positions.append({
-            "pair":      pair,
-            "currency":  currency,
-            "name":      info["name"],
-            "qty":       qty,
-            "avg_price": avg,
-            "cur_price": cur,
-            "pnl":       round(pnl),
-            "pnl_rate":  round((cur - avg) / avg * 100, 2),
-        })
-    return {"success": True, "data": positions}
-
-
 @app.get("/api/mock/trades")
 async def mock_trades(limit: int = 10, bot: str = None):
     """모의 매매 이력"""
@@ -7645,7 +7574,6 @@ async def mock_status():
         "success": True,
         "data": {
             "stock_trader":  {"status": "running", "last_tick": datetime.now().isoformat()},
-            "crypto_trader": {"status": "running", "last_tick": datetime.now().isoformat()},
             "data_collector":{"status": "running", "last_tick": datetime.now().isoformat()},
         }
     }

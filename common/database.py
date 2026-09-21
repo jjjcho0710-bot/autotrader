@@ -40,14 +40,6 @@ class Database:
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_ohlcv_symbol_ts ON stock_ohlcv (symbol, ts);
 
-                CREATE TABLE IF NOT EXISTS crypto_ohlcv (
-                    id BIGSERIAL PRIMARY KEY, pair VARCHAR(20) NOT NULL,
-                    ts TIMESTAMPTZ NOT NULL, open NUMERIC(20,2), high NUMERIC(20,2),
-                    low NUMERIC(20,2), close NUMERIC(20,2), volume NUMERIC(20,8),
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_ohlcv_pair_ts ON crypto_ohlcv (pair, ts);
-
                 CREATE TABLE IF NOT EXISTS trade_history (
                     id BIGSERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
                     asset_type VARCHAR(10) NOT NULL, symbol VARCHAR(20) NOT NULL,
@@ -165,10 +157,7 @@ class Database:
                 INSERT INTO strategy_config (bot, name, is_active, params) VALUES
                 ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
                 ('stock_trader','RSI반등',false,'{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
-                ('stock_trader','볼린저밴드',false,'{"period":20,"std":2,"stop_loss":-2,"buy_amount":500000}'),
-                ('crypto_trader','MACD',true,'{"fast":12,"slow":26,"signal":9,"candle_min":60,"stop_loss":-3,"take_profit":7,"buy_amount":500000}'),
-                ('crypto_trader','변동성돌파',false,'{"k":0.5,"candle_min":1440,"stop_loss":-3}'),
-                ('crypto_trader','RSI과매도',false,'{"period":14,"entry":25,"exit":65,"stop_loss":-3,"buy_amount":500000}')
+                ('stock_trader','볼린저밴드',false,'{"period":20,"std":2,"stop_loss":-2,"buy_amount":500000}')
                 ON CONFLICT (bot, name) DO NOTHING;
             """)
             logger.info("✅ DB 테이블 확인 완료")
@@ -181,16 +170,6 @@ class Database:
                 ON CONFLICT (symbol, ts) DO UPDATE
                 SET open=$3, high=$4, low=$5, close=$6, volume=$7
             """, symbol, ts, o, h, l, c, v)
-
-    async def insert_crypto_ohlcv(self, pair, ts, o, h, l, c, v):
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO crypto_ohlcv (pair, ts, open, high, low, close, volume)
-                VALUES ($1,$2,$3,$4,$5,$6,$7)
-                ON CONFLICT (pair, ts) DO UPDATE
-                SET open=$3, high=$4, low=$5, close=$6, volume=$7
-            """, pair, ts, float(o), float(h), float(l), float(c), float(v))
-
     async def insert_trade(self, bot, asset_type, symbol, side, price, quantity, amount, strategy, pnl=None):
         async with self.pool.acquire() as conn:
             await conn.execute("""

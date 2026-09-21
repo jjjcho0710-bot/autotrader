@@ -12,7 +12,6 @@ from datetime import datetime
 from common.config import config
 from common.database import db, cache
 from collectors.kis_collector import KISCollector
-from collectors.upbit_collector import UpbitCollector
 from collectors.daily_collector import DailyCollector
 
 # ── 로깅 설정 ──────────────────────────────────────────
@@ -35,7 +34,6 @@ class DataCollector:
     def __init__(self):
         self.running = False
         self.kis = KISCollector()
-        self.upbit = UpbitCollector()
         self.daily = DailyCollector()
         self.last_daily_collect = None
 
@@ -72,7 +70,6 @@ class DataCollector:
         logger.info("🚀 AutoTrader data-collector 시작")
         logger.info(f"   수집 주기: {config.COLLECT_INTERVAL_SEC}초")
         logger.info(f"   주식 종목: {len(config.STOCK_SYMBOLS)}개")
-        logger.info(f"   코인 페어: {len(config.CRYPTO_PAIRS)}개")
         logger.info("=" * 50)
 
         # DB / Redis 연결
@@ -81,7 +78,6 @@ class DataCollector:
 
         # 수집기 시작
         await self.kis.start()
-        await self.upbit.start()
         await self.daily.start()
 
         # 봇 상태 Redis에 등록
@@ -94,7 +90,6 @@ class DataCollector:
             "status": "running",
             "started_at": datetime.now().isoformat(),
             "stock_symbols": stock_count,
-            "crypto_pairs": len(config.CRYPTO_PAIRS),
         })
 
         self.running = True
@@ -110,7 +105,6 @@ class DataCollector:
                 # 주식 + 코인 동시 수집
                 await asyncio.gather(
                     self.kis.collect_all(),
-                    self.upbit.collect_all(),
                     return_exceptions=True,
                 )
 
@@ -163,7 +157,6 @@ class DataCollector:
                     "status": "running",
                     "last_collect": datetime.now().isoformat(),
                     "stock_symbols": len(config.STOCK_SYMBOLS),
-                    "crypto_pairs": len(config.CRYPTO_PAIRS),
                 })
 
             except Exception as e:
@@ -184,7 +177,6 @@ class DataCollector:
         logger.info("🛑 data-collector 종료 중...")
         self.running = False
         await self.kis.stop()
-        await self.upbit.stop()
         await self.daily.stop()
         await db.disconnect()
         await cache.disconnect()

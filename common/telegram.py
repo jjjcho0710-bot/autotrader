@@ -44,14 +44,6 @@ async def send_stock(text: str):
     await _send(token, chat_id, text)
 
 
-# ── 코인봇 전송 ───────────────────────────────────────
-async def send_crypto(text: str):
-    """코인봇으로 전송"""
-    token   = config.CRYPTO_BOT_TOKEN
-    chat_id = config.CRYPTO_CHAT_ID or config.TELEGRAM_CHAT_ID
-    await _send(token, chat_id, text)
-
-
 # ── Jarvis 전송 ───────────────────────────────────────
 async def send_jarvis(text: str):
     """TradeJarvis 봇으로 전송"""
@@ -73,8 +65,6 @@ async def notify_buy(bot: str, symbol: str, price: float, qty: float, strategy: 
     )
     if bot == "stock_trader":
         await send_stock(msg)
-    elif bot == "crypto_trader":
-        await send_crypto(msg)
     else:
         await send_message(msg)
 
@@ -92,8 +82,6 @@ async def notify_sell(bot: str, symbol: str, price: float, qty: float, pnl: floa
     )
     if bot == "stock_trader":
         await send_stock(msg)
-    elif bot == "crypto_trader":
-        await send_crypto(msg)
     else:
         await send_message(msg)
 

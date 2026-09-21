@@ -88,8 +88,7 @@ body{display:flex;flex-direction:column;min-height:100vh;padding-bottom:70px;}
 <nav class="bottom-nav">
   <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
   <a href="/stock" class="bn-item"><span class="bn-icon">📈</span>주식</a>
-  <a href="/crypto" class="bn-item"><span class="bn-icon">₿</span>코인</a>
-  <a href="/strategy" class="bn-item active"><span class="bn-icon">⚙️</span>전략</a>
+    <a href="/strategy" class="bn-item active"><span class="bn-icon">⚙️</span>전략</a>
   <a href="/jarvis" class="bn-item"><span class="bn-icon">🤖</span>자비스</a>
 </nav>
 
@@ -173,7 +172,7 @@ async function loadStrategies(){
     const strats=d.data||[];
     const container=document.getElementById('strategy-container');
 
-    const bots={'stock_trader':'주식 전략 (STOCK TRADER)','crypto_trader':'코인 전략 (CRYPTO TRADER)'};
+    const bots={'stock_trader':'주식 전략 (STOCK TRADER)'};
     let html='';
     for(const [bot,label] of Object.entries(bots)){
       const botStrats=strats.filter(s=>s.bot===bot);

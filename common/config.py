@@ -42,8 +42,6 @@ class Config:
         return self.KIS_APP_SECRET
 
     # ── 업비트 ──
-    UPBIT_ACCESS_KEY: str = os.getenv("UPBIT_ACCESS_KEY", "")
-    UPBIT_SECRET_KEY: str = os.getenv("UPBIT_SECRET_KEY", "")
 
     # ── 텔레그램 ──
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
@@ -56,13 +54,10 @@ class Config:
     JARVIS_ANALYST_CHAT_ID: str = os.getenv("JARVIS_ANALYST_CHAT_ID", "")
     STOCK_BOT_TOKEN:        str = os.getenv("STOCK_BOT_TOKEN", "")
     STOCK_CHAT_ID:          str = os.getenv("STOCK_CHAT_ID", "")
-    CRYPTO_BOT_TOKEN:       str = os.getenv("CRYPTO_BOT_TOKEN", "")
-    CRYPTO_CHAT_ID:         str = os.getenv("CRYPTO_CHAT_ID", "")
 
     # ── 수집 설정 ──
     COLLECT_INTERVAL_SEC: int = int(os.getenv("COLLECT_INTERVAL_SEC", "60"))  # 1분봉
     STOCK_SYMBOLS: list = None   # 아래에서 설정
-    CRYPTO_PAIRS: list = None
 
     def __post_init__(self):
         # 수집할 주식 종목 (환경변수로 override 가능)
@@ -79,8 +74,6 @@ class Config:
         ]
 
         # 수집할 코인 페어
-        pairs_env = os.getenv("CRYPTO_PAIRS", "")
-        self.CRYPTO_PAIRS = pairs_env.split(",") if pairs_env else [
             "KRW-BTC",
             "KRW-ETH",
             "KRW-SOL",

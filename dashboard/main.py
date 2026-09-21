@@ -3330,14 +3330,36 @@ async def set_trade_mode(request: Request):
 
 @app.get("/api/token/refresh")
 async def refresh_kis_token():
-    """KIS 토큰 강제 재발급"""
+    """KIS 토큰 강제 재발급 + 상세 오류"""
     try:
-        token = await get_kis_token(force_new=True)
+        import aiohttp as _ah, ssl as _ssl
+        _ctx = _ssl.create_default_context()
+        _ctx.check_hostname = False
+        _ctx.verify_mode = _ssl.CERT_NONE
+        
+        url = f"{config.kis_base_url}/oauth2/tokenP"
+        payload = {
+            "grant_type": "client_credentials",
+            "appkey": config.kis_app_key,
+            "appsecret": config.kis_app_secret,
+        }
+        async with _ah.ClientSession(connector=_ah.TCPConnector(ssl=_ctx)) as sess:
+            r = await sess.post(url, json=payload, timeout=_ah.ClientTimeout(total=10))
+            data = await r.json()
+        
+        token = data.get("access_token", "")
         if token:
-            return {"success": True, "message": "토큰 재발급 완료", "token_preview": token[:20]+"..."}
-        return {"success": False, "message": "토큰 발급 실패"}
+            redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
+            await redis_client.setex(redis_key, 82800, token)
+            return {"success": True, "message": "토큰 재발급 완료", 
+                    "is_paper": config.KIS_IS_PAPER,
+                    "token_preview": token[:20]+"..."}
+        return {"success": False, "message": "토큰 발급 실패", "kis_response": data}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(e),
+                "kis_base_url": config.kis_base_url,
+                "is_paper": config.KIS_IS_PAPER,
+                "app_key_prefix": config.kis_app_key[:8] if config.kis_app_key else "없음"}
 
 @app.get("/api/health")
 async def health():

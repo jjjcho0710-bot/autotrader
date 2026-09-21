@@ -2546,15 +2546,6 @@ async def stock():
         return f.read()
 
 
-async def crypto():
-    with open("static/crypto.html", encoding="utf-8") as f:
-        return f.read()
-
-
-async def crypto_html():
-    with open("static/crypto.html", encoding="utf-8") as f:
-        return f.read()
-
 @app.get("/strategy", response_class=HTMLResponse)
 async def strategy():
     with open("static/strategy.html", encoding="utf-8") as f:
@@ -3167,29 +3158,6 @@ async def _get_stock_prices_raw():
 COIN_NAMES = {'KRW-BTC': '비트코인', 'KRW-ETH': '이더리움', 'KRW-SOL': '솔라나', 'KRW-XRP': '리플', 'KRW-ADA': '에이다', 'KRW-DOGE': '도지코인', 'KRW-AVAX': '아발란체', 'KRW-DOT': '폴카닷', 'KRW-MATIC': '폴리곤', 'KRW-LINK': '체인링크', 'KRW-SUI': '수이', 'KRW-TRX': '트론', 'KRW-SHIB': '시바이누', 'KRW-ARB': '아비트럼', 'KRW-OP': '옵티미즘', 'KRW-NEAR': '니어', 'KRW-APT': '앱토스', 'KRW-FIL': '파일코인', 'KRW-SAND': '샌드박스', 'KRW-AXS': '엑시인피니티'}
 
 
-async def get_crypto_prices():
-    """코인 실시간 시세 (Redis) + 한글명"""
-    try:
-        import json as _json
-        val = await redis_client.get("crypto:prices")
-        if val:
-            data = _json.loads(val)
-        else:
-            data = {}
-            for pair in config.CRYPTO_PAIRS:
-                v = await redis_client.get(f"crypto:price:{pair}")
-                if v:
-                    data[pair] = _json.loads(v)
-
-        # 한글명 추가
-        for pair in data:
-            data[pair]["name"] = COIN_NAMES.get(pair, pair.replace("KRW-", ""))
-
-        return {"success": True, "data": data}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
 @app.get("/api/trades")
 async def get_trades(limit: int = 50, bot: str = None):
     """매매 이력 조회 (PostgreSQL)"""
@@ -3252,23 +3220,6 @@ async def get_stock_ohlcv(symbol: str, limit: int = 60):
 
 
 
-async def get_crypto_ohlcv(pair: str, limit: int = 60):
-    """코인 OHLCV 조회"""
-    try:
-        pair = pair.replace("-", "/")
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT * FROM crypto_ohlcv
-                WHERE pair = $1
-                ORDER BY ts DESC LIMIT $2
-            """, pair, limit)
-            data = [{"ts": r["ts"].isoformat(), "o": float(r["open"]), "h": float(r["high"]),
-                     "l": float(r["low"]), "c": float(r["close"]), "v": float(r["volume"])} for r in rows]
-            return {"success": True, "data": list(reversed(data))}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
 @app.get("/api/summary")
 async def get_summary():
     """전체 요약 (오늘 수익, 체결 수 등)"""
@@ -3312,20 +3263,6 @@ async def get_summary():
         return {"success": False, "error": str(e)}
 
 
-
-
-async def get_trade_mode():
-    mode = await redis_client.get("crypto:trade_mode")
-    return {"mode": mode.decode() if mode else "scalping"}
-
-
-async def set_trade_mode(request: Request):
-    body = await request.json()
-    mode = body.get("mode", "scalping")
-    if mode not in ["scalping", "swing"]:
-        return {"success": False, "error": "모드는 scalping 또는 swing"}
-    await redis_client.set("crypto:trade_mode", mode)
-    return {"success": True, "mode": mode, "message": f"{'단타' if mode=='scalping' else '스윙'} 모드로 전환!"}
 
 
 @app.get("/api/token/refresh")
@@ -3591,55 +3528,6 @@ async def get_sentiment_data():
 
 
 
-
-async def reset_crypto_pairs(background_tasks: fastapi.background.BackgroundTasks):
-    """코인 TOP 20을 메이저 코인으로 초기화 + OHLCV 수집"""
-    MAJOR_PAIRS = [
-        "KRW-BTC","KRW-ETH","KRW-XRP","KRW-SOL","KRW-ADA",
-        "KRW-DOGE","KRW-AVAX","KRW-LINK","KRW-DOT","KRW-SUI",
-        "KRW-TRX","KRW-NEAR","KRW-MATIC","KRW-ARB","KRW-SHIB",
-        "KRW-APT","KRW-SAND","KRW-ATOM","KRW-FIL","KRW-AXS"
-    ]
-
-    async def _reset_and_collect():
-        import aiohttp, json as _json
-        # Redis TOP 20 메이저 코인으로 교체
-        await redis_client.setex("crypto:top_pairs", 86400, _json.dumps(MAJOR_PAIRS))
-        logger.info(f"✅ TOP 20 메이저 코인으로 초기화: {len(MAJOR_PAIRS)}개")
-
-        # OHLCV 수집
-        total = 0
-        async with aiohttp.ClientSession() as s:
-            for pair in MAJOR_PAIRS:
-                try:
-                    r = await s.get(
-                        "https://api.upbit.com/v1/candles/minutes/1",
-                        params={"market": pair, "count": 200},
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    )
-                    candles = await r.json()
-                    if isinstance(candles, list) and candles:
-                        from datetime import datetime as _dt
-                        rows = [(pair,
-                                 _dt.fromisoformat(c["candle_date_time_kst"]),
-                                 c["opening_price"], c["high_price"],
-                                 c["low_price"], c["trade_price"],
-                                 c["candle_acc_trade_volume"]) for c in candles]
-                        async with db_pool.acquire() as conn:
-                            await conn.executemany("""
-                                INSERT INTO crypto_ohlcv(symbol,ts,open,high,low,close,volume)
-                                VALUES($1,$2,$3,$4,$5,$6,$7)
-                                ON CONFLICT(symbol,ts) DO NOTHING
-                            """, rows)
-                        total += len(rows)
-                        logger.info(f"✅ {pair}: {len(rows)}개")
-                    await asyncio.sleep(0.2)
-                except Exception as e:
-                    logger.error(f"❌ {pair}: {e}")
-        logger.info(f"🎉 완료: {total}개")
-
-    background_tasks.add_task(_reset_and_collect)
-    return {"success": True, "message": f"메이저 코인 {len(MAJOR_PAIRS)}개 초기화 + 데이터 수집 시작!"}
 
 @app.post("/api/data/collect")
 async def trigger_collect(background_tasks: fastapi.background.BackgroundTasks):
@@ -4854,20 +4742,6 @@ async def _summarize_old_chats():
 
 
 
-async def crypto_chat(body: dict):
-    """코인봇 전용 채팅 — 주식봇 설정변경/ACTION 로직을 전혀 거치지 않는 순수 질의응답.
-    독립된 'coin-assistant' 모델(자비스와 다른 정체성)을 'jarvis_crypto' 세션으로 호출."""
-    user_msg = (body.get("message") or "").strip()
-    if not user_msg:
-        return {"success": False, "error": "메시지가 없어요"}
-    try:
-        coin_model = os.getenv("CRYPTO_MODEL", "coin-assistant")
-        reply = await _ask_openwebui(user_msg, session_id="jarvis_crypto", model=coin_model)
-        return {"success": True, "reply": reply}
-    except Exception as e:
-        logger.error(f"코인봇 채팅 오류: {e}")
-        return {"success": False, "error": str(e)}
-
 @app.post("/api/jarvis/chat")
 async def jarvis_chat(body: dict):
     """채팅 엔트리 — 웹 대화는 텔레그램으로 미러 전달"""
@@ -6025,130 +5899,6 @@ async def _get_stock_positions_raw():
 
 
 
-async def get_crypto_stats():
-    """코인 수익 통계 — 일별/주별/코인별 성과"""
-    try:
-        async with db_pool.acquire() as conn:
-            # 일별 수익 (최근 14일)
-            daily = await conn.fetch("""
-                SELECT DATE(created_at AT TIME ZONE 'Asia/Seoul') AS d,
-                       SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS pnl,
-                       COUNT(CASE WHEN side='BUY' THEN 1 END)  AS buys,
-                       COUNT(CASE WHEN side='SELL' THEN 1 END) AS sells,
-                       COUNT(CASE WHEN side='SELL' AND pnl > 0 THEN 1 END) AS wins,
-                       COUNT(CASE WHEN side='SELL' AND pnl < 0 THEN 1 END) AS losses
-                FROM trade_history
-                WHERE bot='crypto_trader'
-                  AND created_at >= NOW() - INTERVAL '14 days'
-                GROUP BY d ORDER BY d
-            """)
-
-            # 코인별 성과 (최근 30일)
-            by_coin = await conn.fetch("""
-                SELECT symbol,
-                       SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS total_pnl,
-                       COUNT(CASE WHEN side='SELL' THEN 1 END) AS trades,
-                       COUNT(CASE WHEN side='SELL' AND pnl > 0 THEN 1 END) AS wins,
-                       COUNT(CASE WHEN side='SELL' AND pnl < 0 THEN 1 END) AS losses
-                FROM trade_history
-                WHERE bot='crypto_trader'
-                  AND created_at >= NOW() - INTERVAL '30 days'
-                GROUP BY symbol ORDER BY total_pnl DESC
-            """)
-
-            # 오늘 요약
-            today_row = await conn.fetchrow("""
-                SELECT SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS pnl,
-                       COUNT(CASE WHEN side='BUY' THEN 1 END)  AS buys,
-                       COUNT(CASE WHEN side='SELL' THEN 1 END) AS sells,
-                       COUNT(CASE WHEN side='SELL' AND pnl > 0 THEN 1 END) AS wins,
-                       COUNT(CASE WHEN side='SELL' AND pnl < 0 THEN 1 END) AS losses
-                FROM trade_history
-                WHERE bot='crypto_trader'
-                  AND created_at >= NOW() AT TIME ZONE 'Asia/Seoul' - INTERVAL '1 day'
-                  AND DATE(created_at AT TIME ZONE 'Asia/Seoul') = CURRENT_DATE AT TIME ZONE 'Asia/Seoul'
-            """)
-
-            # 누적 손익
-            total_row = await conn.fetchrow("""
-                SELECT SUM(CASE WHEN side='SELL' THEN COALESCE(pnl,0) ELSE 0 END) AS total_pnl
-                FROM trade_history WHERE bot='crypto_trader'
-            """)
-
-        return {
-            "success": True,
-            "today": {
-                "pnl":    float(today_row["pnl"] or 0),
-                "buys":   today_row["buys"]   or 0,
-                "sells":  today_row["sells"]  or 0,
-                "wins":   today_row["wins"]   or 0,
-                "losses": today_row["losses"] or 0,
-            },
-            "total_pnl": float(total_row["total_pnl"] or 0),
-            "daily": [
-                {
-                    "date":   str(r["d"]),
-                    "pnl":    float(r["pnl"] or 0),
-                    "buys":   r["buys"]   or 0,
-                    "sells":  r["sells"]  or 0,
-                    "wins":   r["wins"]   or 0,
-                    "losses": r["losses"] or 0,
-                }
-                for r in daily
-            ],
-            "by_coin": [
-                {
-                    "symbol":    r["symbol"],
-                    "name":      COIN_NAMES.get(r["symbol"], r["symbol"].replace("KRW-","")),
-                    "total_pnl": float(r["total_pnl"] or 0),
-                    "trades":    r["trades"] or 0,
-                    "wins":      r["wins"]   or 0,
-                    "losses":    r["losses"] or 0,
-                    "win_rate":  round(r["wins"] / r["trades"] * 100, 1) if r["trades"] else 0,
-                }
-                for r in by_coin
-            ],
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-async def get_crypto_positions():
-    """업비트 코인 보유 포지션 + 계좌 요약"""
-    try:
-        import json as _json
-
-        # 포지션 캐시
-        positions = []
-        cached = await redis_client.get("crypto:positions")
-        if cached:
-            positions = _json.loads(cached)
-
-        # KRW 잔고
-        krw_balance = 0.0
-        krw_cached = await redis_client.get("crypto:krw_balance")
-        if krw_cached:
-            krw_balance = float(krw_cached)
-
-        # 코인 평가금액 + 손익 계산
-        coin_eval = sum(float(p.get("cur_price",0)) * float(p.get("qty",0)) for p in positions)
-        buy_amount = sum(float(p.get("avg_price",0)) * float(p.get("qty",0)) for p in positions)
-        pnl = coin_eval - buy_amount
-        pnl_rate = (pnl / buy_amount * 100) if buy_amount > 0 else 0.0
-
-        account = {
-            "krw_balance": krw_balance,
-            "coin_eval":   round(coin_eval, 2),
-            "total_assets": round(krw_balance + coin_eval, 2),
-            "pnl":         round(pnl, 2),
-            "pnl_rate":    round(pnl_rate, 2),
-        }
-
-        return {"success": True, "data": positions, "account": account}
-    except Exception as e:
-        return {"success": False, "error": str(e), "data": [], "account": {}}
-
-
 @app.get("/api/balance/stock")
 async def get_stock_balance():
     """KIS API - 주식 잔고 조회"""
@@ -6193,25 +5943,6 @@ async def get_stock_balance():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-
-
-async def get_crypto_balance():
-    """업비트 - KRW 잔고 조회"""
-    try:
-        import aiohttp as http
-        import jwt, uuid
-        payload = {"access_key": config.UPBIT_ACCESS_KEY, "nonce": str(uuid.uuid4())}
-        token = jwt.encode(payload, config.UPBIT_SECRET_KEY, algorithm="HS256")
-        async with http.ClientSession() as session:
-            res = await session.get(
-                "https://api.upbit.com/v1/accounts",
-                headers={"Authorization": f"Bearer {token}"}
-            )
-            balances = await res.json()
-            krw = next((float(b["balance"]) for b in balances if b["currency"] == "KRW"), 0)
-            return {"success": True, "data": {"krw": krw}}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
 
 # ── 전략 관리 API ──────────────────────────────────────
@@ -7431,53 +7162,6 @@ async def mock_stock_prices():
         }
     return {"success": True, "data": prices}
 
-
-
-async def mock_crypto_prices():
-    """모의 코인 실시간 시세 (업비트 공개 API 시도 → 실패시 모의)"""
-    import aiohttp as http
-    prices = {}
-    pairs = list(_CRYPTO_BASE.keys())
-    try:
-        async with http.ClientSession() as session:
-            res = await session.get(
-                "https://api.upbit.com/v1/ticker",
-                params={"markets": ",".join(pairs)},
-                timeout=http.ClientTimeout(total=4),
-            )
-            tickers = await res.json()
-            for t in tickers:
-                pair = t["market"]
-                info = _CRYPTO_BASE.get(pair, {})
-                prices[pair] = {
-                    "name":        info.get("name", pair),
-                    "price":       float(t.get("trade_price", 0)),
-                    "prev":        float(t.get("prev_closing_price", 0)),
-                    "change":      float(t.get("signed_change_price", 0)),
-                    "change_rate": float(t.get("signed_change_rate", 0)) * 100,
-                    "volume":      float(t.get("acc_trade_volume_24h", 0)),
-                    "high":        float(t.get("high_price", 0)),
-                    "low":         float(t.get("low_price", 0)),
-                    "source":      "live",
-                }
-        return {"success": True, "data": prices}
-    except Exception as e:
-        logger.warning(f"업비트 실시간 실패, 모의 데이터 사용: {e}")
-        for pair, info in _CRYPTO_BASE.items():
-            cur = _jitter(info["price"], 0.008)
-            prev = _jitter(info["price"], 0.005)
-            prices[pair] = {
-                "name":        info["name"],
-                "price":       cur,
-                "prev":        prev,
-                "change":      cur - prev,
-                "change_rate": _change_rate(prev, cur),
-                "volume":      random.uniform(100, 5000),
-                "high":        round(cur * 1.02),
-                "low":         round(cur * 0.98),
-                "source":      "mock",
-            }
-        return {"success": True, "data": prices}
 
 
 @app.get("/api/mock/summary")

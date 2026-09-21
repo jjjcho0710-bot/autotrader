@@ -3327,6 +3327,18 @@ async def set_trade_mode(request: Request):
     await redis_client.set("crypto:trade_mode", mode)
     return {"success": True, "mode": mode, "message": f"{'단타' if mode=='scalping' else '스윙'} 모드로 전환!"}
 
+
+@app.post("/api/token/refresh")
+async def refresh_kis_token():
+    """KIS 토큰 강제 재발급"""
+    try:
+        token = await get_kis_token(force_new=True)
+        if token:
+            return {"success": True, "message": "토큰 재발급 완료", "token_preview": token[:20]+"..."}
+        return {"success": False, "message": "토큰 발급 실패"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}

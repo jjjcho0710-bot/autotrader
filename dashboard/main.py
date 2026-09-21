@@ -3328,7 +3328,7 @@ async def set_trade_mode(request: Request):
     return {"success": True, "mode": mode, "message": f"{'단타' if mode=='scalping' else '스윙'} 모드로 전환!"}
 
 
-@app.post("/api/token/refresh")
+@app.get("/api/token/refresh")
 async def refresh_kis_token():
     """KIS 토큰 강제 재발급"""
     try:

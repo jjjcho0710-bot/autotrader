@@ -182,8 +182,8 @@ class Database:
             table = "stock_daily_ohlcv"
             col = "symbol"
         else:
-            table = "stock_ohlcv" if asset == "stock" else "crypto_ohlcv"
-            col = "symbol" if asset == "stock" else "pair"
+            table = "stock_ohlcv"
+            col = "symbol"
         async with self.pool.acquire() as conn:
             # 최신 N개를 DESC로 가져온 뒤 ASC로 뒤집기
             rows = await conn.fetch(f"""

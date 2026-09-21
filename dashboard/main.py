@@ -2545,12 +2545,12 @@ async def stock():
     with open("static/stock.html", encoding="utf-8") as f:
         return f.read()
 
-@app.get("/crypto", response_class=HTMLResponse)
+
 async def crypto():
     with open("static/crypto.html", encoding="utf-8") as f:
         return f.read()
 
-@app.get("/crypto.html", response_class=HTMLResponse)
+
 async def crypto_html():
     with open("static/crypto.html", encoding="utf-8") as f:
         return f.read()
@@ -3166,7 +3166,7 @@ async def _get_stock_prices_raw():
 
 COIN_NAMES = {'KRW-BTC': '비트코인', 'KRW-ETH': '이더리움', 'KRW-SOL': '솔라나', 'KRW-XRP': '리플', 'KRW-ADA': '에이다', 'KRW-DOGE': '도지코인', 'KRW-AVAX': '아발란체', 'KRW-DOT': '폴카닷', 'KRW-MATIC': '폴리곤', 'KRW-LINK': '체인링크', 'KRW-SUI': '수이', 'KRW-TRX': '트론', 'KRW-SHIB': '시바이누', 'KRW-ARB': '아비트럼', 'KRW-OP': '옵티미즘', 'KRW-NEAR': '니어', 'KRW-APT': '앱토스', 'KRW-FIL': '파일코인', 'KRW-SAND': '샌드박스', 'KRW-AXS': '엑시인피니티'}
 
-@app.get("/api/prices/crypto")
+
 async def get_crypto_prices():
     """코인 실시간 시세 (Redis) + 한글명"""
     try:
@@ -3251,7 +3251,7 @@ async def get_stock_ohlcv(symbol: str, limit: int = 60):
         return {"success": False, "error": str(e)}
 
 
-@app.get("/api/ohlcv/crypto/{pair}")
+
 async def get_crypto_ohlcv(pair: str, limit: int = 60):
     """코인 OHLCV 조회"""
     try:
@@ -3313,12 +3313,12 @@ async def get_summary():
 
 
 
-@app.get("/api/crypto/trade-mode")
+
 async def get_trade_mode():
     mode = await redis_client.get("crypto:trade_mode")
     return {"mode": mode.decode() if mode else "scalping"}
 
-@app.post("/api/crypto/trade-mode")
+
 async def set_trade_mode(request: Request):
     body = await request.json()
     mode = body.get("mode", "scalping")
@@ -3591,7 +3591,7 @@ async def get_sentiment_data():
 
 
 
-@app.post("/api/collect/crypto/reset")
+
 async def reset_crypto_pairs(background_tasks: fastapi.background.BackgroundTasks):
     """코인 TOP 20을 메이저 코인으로 초기화 + OHLCV 수집"""
     MAJOR_PAIRS = [
@@ -4853,7 +4853,7 @@ async def _summarize_old_chats():
 
 
 
-@app.post("/api/crypto/chat")
+
 async def crypto_chat(body: dict):
     """코인봇 전용 채팅 — 주식봇 설정변경/ACTION 로직을 전혀 거치지 않는 순수 질의응답.
     독립된 'coin-assistant' 모델(자비스와 다른 정체성)을 'jarvis_crypto' 세션으로 호출."""
@@ -6024,7 +6024,7 @@ async def _get_stock_positions_raw():
 
 
 
-@app.get("/api/crypto/stats")
+
 async def get_crypto_stats():
     """코인 수익 통계 — 일별/주별/코인별 성과"""
     try:
@@ -6112,7 +6112,7 @@ async def get_crypto_stats():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@app.get("/api/positions/crypto")
+
 async def get_crypto_positions():
     """업비트 코인 보유 포지션 + 계좌 요약"""
     try:
@@ -6194,7 +6194,7 @@ async def get_stock_balance():
         return {"success": False, "error": str(e)}
 
 
-@app.get("/api/balance/crypto")
+
 async def get_crypto_balance():
     """업비트 - KRW 잔고 조회"""
     try:
@@ -7432,7 +7432,7 @@ async def mock_stock_prices():
     return {"success": True, "data": prices}
 
 
-@app.get("/api/mock/prices/crypto")
+
 async def mock_crypto_prices():
     """모의 코인 실시간 시세 (업비트 공개 API 시도 → 실패시 모의)"""
     import aiohttp as http

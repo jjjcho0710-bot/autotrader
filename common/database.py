@@ -7,6 +7,7 @@ import asyncpg
 import redis.asyncio as aioredis
 
 from common.config import config
+from common.migrations import run_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -23,144 +24,22 @@ class Database:
             password=config.DB_PASS, min_size=2, max_size=10,
         )
         logger.info("✅ PostgreSQL 연결 완료")
-        await self._create_tables()
+        await self._run_migrations()
 
     async def disconnect(self):
         if self.pool:
             await self.pool.close()
 
-    async def _create_tables(self):
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS stock_ohlcv (
-                    id BIGSERIAL PRIMARY KEY, symbol VARCHAR(10) NOT NULL,
-                    ts TIMESTAMPTZ NOT NULL, open BIGINT, high BIGINT,
-                    low BIGINT, close BIGINT, volume BIGINT,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_ohlcv_symbol_ts ON stock_ohlcv (symbol, ts);
-
-                CREATE TABLE IF NOT EXISTS trade_history (
-                    id BIGSERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
-                    asset_type VARCHAR(10) NOT NULL, symbol VARCHAR(20) NOT NULL,
-                    side VARCHAR(5) NOT NULL, price NUMERIC(20,2), quantity NUMERIC(20,8),
-                    amount NUMERIC(20,2), strategy VARCHAR(50), pnl NUMERIC(20,2),
-                    ts TIMESTAMPTZ DEFAULT NOW()
-                );
-
-                CREATE TABLE IF NOT EXISTS balance_snapshot (
-                    id BIGSERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
-                    total_krw NUMERIC(20,2), cash_krw NUMERIC(20,2),
-                    eval_krw NUMERIC(20,2), pnl_today NUMERIC(20,2),
-                    ts TIMESTAMPTZ DEFAULT NOW()
-                );
-
-                CREATE TABLE IF NOT EXISTS stock_daily_ohlcv (
-                    id BIGSERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    ts DATE NOT NULL,
-                    open BIGINT, high BIGINT, low BIGINT, close BIGINT,
-                    volume BIGINT, change_rate NUMERIC(8,2),
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_daily_symbol_ts
-                    ON stock_daily_ohlcv (symbol, ts);
-
-                CREATE TABLE IF NOT EXISTS stock_indicators (
-                    id BIGSERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    ts DATE NOT NULL,
-                    rsi14 NUMERIC(8,2),
-                    macd NUMERIC(12,2), macd_signal NUMERIC(12,2), macd_hist NUMERIC(12,2),
-                    bb_upper NUMERIC(12,2), bb_middle NUMERIC(12,2), bb_lower NUMERIC(12,2),
-                    bb_pct NUMERIC(8,4),
-                    atr14 NUMERIC(12,2),
-                    stoch_k NUMERIC(8,2), stoch_d NUMERIC(8,2),
-                    sma5 NUMERIC(12,2), sma20 NUMERIC(12,2), sma60 NUMERIC(12,2),
-                    ema12 NUMERIC(12,2), ema26 NUMERIC(12,2),
-                    golden_cross BOOLEAN, dead_cross BOOLEAN,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_indicators_symbol_ts
-                    ON stock_indicators (symbol, ts);
-
-                CREATE TABLE IF NOT EXISTS ml_predictions (
-                    id BIGSERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    ts TIMESTAMPTZ NOT NULL,
-                    model_name VARCHAR(50),
-                    buy_prob NUMERIC(6,4),
-                    sell_prob NUMERIC(6,4),
-                    signal VARCHAR(10),
-                    features JSONB,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-
-                CREATE TABLE IF NOT EXISTS strategy_config (
-                    id SERIAL PRIMARY KEY, bot VARCHAR(20) NOT NULL,
-                    name VARCHAR(50) NOT NULL, is_active BOOLEAN DEFAULT FALSE,
-                    params JSONB DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(bot, name)
-                );
-                CREATE TABLE IF NOT EXISTS watchlist (
-                    id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL UNIQUE,
-                    name VARCHAR(50),
-                    added_by VARCHAR(20) DEFAULT 'manual',
-                    reason TEXT,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE TABLE IF NOT EXISTS stock_supply (
-                    id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    date DATE NOT NULL,
-                    foreign_net BIGINT DEFAULT 0,
-                    institution_net BIGINT DEFAULT 0,
-                    individual_net BIGINT DEFAULT 0,
-                    foreign_hold_ratio NUMERIC(6,2) DEFAULT 0,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(symbol, date)
-                );
-                CREATE TABLE IF NOT EXISTS stock_disclosure (
-                    id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(10),
-                    corp_name VARCHAR(100),
-                    report_name VARCHAR(200),
-                    rcept_dt VARCHAR(20),
-                    rcept_no VARCHAR(20) UNIQUE,
-                    is_important BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE TABLE IF NOT EXISTS jarvis_memory (
-                    id SERIAL PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE INDEX IF NOT EXISTS idx_jarvis_memory_session ON jarvis_memory (session_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS stock_news_sentiment (
-                    id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    date DATE NOT NULL,
-                    sentiment_score INTEGER DEFAULT 0,
-                    signal VARCHAR(10) DEFAULT 'NEUTRAL',
-                    summary TEXT,
-                    news_count INTEGER DEFAULT 0,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(symbol, date)
-                );
-
-                INSERT INTO strategy_config (bot, name, is_active, params) VALUES
-                ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
-                ('stock_trader','RSI반등',false,'{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
-                ('stock_trader','볼린저밴드',false,'{"period":20,"std":2,"stop_loss":-2,"buy_amount":500000}')
-                ON CONFLICT (bot, name) DO NOTHING;
-            """)
-            logger.info("✅ DB 테이블 확인 완료")
+    async def _run_migrations(self):
+        """스키마 정본은 migrations/*.sql 이다 (common/migrations.py 러너 사용).
+        이전에는 여기서 CREATE TABLE IF NOT EXISTS를 직접 실행했으나,
+        STARK v2 DB 마이그레이션 정본화 작업으로 migrations/ 디렉터리의
+        순차 마이그레이션 파일로 이관했다."""
+        applied = await run_migrations(self.pool)
+        if applied:
+            logger.info(f"✅ 신규 마이그레이션 적용: {', '.join(applied)}")
+        else:
+            logger.info("✅ DB 스키마 최신 상태 (신규 마이그레이션 없음)")
 
     async def insert_stock_ohlcv(self, symbol, ts, o, h, l, c, v):
         async with self.pool.acquire() as conn:

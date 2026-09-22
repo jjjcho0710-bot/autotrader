@@ -9,29 +9,29 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="AutoTrader">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
-<meta name="theme-color" content="#0a0e14">
+<meta name="theme-color" content="#0B0F17">
 
 <style>
   :root {
-    --bg: #0a0e14;
-    --surface: #131920;
-    --surface-2: #1a222c;
-    --border: #232d3a;
+    --bg: #0B0F17;
+    --surface: #1E293B;
+    --surface-2: #0F172A;
+    --border: #334155;
     --text: #e6edf3;
-    --text-dim: #7d8896;
-    --up: #f6465d;      /* 수익 = 빨강 (한국 관습) */
-    --down: #2f8fff;    /* 손실 = 파랑 */
-    --accent: #f0b90b;  /* 골드 */
-    --accent-crypto: #16c784;
+    --text-dim: #94A3B8;
+    --up: #EF4444;      /* 수익 = 빨강 (한국 관습) */
+    --down: #3B82F6;    /* 손실 = 파랑 */
+    --accent: #F59E0B;  /* 골드/앰버 — STARK 확신도 */
+    --success: #10B981; /* 체결완료/온라인 상태 */
   }
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, 'Pretendard', BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: var(--bg); color: var(--text);
     font-size: 14px; line-height: 1.4;
     padding-bottom: 40px;
   }
-  .mono { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+  .mono { font-family: 'JetBrains Mono', 'SF Mono', monospace; font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
 
   /* ── 헤더 탭 ── */
   .tabs {padding-top:env(safe-area-inset-top);
@@ -45,7 +45,6 @@
     transition: color .15s, border-color .15s;
   }
   .tab.active { color: var(--text); border-bottom-color: var(--accent); }
-  .tab.crypto.active { border-bottom-color: var(--accent-crypto); }
   .bell { position:relative; padding:14px 16px 0 4px; font-size:19px; cursor:pointer; }
   .badge { position:absolute; top:8px; right:6px; background:var(--up); color:#fff;
            font-size:10px; font-weight:800; min-width:16px; height:16px; border-radius:8px;
@@ -58,16 +57,16 @@
   .noti-clear { color:var(--accent); font-size:12px; cursor:pointer; }
   .noti-item { padding:11px 14px; border-bottom:1px solid var(--border); }
   .noti-item:last-child { border-bottom:none; }
-  .noti-item.unread { background:rgba(240,185,11,.06); }
+  .noti-item.unread { background:rgba(245,158,11,.06); }
   .noti-title { font-size:13px; font-weight:700; }
   .noti-body { font-size:12px; color:var(--text-dim); margin-top:3px; white-space:pre-wrap;
     max-height:60px; overflow:hidden; }
   .noti-time { font-size:10px; color:var(--text-dim); margin-top:4px; }
 .act-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
 .act-btn{border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
-.act-btn.ok{background:#16c784;color:#000;}.act-btn.no{background:#3a2a2a;color:#f6465d;border:1px solid #5a3a3a;}
+.act-btn.ok{background:#10B981;color:#000;}.act-btn.no{background:#3a2a2a;color:#EF4444;border:1px solid #5a3a3a;}
 .act-btn:disabled{opacity:.5;}
-.act-done{font-size:11px;color:#7d8896;}
+.act-done{font-size:11px;color:#94A3B8;}
 
 
   /* ── 요약 카드 ── */
@@ -133,8 +132,8 @@
     font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px;
     min-width: 40px; text-align: center;
   }
-  .side-buy { background: rgba(246,70,93,.15); color: var(--up); }
-  .side-sell { background: rgba(47,143,255,.15); color: var(--down); }
+  .side-buy { background: rgba(239,68,68,.15); color: var(--up); }
+  .side-sell { background: rgba(59,130,246,.15); color: var(--down); }
   .trade-name { font-size: 14px; font-weight: 600; }
   .trade-time { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   .trade-right { text-align: right; }
@@ -149,7 +148,7 @@
     display: flex; align-items: center; gap: 6px;
     padding: 0 16px; font-size: 12px; color: var(--text-dim);
   }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-crypto); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
   .dot.off { background: var(--text-dim); }
 
   .nav {
@@ -168,7 +167,7 @@
 <body>
 
 <div class="tabs">
-  <div class="tab active" id="tab-stock" onclick="switchTab('stock')">📈 주식</div>
+  <div class="tab active" style="cursor:default;">📈 포트폴리오 요약</div>
     <div class="bell" onclick="toggleNoti()">🔔<span class="badge" id="notiBadge" style="display:none">0</span></div>
 </div>
 
@@ -222,14 +221,15 @@
 
 <div class="nav">
   <a href="/" class="active"><span class="nav-ic">⊞</span>홈</a>
-  <a href="/stock"><span class="nav-ic">📈</span>주식</a>
-    <a href="/strategy"><span class="nav-ic">⚙️</span>전략</a>
-  <a href="/jarvis"><span class="nav-ic">🤖</span>자비스</a>
+  <a href="/stock"><span class="nav-ic">📈</span>포트폴리오</a>
+  <a href="/stark"><span class="nav-ic">🧠</span>STARK 브레인</a>
+  <a href="/strategy"><span class="nav-ic">⚙️</span>전략/설정</a>
+  <a href="/training"><span class="nav-ic">🎓</span>트레이닝</a>
+  <a href="/logs"><span class="nav-ic">📋</span>시스템 로그</a>
 </div>
 
 <script>
 const API = "";
-let currentTab = "stock";
 
 function won(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
@@ -241,17 +241,6 @@ function pct(n) {
 }
 function cls(n) { return n > 0 ? "up" : n < 0 ? "down" : "flat"; }
 
-function switchTab(tab) {
-  currentTab = tab;
-  document.getElementById("tab-stock").classList.toggle("active", tab === "stock");
-  document.getElementById("tab-crypto").classList.toggle("active", tab === "crypto");
-  document.getElementById("heroLabel").textContent =
-    tab === "stock" ? "총 평가금액" : "총 보유자산";
-  document.getElementById("cardLabel1").textContent =
-    tab === "stock" ? "예수금" : "KRW 잔고";
-  loadAll();
-}
-
 async function loadAll() {
   loadSummary();
   loadTrades();
@@ -260,7 +249,7 @@ async function loadAll() {
 async function loadSummary() {
   const posEl = document.getElementById("positions");
   try {
-    const res = await fetch(`${API}/api/positions/${currentTab}`);
+    const res = await fetch(`${API}/api/positions/stock`);
     const json = await res.json();
 
     // 상태
@@ -273,7 +262,7 @@ async function loadSummary() {
       st.textContent = `KIS 점검 중 — 마지막 확인(${atStr}) 데이터 표시`;
     } else if (json.success) {
       dot.classList.remove("off");
-      st.textContent = currentTab === "stock" ? "주식 봇 연결됨" : "코인 봇 연결됨";
+      st.textContent = "주식 봇 연결됨";
     } else {
       dot.classList.add("off");
       st.textContent = "연결 실패: " + (json.error || "알 수 없음");
@@ -315,7 +304,7 @@ async function loadSummary() {
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <div class="pos-left">
                 <div class="name">${name}</div>
-                <div class="sub mono">${p.qty}주 · 평단 ${won(avg)}${(p.sellable_qty !== undefined && p.sellable_qty < p.qty) ? ` <span style="color:#f0b90b;">⏳정산중 ${p.qty - p.sellable_qty}주</span>` : ''}</div>
+                <div class="sub mono">${p.qty}주 · 평단 ${won(avg)}${(p.sellable_qty !== undefined && p.sellable_qty < p.qty) ? ` <span style="color:#F59E0B;">⏳정산중 ${p.qty - p.sellable_qty}주</span>` : ''}</div>
               </div>
               <div class="pos-right">
                 <div class="amt mono">${won(cur)}</div>
@@ -336,7 +325,7 @@ async function loadSummary() {
 
 async function loadTrades() {
   const el = document.getElementById("trades");
-  const bot = currentTab === "stock" ? "stock_trader" : "crypto_trader";
+  const bot = "stock_trader";
   try {
     const res = await fetch(`${API}/api/trades?bot=${bot}&limit=30`);
     const json = await res.json();
@@ -444,7 +433,6 @@ setInterval(pollNoti, 15000);
 // ── 감시 종목 위젯 ──
 async function loadWatchlist(){
   const sec = document.getElementById('watchSection');
-  if (currentTab !== 'stock') { sec.style.display = 'none'; return; }
   sec.style.display = '';
   try{
     const r = await fetch('/api/prices/stock');
@@ -490,7 +478,7 @@ async function drawSparks(){
       ctx.clearRect(0,0,W,H);
       const mn = Math.min(...cs), mx = Math.max(...cs);
       const up = cs[cs.length-1] >= cs[0];
-      ctx.strokeStyle = up ? '#f6465d' : '#2f8fff';
+      ctx.strokeStyle = up ? '#EF4444' : '#3B82F6';
       ctx.lineWidth = 2.5;
       ctx.beginPath();
       cs.forEach((c,i)=>{
@@ -508,7 +496,7 @@ async function drawSparks(){
 .bottom-nav, .nav {
   display:flex !important; position:fixed !important; bottom:0 !important;
   left:0 !important; right:0 !important; z-index:50 !important;
-  background:#131920 !important; border-top:1px solid #232d3a !important;
+  background:#1E293B !important; border-top:1px solid #334155 !important;
   padding:0 0 env(safe-area-inset-bottom) 0 !important; margin:0 !important;
   height:calc(56px + env(safe-area-inset-bottom)) !important;
 }
@@ -517,9 +505,9 @@ async function drawSparks(){
   align-items:center !important; justify-content:center !important;
   gap:2px !important; padding:0 !important; margin:0 !important;
   font-size:11px !important; font-weight:600 !important;
-  color:#7d8896 !important; text-decoration:none !important; line-height:1.2 !important;
+  color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
 }
-.bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
+.bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 </style>

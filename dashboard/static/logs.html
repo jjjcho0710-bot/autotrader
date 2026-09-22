@@ -7,12 +7,12 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
-<meta name="theme-color" content="#0a0e14">
+<meta name="theme-color" content="#0B0F17">
 <style>
-:root{--bg:#0a0e14;--surface:#131920;--border:#232d3a;--text:#e6edf3;--dim:#7d8896;
-      --up:#f6465d;--down:#2f8fff;--gold:#f0b90b;--green:#16c784;}
+:root{--bg:#0B0F17;--surface:#1E293B;--border:#334155;--text:#e6edf3;--dim:#94A3B8;
+      --up:#EF4444;--down:#3B82F6;--gold:#F59E0B;--green:#10B981;}
 *{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+body{font-family:-apple-system,'Pretendard',BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
      background:var(--bg);color:var(--text);font-size:14px;padding-bottom:76px;}
 header{padding:calc(env(safe-area-inset-top) + 14px) 16px 10px;display:flex;
        justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);}
@@ -34,24 +34,25 @@ h1{font-size:17px;}
 .bn-icon{font-size:20px;line-height:1;}
 .act-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
 .act-btn{border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;}
-.act-btn.ok{background:#16c784;color:#000;}.act-btn.no{background:#3a2a2a;color:#f6465d;border:1px solid #5a3a3a;}
+.act-btn.ok{background:#10B981;color:#000;}.act-btn.no{background:#3a2a2a;color:#EF4444;border:1px solid #5a3a3a;}
 .act-btn:disabled{opacity:.5;}
-.act-done{font-size:11px;color:#7d8896;}
+.act-done{font-size:11px;color:#94A3B8;}
 
 </style>
 </head>
 <body>
 <header>
-  <div><h1>📋 로그 / 알림</h1><div class="sub" id="sub">불러오는 중...</div></div>
+  <div><h1>📋 시스템 로그</h1><div class="sub" id="sub">불러오는 중...</div></div>
 </header>
 <div id="list"><div class="empty">불러오는 중...</div></div>
 
 <nav class="bottom-nav">
   <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
-  <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략</a>
-  <a href="/jarvis.html" class="bn-item"><span class="bn-icon">🤖</span>자비스</a>
+  <a href="/stock" class="bn-item"><span class="bn-icon">📈</span>포트폴리오</a>
+  <a href="/stark" class="bn-item"><span class="bn-icon">🧠</span>STARK 브레인</a>
+  <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략/설정</a>
   <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>트레이닝</a>
-  <a href="/logs" class="bn-item active"><span class="bn-icon">📋</span>로그</a>
+  <a href="/logs" class="bn-item active"><span class="bn-icon">📋</span>시스템 로그</a>
 </nav>
 
 <script>
@@ -113,7 +114,7 @@ setInterval(load, 20000);
 .bottom-nav, .nav {
   display:flex !important; position:fixed !important; bottom:0 !important;
   left:0 !important; right:0 !important; z-index:50 !important;
-  background:#131920 !important; border-top:1px solid #232d3a !important;
+  background:#1E293B !important; border-top:1px solid #334155 !important;
   padding:0 0 env(safe-area-inset-bottom) 0 !important; margin:0 !important;
   height:calc(56px + env(safe-area-inset-bottom)) !important;
 }
@@ -122,9 +123,9 @@ setInterval(load, 20000);
   align-items:center !important; justify-content:center !important;
   gap:2px !important; padding:0 !important; margin:0 !important;
   font-size:11px !important; font-weight:600 !important;
-  color:#7d8896 !important; text-decoration:none !important; line-height:1.2 !important;
+  color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
 }
-.bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
+.bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 </style>

@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>AutoTrader — STARK 브레인</title>
+<link rel="manifest" href="/static/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+<meta name="theme-color" content="#0B0F17">
+<style>
+:root{
+  --bg:#0B0F17;--card:#1E293B;--input:#0F172A;--border:#334155;
+  --text:#e6edf3;--dim:#94A3B8;
+  --up:#EF4444;--dn:#3B82F6;--gold:#F59E0B;--sky:#38BDF8;
+  --success:#10B981;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{background:var(--bg);color:var(--text);}
+body{font-family:-apple-system,'Pretendard',BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+     font-size:14px;padding-bottom:76px;}
+.mono{font-family:'JetBrains Mono','SF Mono',monospace;font-variant-numeric:tabular-nums;}
+
+header{padding:calc(env(safe-area-inset-top) + 14px) 16px 10px;
+  display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);
+  position:sticky;top:0;background:var(--bg);z-index:20;}
+h1{font-size:17px;}
+.sub{font-size:12px;color:var(--dim);margin-top:2px;}
+
+.filter-bar{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg);
+  position:sticky;top:56px;z-index:19;}
+.filter-row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center;}
+.filter-row:last-child{margin-bottom:0;}
+input[type="date"], input[type="search"]{
+  background:var(--input);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);font-size:12.5px;padding:7px 10px;outline:none;}
+input[type="date"]{flex-shrink:0;}
+input[type="search"]{flex:1;min-width:120px;}
+input[type="date"]:focus, input[type="search"]:focus{border-color:var(--sky);}
+.chip-group{display:flex;gap:6px;flex-wrap:wrap;}
+.chip{font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:999px;
+  background:var(--card);border:1px solid var(--border);color:var(--dim);cursor:pointer;}
+.chip.active{background:rgba(56,189,248,.15);border-color:var(--sky);color:var(--sky);}
+
+.list{padding:8px 12px;}
+.dec-item{background:var(--card);border:1px solid var(--border);border-radius:12px;
+  margin-bottom:8px;overflow:hidden;}
+.dec-row{padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;}
+.dec-time{font-size:11px;color:var(--dim);width:64px;flex-shrink:0;}
+.dec-main{flex:1;min-width:0;}
+.dec-top{display:flex;align-items:center;gap:8px;margin-bottom:3px;}
+.dec-name{font-size:13.5px;font-weight:700;}
+.dec-code{font-size:11px;color:var(--dim);}
+.dec-reason{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dec-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;}
+.dec-conf{font-size:12px;font-weight:700;color:var(--gold);}
+
+.pill{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;white-space:nowrap;}
+.act-buy{background:rgba(239,68,68,.15);color:#F87171;}
+.act-sell{background:rgba(59,130,246,.15);color:#60A5FA;}
+.act-hold{background:rgba(245,158,11,.15);color:#F59E0B;}
+.act-skip{background:rgba(148,163,184,.15);color:#94A3B8;}
+.pill-exec{background:rgba(16,185,129,.15);color:#34D399;}
+.pill-risk{background:rgba(244,63,94,.15);color:#FB7185;}
+.pill-block{background:rgba(148,163,184,.15);color:#94A3B8;}
+
+.dec-detail{display:none;border-top:1px solid var(--border);padding:12px 14px;background:var(--input);}
+.dec-detail.open{display:block;}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;font-size:12px;}
+.detail-item .l{color:var(--dim);font-size:10.5px;margin-bottom:2px;}
+.detail-item .v{font-weight:600;}
+.detail-label{font-size:11px;color:var(--dim);margin:8px 0 4px;}
+.detail-text{font-size:12.5px;line-height:1.5;}
+pre.features{background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  padding:10px;font-size:11px;line-height:1.5;overflow-x:auto;max-height:240px;overflow-y:auto;
+  white-space:pre-wrap;word-break:break-word;color:var(--dim);}
+
+.empty{text-align:center;color:var(--dim);padding:40px 0;font-size:13px;}
+
+.bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:50;
+  background:#1E293B;border-top:1px solid #334155;
+  padding-bottom:env(safe-area-inset-bottom);}
+.bn-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:8px 0 6px;font-size:11px;font-weight:600;color:#94A3B8;text-decoration:none;}
+.bn-item.active{color:#F59E0B;}
+.bn-icon{font-size:20px;line-height:1;}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>🧠 STARK 브레인</h1><div class="sub" id="sub">불러오는 중...</div></div>
+</header>
+
+<div class="filter-bar">
+  <div class="filter-row">
+    <input type="date" id="filterDate">
+    <input type="search" id="filterSearch" placeholder="종목명/코드 검색">
+  </div>
+  <div class="filter-row">
+    <div class="chip-group" id="actionChips">
+      <span class="chip active" data-action="ALL">전체</span>
+      <span class="chip" data-action="BUY">BUY</span>
+      <span class="chip" data-action="SELL">SELL</span>
+      <span class="chip" data-action="HOLD">HOLD</span>
+      <span class="chip" data-action="SKIP">SKIP</span>
+    </div>
+  </div>
+  <div class="filter-row">
+    <div class="chip-group" id="execChips">
+      <span class="chip active" data-exec="ALL">전체</span>
+      <span class="chip" data-exec="EXEC">체결</span>
+      <span class="chip" data-exec="BLOCK">차단/스킵</span>
+    </div>
+  </div>
+</div>
+
+<div class="list" id="list"><div class="empty">불러오는 중...</div></div>
+
+<nav class="bottom-nav">
+  <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
+  <a href="/stock" class="bn-item"><span class="bn-icon">📈</span>포트폴리오</a>
+  <a href="/stark" class="bn-item active"><span class="bn-icon">🧠</span>STARK 브레인</a>
+  <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략/설정</a>
+  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>트레이닝</a>
+  <a href="/logs" class="bn-item"><span class="bn-icon">📋</span>시스템 로그</a>
+</nav>
+
+<script>
+const API = '';
+let allDecisions = [];
+let curAction = 'ALL';
+let curExec = 'ALL';
+
+function actionClass(a){
+  if(a === 'BUY') return 'act-buy';
+  if(a === 'SELL') return 'act-sell';
+  if(a === 'HOLD') return 'act-hold';
+  return 'act-skip';
+}
+function execBadge(row){
+  if(row.executed && row.order_success !== false){
+    return '<span class="pill pill-exec">체결완료</span>';
+  }
+  if(row.executed && row.order_success === false){
+    return '<span class="pill pill-risk">주문실패</span>';
+  }
+  return '<span class="pill pill-block">위험차단/스킵</span>';
+}
+function fmtTime(ts){
+  if(!ts) return '--:--:--';
+  const t = new Date(ts);
+  if(isNaN(t.getTime())) return '--:--:--';
+  return t.toLocaleTimeString('ko-KR', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
+}
+function fmtDateKey(ts){
+  if(!ts) return '';
+  const t = new Date(ts);
+  if(isNaN(t.getTime())) return '';
+  const y = t.getFullYear(), m = String(t.getMonth()+1).padStart(2,'0'), d = String(t.getDate()).padStart(2,'0');
+  return `${y}-${m}-${d}`;
+}
+function esc(s){ return (s === null || s === undefined) ? '' : String(s).replace(/</g,'&lt;'); }
+
+function applyFilters(){
+  const dateVal = document.getElementById('filterDate').value;
+  const q = document.getElementById('filterSearch').value.trim().toLowerCase();
+  const filtered = allDecisions.filter(row => {
+    if(dateVal && fmtDateKey(row.decided_at || row.created_at) !== dateVal) return false;
+    if(curAction !== 'ALL' && row.decision !== curAction) return false;
+    if(curExec === 'EXEC' && !(row.executed && row.order_success !== false)) return false;
+    if(curExec === 'BLOCK' && (row.executed && row.order_success !== false)) return false;
+    if(q){
+      const hay = `${row.symbol||''} ${row.name||''}`.toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  renderList(filtered);
+}
+
+function renderList(rows){
+  const el = document.getElementById('list');
+  document.getElementById('sub').textContent = `전체 ${allDecisions.length}건 · 필터 결과 ${rows.length}건`;
+  if(!rows.length){
+    el.innerHTML = '<div class="empty">조건에 맞는 판단 기록이 없습니다</div>';
+    return;
+  }
+  el.innerHTML = rows.map(row => {
+    const conf = (row.confidence !== null && row.confidence !== undefined)
+      ? Math.round(Number(row.confidence) * 100) + '%' : '-';
+    return `<div class="dec-item">
+      <div class="dec-row" onclick="toggleRow(${row.id})">
+        <div class="dec-time mono">${fmtTime(row.decided_at || row.created_at)}</div>
+        <div class="dec-main">
+          <div class="dec-top">
+            <span class="dec-name">${esc(row.name || row.symbol)}</span>
+            <span class="dec-code mono">${esc(row.symbol)}</span>
+            <span class="pill ${actionClass(row.decision)}">${esc(row.decision)}</span>
+          </div>
+          <div class="dec-reason">${esc(row.reason) || '사유 없음'}</div>
+        </div>
+        <div class="dec-right">
+          <div class="dec-conf mono">${conf}</div>
+          ${execBadge(row)}
+        </div>
+      </div>
+      <div class="dec-detail" id="detail-${row.id}"></div>
+    </div>`;
+  }).join('');
+}
+
+function toggleRow(id){
+  const detail = document.getElementById('detail-'+id);
+  if(!detail) return;
+  const isOpen = detail.classList.contains('open');
+  document.querySelectorAll('.dec-detail.open').forEach(d => {
+    if(d !== detail){ d.classList.remove('open'); d.innerHTML=''; }
+  });
+  if(isOpen){ detail.classList.remove('open'); detail.innerHTML=''; return; }
+  const row = allDecisions.find(r => r.id === id);
+  if(!row){ return; }
+  let featuresStr = '(피처 스냅샷 없음)';
+  try{
+    if(row.features_json !== null && row.features_json !== undefined){
+      featuresStr = JSON.stringify(row.features_json, null, 2);
+    }
+  }catch(e){ featuresStr = String(row.features_json); }
+  detail.innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-item"><div class="l">전략</div><div class="v">${esc(row.strategy) || '-'}</div></div>
+      <div class="detail-item"><div class="l">판단 소스</div><div class="v">${esc(row.source) || '-'}</div></div>
+      <div class="detail-item"><div class="l">모델</div><div class="v">${esc(row.model_name) || '-'}</div></div>
+      <div class="detail-item"><div class="l">가격 / 수량</div><div class="v mono">${row.price ?? '-'} / ${row.quantity ?? '-'}</div></div>
+    </div>
+    <div class="detail-label">근거 상세 (rationale)</div>
+    <div class="detail-text">${esc(row.rationale) || esc(row.reason) || '상세 근거 없음'}</div>
+    <div class="detail-label">피처 스냅샷 (features_json)</div>
+    <pre class="features">${esc(featuresStr)}</pre>`;
+  detail.classList.add('open');
+}
+
+document.getElementById('actionChips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip');
+  if(!chip) return;
+  document.querySelectorAll('#actionChips .chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  curAction = chip.dataset.action;
+  applyFilters();
+});
+document.getElementById('execChips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip');
+  if(!chip) return;
+  document.querySelectorAll('#execChips .chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  curExec = chip.dataset.exec;
+  applyFilters();
+});
+document.getElementById('filterDate').addEventListener('change', applyFilters);
+document.getElementById('filterSearch').addEventListener('input', applyFilters);
+
+async function load(){
+  try{
+    const r = await fetch(`${API}/api/stark/decisions?limit=200`);
+    const j = await r.json();
+    if(!j.success){
+      document.getElementById('list').innerHTML = '<div class="empty">불러오기 실패: ' + esc(j.error) + '</div>';
+      return;
+    }
+    allDecisions = j.data || [];
+    applyFilters();
+  }catch(e){
+    document.getElementById('list').innerHTML = '<div class="empty">불러오기 실패</div>';
+  }
+}
+load();
+setInterval(load, 20000);
+</script>
+</body>
+</html>

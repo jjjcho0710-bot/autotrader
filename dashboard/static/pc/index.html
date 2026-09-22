@@ -50,10 +50,11 @@ body{height:100vh;display:flex;overflow:hidden;}
   </div>
   <div class="navlbl">메뉴</div>
   <div class="nav-item on" id="nav-home" onclick="go('home')"><span class="ic">⊞</span>대시보드</div>
-  <div class="nav-item" id="nav-stock" onclick="go('stock')"><span class="ic">📈</span>주식</div>
-    <div class="nav-item" id="nav-strategy" onclick="go('strategy')"><span class="ic">⚙️</span>전략</div>
+  <div class="nav-item" id="nav-stock" onclick="go('stock')"><span class="ic">📈</span>포트폴리오</div>
+  <div class="nav-item" id="nav-stark" onclick="go('stark')"><span class="ic">🧠</span>STARK 브레인</div>
+    <div class="nav-item" id="nav-strategy" onclick="go('strategy')"><span class="ic">⚙️</span>전략/설정</div>
   <div class="nav-item" id="nav-training" onclick="go('training')"><span class="ic">🎓</span>트레이닝</div>
-  <div class="nav-item" id="nav-logs" onclick="go('logs')"><span class="ic">📋</span>로그</div>
+  <div class="nav-item" id="nav-logs" onclick="go('logs')"><span class="ic">📋</span>시스템 로그</div>
   <div class="side-foot">v1.0 · <a href="/">모바일 버전</a></div>
 </aside>
 <main class="main"><div id="page"><div class="loading">불러오는 중...</div></div></main>
@@ -90,7 +91,7 @@ async function go(name){
 }
 go('home');
 // 조각 파일 사전 로드 → 메뉴 전환 즉시
-setTimeout(()=>{['jarvis','strategy','training','logs'].forEach(n=>
+setTimeout(()=>{['jarvis','strategy','stark','training','logs'].forEach(n=>
   fetch(`/static/pc/pages/${n}.html?v=${_fragVer()}`).catch(()=>{}));}, 1500);
 // 자비스 상태 점검
 setInterval(async()=>{

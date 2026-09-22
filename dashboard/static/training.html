@@ -9,15 +9,15 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="AutoTrader">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
-<meta name="theme-color" content="#0a0e14">
+<meta name="theme-color" content="#0B0F17">
 
 <style>
-  :root{--bg:#0a0e14;--surface:#131920;--border:#232d3a;--text:#e6edf3;--dim:#7d8896;
-        --up:#f6465d;--down:#2f8fff;--gold:#f0b90b;--green:#16c784;}
+  :root{--bg:#0B0F17;--surface:#1E293B;--border:#334155;--text:#e6edf3;--dim:#94A3B8;
+        --up:#EF4444;--down:#3B82F6;--gold:#F59E0B;--green:#10B981;}
   *{margin:0;padding:0;box-sizing:border-box;}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  body{font-family:-apple-system,'Pretendard',BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
        background:var(--bg);color:var(--text);font-size:14px;padding-bottom:60px;}
-  .mono{font-variant-numeric:tabular-nums;}
+  .mono{font-family:'JetBrains Mono','SF Mono',monospace;font-variant-numeric:tabular-nums;}
   header{padding-top:env(safe-area-inset-top);padding:18px 16px 8px;display:flex;justify-content:space-between;align-items:center;}
   h1{font-size:18px;} .sub{font-size:12px;color:var(--dim);margin-top:2px;}
   .section{padding:8px 16px;}
@@ -42,9 +42,9 @@
        border-bottom:1px solid var(--border);font-size:13px;}
   .row:last-child{border-bottom:none;}
   .tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;}
-  .tag.exec{background:rgba(246,70,93,.15);color:var(--up);}
-  .tag.skip{background:rgba(125,136,150,.2);color:var(--dim);}
-  .tag.manual{background:rgba(240,185,11,.15);color:var(--gold);}
+  .tag.exec{background:rgba(239,68,68,.15);color:var(--up);}
+  .tag.skip{background:rgba(148,163,184,.15);color:var(--dim);}
+  .tag.manual{background:rgba(245,158,11,.15);color:var(--gold);}
   .rate.pos{color:var(--up);} .rate.neg{color:var(--down);}
   .empty{text-align:center;color:var(--dim);padding:28px 0;}
   .nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--surface);
@@ -53,11 +53,25 @@
   .nav-ic{font-size:21px;line-height:1;}
   .nav a.active{color:var(--gold);}
 
-.kn-core{background:rgba(240,185,11,.08);border:1px solid rgba(240,185,11,.3);border-radius:10px;padding:10px 12px;margin-bottom:6px;font-size:12.5px;}
-.kn-core .cat{color:var(--gold, #f0b90b);font-weight:700;margin-right:6px;}
+.kn-core{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:10px 12px;margin-bottom:6px;font-size:12.5px;}
+.kn-core .cat{color:var(--gold, #F59E0B);font-weight:700;margin-right:6px;}
 .kn-item{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;}
 .kn-item:last-child{border:none;}
 .kn-del{background:none;border:1px solid var(--border);color:var(--dim);border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;flex-shrink:0;}
+
+.src-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px;}
+.src-header{cursor:pointer;}
+.src-title{font-size:13px;font-weight:700;}
+.src-meta{display:flex;gap:8px;align-items:center;margin-top:4px;font-size:11px;color:var(--dim);flex-wrap:wrap;}
+.src-type-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(56,189,248,.15);color:#38BDF8;text-transform:uppercase;}
+.src-rulecount{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(245,158,11,.15);color:var(--gold);}
+.src-detail{margin-top:0;padding-top:0;border-top:0 solid var(--border);display:none;}
+.src-detail.open{display:block;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);}
+.src-raw{max-height:260px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);
+  border-radius:8px;padding:10px;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
+.src-rules{margin-top:10px;}
+.src-rule-item{font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--border);}
+.src-rule-item:last-child{border-bottom:none;}
 </style>
 </head>
 <body>
@@ -94,6 +108,11 @@
 </div>
 
 <div class="section">
+  <div class="section-title">🗂 학습 소스 (원문 아카이브) <span class="badge" id="srcCount">0</span></div>
+  <div id="srcList"><div class="empty">불러오는 중...</div></div>
+</div>
+
+<div class="section">
   <div class="stitle">누적 교훈 (자비스가 배운 것)</div>
   <div id="lessons"><div class="empty">아직 교훈이 없어요</div></div>
 </div>
@@ -105,10 +124,11 @@
 
 <div class="nav">
   <a href="/"><span class="nav-ic">⊞</span>홈</a>
-  <a href="/strategy"><span class="nav-ic">⚙️</span>전략</a>
-  <a href="/jarvis.html"><span class="nav-ic">🤖</span>자비스</a>
+  <a href="/stock"><span class="nav-ic">📈</span>포트폴리오</a>
+  <a href="/stark"><span class="nav-ic">🧠</span>STARK 브레인</a>
+  <a href="/strategy"><span class="nav-ic">⚙️</span>전략/설정</a>
   <a href="/training" class="active"><span class="nav-ic">🎓</span>트레이닝</a>
-  <a href="/logs"><span class="nav-ic">📋</span>로그</a>
+  <a href="/logs"><span class="nav-ic">📋</span>시스템 로그</a>
 </div>
 
 <script>
@@ -172,7 +192,7 @@ setInterval(load, 30000);
 .bottom-nav, .nav {
   display:flex !important; position:fixed !important; bottom:0 !important;
   left:0 !important; right:0 !important; z-index:50 !important;
-  background:#131920 !important; border-top:1px solid #232d3a !important;
+  background:#1E293B !important; border-top:1px solid #334155 !important;
   padding:0 0 env(safe-area-inset-bottom) 0 !important; margin:0 !important;
   height:calc(56px + env(safe-area-inset-bottom)) !important;
 }
@@ -181,9 +201,9 @@ setInterval(load, 30000);
   align-items:center !important; justify-content:center !important;
   gap:2px !important; padding:0 !important; margin:0 !important;
   font-size:11px !important; font-weight:600 !important;
-  color:#7d8896 !important; text-decoration:none !important; line-height:1.2 !important;
+  color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
 }
-.bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
+.bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 </style>
@@ -199,7 +219,7 @@ async function loadKnowledge(){
       ? '<div style="font-size:11px;color:var(--dim);margin-bottom:6px;">핵심 원칙 (정제본 '+core.length+')</div>'
         + core.map(c=>{const m=c.content.match(/^\[(.+?)\]\s*(.*)$/);
           const ap=c.applied||0, hi=c.hits||0;
-          const perf=ap>0?`<span style="float:right;color:${hi/ap>=0.6?'#16c784':'var(--dim)'};font-size:11px;">${hi}/${ap} (${Math.round(hi/ap*100)}%)</span>`
+          const perf=ap>0?`<span style="float:right;color:${hi/ap>=0.6?'#10B981':'var(--dim)'};font-size:11px;">${hi}/${ap} (${Math.round(hi/ap*100)}%)</span>`
                          :`<span style="float:right;color:var(--dim);font-size:10px;">데이터 수집 중</span>`;
           return `<div class="kn-core"><span style="color:var(--dim);font-size:10px;">K${c.id}</span> ${m?'<span class="cat">'+m[1]+'</span>'+m[2]:c.content}${perf}</div>`;}).join('')
       : '<div style="font-size:11px;color:var(--dim);">정제본 없음 — 토요일 자동 정리 또는 자료 3개 이상 시 생성</div>';
@@ -216,6 +236,71 @@ async function delKn(id){
   loadKnowledge();
 }
 loadKnowledge();
+
+// ── 학습 소스 (원문 아카이브) ──
+const _srcCache = {};
+async function loadSources(){
+  const el = document.getElementById('srcList');
+  try{
+    const r = await fetch('/api/learning/sources?limit=50');
+    const j = await r.json();
+    if(!j.success){ el.innerHTML = '<div class="empty">불러오기 실패</div>'; return; }
+    const list = j.data || [];
+    document.getElementById('srcCount').textContent = list.length;
+    if(!list.length){ el.innerHTML = '<div class="empty">아직 학습한 원문이 없어요 — 자비스에게 URL과 함께 \'이거 배워\'</div>'; return; }
+    el.innerHTML = list.map(s => {
+      const t = s.created_at ? new Date(s.created_at) : null;
+      const ts = t ? `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}` : '';
+      const title = (s.title || s.url || '제목 없음').replace(/</g,'&lt;');
+      return `<div class="src-item">
+        <div class="src-header" onclick="toggleSource(${s.source_id})">
+          <div class="src-title">${title}</div>
+          <div class="src-meta">
+            <span class="src-type-badge">${(s.source_type||'').replace(/</g,'&lt;')}</span>
+            <span class="mono">${ts}</span>
+            <span class="src-rulecount">원칙 ${s.rule_count || 0}</span>
+          </div>
+        </div>
+        <div class="src-detail" id="src-detail-${s.source_id}"></div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    el.innerHTML = '<div class="empty">불러오기 실패</div>';
+  }
+}
+
+async function toggleSource(id){
+  const detail = document.getElementById('src-detail-'+id);
+  if(!detail) return;
+  const isOpen = detail.classList.contains('open');
+  document.querySelectorAll('.src-detail.open').forEach(d => {
+    if (d !== detail) { d.classList.remove('open'); d.innerHTML = ''; }
+  });
+  if (isOpen) { detail.classList.remove('open'); detail.innerHTML = ''; return; }
+  detail.classList.add('open');
+  detail.innerHTML = '<div class="empty">불러오는 중...</div>';
+  try{
+    if (!_srcCache[id]) {
+      const r = await fetch(`/api/learning/sources/${id}`);
+      const j = await r.json();
+      if (!j.success) { detail.innerHTML = '<div class="empty">불러오기 실패</div>'; return; }
+      _srcCache[id] = j.data;
+    }
+    const d = _srcCache[id];
+    const rulesHtml = (d.rules || []).length
+      ? d.rules.map(r => `<div class="src-rule-item">• ${(r.rule_text||'').replace(/</g,'&lt;')}</div>`).join('')
+      : '<div class="empty" style="padding:10px 0;">추출된 원칙 없음</div>';
+    const linkHtml = d.url ? ` · <a href="${d.url}" target="_blank" rel="noopener" style="color:var(--dim);">원본 링크</a>` : '';
+    detail.innerHTML = `
+      <div style="font-size:11px;color:var(--dim);margin-bottom:6px;">원문 전문${d.author ? (' · ' + d.author.replace(/</g,'&lt;')) : ''}${linkHtml}</div>
+      <div class="src-raw">${(d.content_raw || '(원문 없음)').replace(/</g,'&lt;')}</div>
+      <div style="font-size:11px;color:var(--dim);margin:10px 0 4px;">추출된 원칙 (${(d.rules||[]).length})</div>
+      <div class="src-rules">${rulesHtml}</div>`;
+  }catch(e){
+    detail.innerHTML = '<div class="empty">불러오기 실패</div>';
+  }
+}
+loadSources();
 </script>
 </body>
 </html>

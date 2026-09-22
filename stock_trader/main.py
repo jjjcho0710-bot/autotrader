@@ -96,7 +96,7 @@ class StockTrader:
                 short_period  = int(params.get("short", 5)),
                 long_period   = int(params.get("long", 20)),
                 stop_loss     = float(params.get("stop_loss", -2)) / 100,
-                take_profit   = float(params.get("take_profit", 0.05)),
+                take_profit   = float(params.get("take_profit", 5)) / 100,
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
             ))

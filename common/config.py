@@ -54,6 +54,8 @@ class Config:
     JARVIS_ANALYST_CHAT_ID: str = os.getenv("JARVIS_ANALYST_CHAT_ID", "")
     STOCK_BOT_TOKEN:        str = os.getenv("STOCK_BOT_TOKEN", "")
     STOCK_CHAT_ID:          str = os.getenv("STOCK_CHAT_ID", "")
+    # STARK v2 통합 봇(한강뷰매니저) — bot/telegram_bot.py 전용 토큰. Railway에 등록됨.
+    STARK_BOT_TOKEN:        str = os.getenv("STARK_BOT_TOKEN", "")
 
     # ── 수집 설정 ──
     COLLECT_INTERVAL_SEC: int = int(os.getenv("COLLECT_INTERVAL_SEC", "60"))  # 1분봉

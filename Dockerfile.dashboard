@@ -7,6 +7,8 @@ COPY market/ ./market/
 COPY stark/ ./stark/
 COPY chat/ ./chat/
 COPY learning/ ./learning/
+COPY router/ ./router/
+COPY bot/ ./bot/
 COPY migrations/ ./migrations/
 COPY dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

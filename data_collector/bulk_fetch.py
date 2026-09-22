@@ -21,8 +21,8 @@ BASE_URL   = config.kis_base_url  # paper or real
 async def get_kis_token(session: aiohttp.ClientSession) -> str:
     res = await session.post(f"{BASE_URL}/oauth2/tokenP", json={
         "grant_type": "client_credentials",
-        "appkey":     config.KIS_APP_KEY,
-        "appsecret":  config.KIS_APP_SECRET,
+        "appkey":     config.kis_app_key,
+        "appsecret":  config.kis_app_secret,
     })
     data = await res.json()
     return data.get("access_token", "")
@@ -33,8 +33,8 @@ async def fetch_ohlcv_kis(session: aiohttp.ClientSession, token: str, symbol: st
     tr_id = "FHKST01010400"  # 모의/실전 동일
     headers = {
         "authorization": f"Bearer {token}",
-        "appkey":        config.KIS_APP_KEY,
-        "appsecret":     config.KIS_APP_SECRET,
+        "appkey":        config.kis_app_key,
+        "appsecret":     config.kis_app_secret,
         "tr_id":         tr_id,
         "custtype":      "P",
     }

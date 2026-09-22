@@ -69,6 +69,7 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V005__create_learning_tables.sql",
                 "V006__enhance_jarvis_memory.sql",
                 "V007__add_learning_indexes.sql",
+                "V008__stark_decisions_features_and_symbol_index.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -115,7 +116,7 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 7, "마이그레이션 파일 7개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 8, "마이그레이션 파일 8개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
@@ -139,7 +140,10 @@ class TestMigrationRoundTrip(unittest.TestCase):
         self.assertIn("idx_learning_rules_source_id", indexes)
         self.assertIn("idx_jarvis_memory_session_created", indexes)
 
-        # Down: V007 -> V001 역순
+        # 중간 상태 확인: V008(features_json 컬럼 + symbol 선행 복합 인덱스)도 반영되어야 함
+        self.assertIn("idx_stark_decisions_symbol_decided_at", indexes)
+
+        # Down: V008 -> V001 역순
         for version, _up_sql, down_sql in reversed(self.migrations):
             apply_sql_to_state(down_sql, tables, indexes)
 
@@ -159,6 +163,25 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
         apply_sql_to_state(down_sql, tables, indexes)
         self.assertEqual(tables, {"stock_master"})
+
+    def test_v008_features_json_column_and_index_are_symmetric(self):
+        """V008: features_json 컬럼 추가와 symbol 선행 복합 인덱스가 Up/Down 모두에서
+        대응되는지 확인 (ALTER TABLE ADD/DROP COLUMN은 CREATE/DROP TABLE 정규식으로
+        추적되지 않으므로 텍스트 포함 여부로 직접 검증)."""
+        _version, up_sql, down_sql = next(
+            m for m in self.migrations if m[0].startswith("V008")
+        )
+        self.assertIn("ADD COLUMN IF NOT EXISTS features_json", up_sql)
+        self.assertIn("DROP COLUMN IF EXISTS features_json", down_sql)
+
+        tables, indexes = {"stark_decisions"}, {"idx_stark_decisions_decided_at_symbol"}
+        apply_sql_to_state(up_sql, tables, indexes)
+        self.assertIn("idx_stark_decisions_symbol_decided_at", indexes)
+
+        apply_sql_to_state(down_sql, tables, indexes)
+        self.assertNotIn("idx_stark_decisions_symbol_decided_at", indexes)
+        # V008의 Down은 stark_decisions 테이블 자체를 지우지 않는다 (컬럼/인덱스만 원복)
+        self.assertIn("stark_decisions", tables)
 
 
 if __name__ == "__main__":

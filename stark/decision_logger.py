@@ -15,12 +15,29 @@ import하지 않고 pool을 덕타이핑으로만 사용하므로, 호출부(das
 `db_pool`, common/database.py의 `db.pool`, stock_trader/main.py 등)가 이미
 들고 있는 풀을 그대로 넘기면 된다.
 
-스키마 정본: migrations/V003__create_stark_decisions.sql
+스키마 정본: migrations/V003__create_stark_decisions.sql, V008(features_json 추가)
+
+features_json 직렬화 방식은 이 저장소의 기존 JSONB 컬럼 관례를 그대로 따른다
+(dashboard/main.py의 strategy_config.params 처리와 동일): asyncpg는 json/jsonb를
+기본적으로 텍스트로 인코딩/디코딩하므로, 쓸 때는 json.dumps()한 문자열을 그대로
+파라미터로 넘기고 읽을 때는 값이 str이면 json.loads()로 되돌린다.
 """
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_features_json(row: Dict[str, Any]) -> Dict[str, Any]:
+    """조회 결과 row의 features_json을 dict로 역직렬화 (문자열로 온 경우만)."""
+    raw = row.get("features_json")
+    if isinstance(raw, str):
+        try:
+            row["features_json"] = json.loads(raw)
+        except (TypeError, ValueError) as e:
+            logger.error(f"features_json 역직렬화 실패(id={row.get('id')}): {e}")
+    return row
 
 
 async def log_decision(
@@ -39,6 +56,7 @@ async def log_decision(
     order_success: Optional[bool] = None,
     price: Optional[float] = None,
     quantity: Optional[float] = None,
+    features: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
     """STARK 판단 1건을 stark_decisions에 기록.
 
@@ -46,12 +64,22 @@ async def log_decision(
     판단이 SKIP/HOLD로 끝나거나 모델 호출 자체가 실패한 경우에도 반드시 호출해서
     사유(reason)와 함께 기록을 남겨야 한다 — 침묵 금지.
 
+    features: 판단 시점에 모델에 입력된 피처 스냅샷(학습·복기용, 선택). dict로
+    받아 JSONB 컬럼(features_json)에 저장한다.
+
     반환값: 삽입된 행의 id. 실패 시 None (예외를 삼키고 로그만 남김 — 판단 로그
-    기록 실패가 실제 매매 실행 흐름을 막아서는 안 된다).
+    기록 실패가 실제 매매 실행 흐름을 막아서는 안 된다). symbol/decision처럼
+    테이블에서 NOT NULL인 필수 컬럼이 비어 있으면 DB 왕복 없이 바로 None을 반환한다.
     """
     if pool is None:
         logger.error(f"stark_decisions 기록 실패({symbol}): DB pool이 없음")
         return None
+    if not symbol or not decision:
+        logger.error(
+            f"stark_decisions 기록 실패: 필수 컬럼 누락(symbol={symbol!r}, decision={decision!r})"
+        )
+        return None
+    features_json = json.dumps(features, ensure_ascii=False) if features is not None else None
     try:
         async with pool.acquire() as conn:
             decision_id = await conn.fetchval(
@@ -59,13 +87,13 @@ async def log_decision(
                 INSERT INTO stark_decisions
                     (symbol, name, decision, confidence, reason, rationale,
                      strategy, source, model_name, executed, order_success,
-                     price, quantity)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                     price, quantity, features_json)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                 RETURNING id
                 """,
                 symbol, name, decision, confidence, reason, rationale,
                 strategy, source, model_name, executed, order_success,
-                price, quantity,
+                price, quantity, features_json,
             )
         return decision_id
     except Exception as e:
@@ -83,7 +111,7 @@ async def get_recent_decisions(pool: Any, limit: int = 20) -> List[Dict[str, Any
                 "SELECT * FROM stark_decisions ORDER BY decided_at DESC LIMIT $1",
                 limit,
             )
-        return [dict(r) for r in rows]
+        return [_decode_features_json(dict(r)) for r in rows]
     except Exception as e:
         logger.error(f"최근 판단 조회 실패: {e}")
         return []
@@ -102,7 +130,7 @@ async def get_decisions_by_symbol(
                 "ORDER BY decided_at DESC LIMIT $2",
                 symbol, limit,
             )
-        return [dict(r) for r in rows]
+        return [_decode_features_json(dict(r)) for r in rows]
     except Exception as e:
         logger.error(f"종목별 판단 조회 실패({symbol}): {e}")
         return []

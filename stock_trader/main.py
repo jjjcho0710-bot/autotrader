@@ -86,11 +86,16 @@ class StockTrader:
         return [(name, s["params"]) for name, s in self.strategies.items() if s["is_active"]]
 
     def build_strategy(self, name, params):
+        # strategy_config.params의 stop_loss는 채팅 설정(router/handlers/setting_handler.py)·
+        # DB 시드값(migrations/V001)과 동일하게 "퍼센트 숫자 그대로"(-7 = -7%) 저장 관례를
+        # 따른다. 전략 클래스(MACrossConfig 등)의 stop_loss는 비율(-0.07)을 기대하므로
+        # 여기서 /100 변환을 거치지 않으면 손절선이 사실상 도달 불가능한 값(-200%~-700%)이
+        # 되어 강제 손절이 전혀 트리거되지 않는다 (일동제약 -10.9% 미손절 원인).
         if name == "MA크로스":
             return MACrossStrategy(MACrossConfig(
                 short_period  = int(params.get("short", 5)),
                 long_period   = int(params.get("long", 20)),
-                stop_loss     = float(params.get("stop_loss", -0.02)),
+                stop_loss     = float(params.get("stop_loss", -2)) / 100,
                 take_profit   = float(params.get("take_profit", 0.05)),
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
@@ -100,7 +105,7 @@ class StockTrader:
                 period        = int(params.get("period", 14)),
                 entry         = float(params.get("entry", 30)),
                 exit          = float(params.get("exit", 60)),
-                stop_loss     = float(params.get("stop_loss", -0.03)),
+                stop_loss     = float(params.get("stop_loss", -3)) / 100,
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
             ))
@@ -108,7 +113,7 @@ class StockTrader:
             return BollingerStrategy(BollingerConfig(
                 period        = int(params.get("period", 20)),
                 std_dev       = float(params.get("std", 2.0)),
-                stop_loss     = float(params.get("stop_loss", -0.03)),
+                stop_loss     = float(params.get("stop_loss", -3)) / 100,
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
             ))

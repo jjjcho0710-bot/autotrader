@@ -191,6 +191,66 @@ async def deactivate_knowledge_entry(display_id: str, pool=None) -> bool:
         return False
 
 
+async def get_learning_sources(limit: int = 50, pool=None) -> List[Dict[str, Any]]:
+    """학습 소스 목록 (추출된 활성 원칙 개수 포함) 조회"""
+    if not pool:
+        return []
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT s.source_id, s.source_type, s.url, s.title, s.author, s.created_at,
+                       COUNT(r.rule_id) FILTER (WHERE r.is_active) AS rule_count
+                FROM learning_sources s
+                LEFT JOIN learning_rules r ON r.source_id = s.source_id
+                GROUP BY s.source_id
+                ORDER BY s.created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"learning_sources 목록 조회 실패: {e}")
+        return []
+
+
+async def get_learning_source_detail(source_id: int, pool=None) -> Optional[Dict[str, Any]]:
+    """학습 소스 원문 전문 + 메타데이터 단건 조회"""
+    if not pool:
+        return None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM learning_sources WHERE source_id=$1", source_id
+            )
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"learning_source 상세 조회 실패({source_id}): {e}")
+        return None
+
+
+async def get_rules_by_source(source_id: int, pool=None) -> List[Dict[str, Any]]:
+    """특정 소스에서 추출된 활성 원칙 목록"""
+    if not pool:
+        return []
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT rule_id, rule_text, importance_score, created_at
+                FROM learning_rules
+                WHERE source_id=$1 AND is_active=TRUE
+                ORDER BY created_at DESC
+                """,
+                source_id,
+            )
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"소스별 원칙 조회 실패({source_id}): {e}")
+        return []
+
+
 async def search_learning_sources(query: str, limit: int = 5, pool=None) -> List[Dict[str, Any]]:
     """
     학습 원문 전문 및 메타데이터 검색

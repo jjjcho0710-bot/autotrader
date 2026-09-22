@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>AutoTrader — 전략</title>
 <style>
-:root[data-theme="dark"]{--bg:#0d1421;--panel:#1a2332;--card:#1e2d40;--border:#2a3a4e;--text:#e8edf3;--muted:#8b95a1;--up:#f75467;--dn:#4386f9;--accent:#1763b6;--header:#111827;--green:#22c55e;--input:#243447;}
+:root[data-theme="dark"]{--bg:#0B0F17;--panel:#1E293B;--card:#1E293B;--border:#334155;--text:#e8edf3;--muted:#94A3B8;--up:#EF4444;--dn:#3B82F6;--accent:#38BDF8;--header:#0B0F17;--green:#10B981;--input:#0F172A;}
 :root[data-theme="light"]{--bg:#f4f6f9;--panel:#ffffff;--card:#ffffff;--border:#e2e8f0;--text:#1a2332;--muted:#8b95a1;--up:#e02020;--dn:#1763b6;--accent:#1763b6;--header:#ffffff;--green:#16a34a;--input:#f4f6f9;}
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:var(--bg);color:var(--text);font-family:-apple-system,'Pretendard',sans-serif;font-size:14px;}
@@ -47,7 +47,7 @@ body{display:flex;flex-direction:column;min-height:100vh;padding-bottom:70px;}
 
 .bottom-nav{background:var(--header);border-top:1px solid var(--border);display:flex;height:56px;position:fixed;bottom:0;left:0;right:0;}
 .bn-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;text-decoration:none;color:var(--muted);font-size:10px;font-weight:500;}
-.bn-item.active{color:#f0b90b;}
+.bn-item.active{color:#F59E0B;}
 .bn-icon{font-size:22px;line-height:1;}
 
 .toast{position:fixed;top:70px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;z-index:999;display:none;}
@@ -57,7 +57,7 @@ body{display:flex;flex-direction:column;min-height:100vh;padding-bottom:70px;}
 
 <div class="header">
   <div style="width:44px"></div>
-  <div class="header-title">전략 관리</div>
+  <div class="header-title">전략/설정</div>
   <button class="theme-btn" onclick="toggleTheme()" id="theme-icon">🌙</button>
 </div>
 
@@ -87,9 +87,11 @@ body{display:flex;flex-direction:column;min-height:100vh;padding-bottom:70px;}
 
 <nav class="bottom-nav">
   <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
-  <a href="/stock" class="bn-item"><span class="bn-icon">📈</span>주식</a>
-    <a href="/strategy" class="bn-item active"><span class="bn-icon">⚙️</span>전략</a>
-  <a href="/jarvis" class="bn-item"><span class="bn-icon">🤖</span>자비스</a>
+  <a href="/stock" class="bn-item"><span class="bn-icon">📈</span>포트폴리오</a>
+  <a href="/stark" class="bn-item"><span class="bn-icon">🧠</span>STARK 브레인</a>
+  <a href="/strategy" class="bn-item active"><span class="bn-icon">⚙️</span>전략/설정</a>
+  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>트레이닝</a>
+  <a href="/logs" class="bn-item"><span class="bn-icon">📋</span>시스템 로그</a>
 </nav>
 
 <script>
@@ -227,7 +229,7 @@ loadStrategies();
 .bottom-nav, .nav {
   display:flex !important; position:fixed !important; bottom:0 !important;
   left:0 !important; right:0 !important; z-index:50 !important;
-  background:#131920 !important; border-top:1px solid #232d3a !important;
+  background:#1E293B !important; border-top:1px solid #334155 !important;
   padding:0 0 env(safe-area-inset-bottom) 0 !important; margin:0 !important;
   height:calc(56px + env(safe-area-inset-bottom)) !important;
 }
@@ -236,9 +238,9 @@ loadStrategies();
   align-items:center !important; justify-content:center !important;
   gap:2px !important; padding:0 !important; margin:0 !important;
   font-size:11px !important; font-weight:600 !important;
-  color:#7d8896 !important; text-decoration:none !important; line-height:1.2 !important;
+  color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
 }
-.bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
+.bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 </style>

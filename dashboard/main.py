@@ -40,9 +40,16 @@ from learning.curator import (
     get_jarvis_knowledge as _curator_get_jarvis_knowledge,
     jarvis_knowledge_curate as _curator_jarvis_knowledge_curate,
 )
+from learning.repository import (
+    get_active_rules,
+    get_learning_sources,
+    get_learning_source_detail,
+    get_rules_by_source,
+)
 from router import intent_router
 from router.handlers import directive_handler, order_handler, setting_handler, watchlist_handler
 from stark import context_collector, decision_engine, execution_guard
+from stark.decision_logger import get_recent_decisions, get_decisions_by_symbol
 from bot import telegram_bot
 
 import time as _time
@@ -2208,6 +2215,12 @@ async def logs():
         return f.read()
 
 
+@app.get("/stark", response_class=HTMLResponse)
+async def stark():
+    with open("static/stark.html", encoding="utf-8") as f:
+        return f.read()
+
+
 @app.get("/stock.html", response_class=HTMLResponse)
 async def stock_html():
     with open("static/stock.html", encoding="utf-8") as f:
@@ -2221,6 +2234,11 @@ async def strategy_html():
 @app.get("/logs.html", response_class=HTMLResponse)
 async def logs_html():
     with open("static/logs.html", encoding="utf-8") as f:
+        return f.read()
+
+@app.get("/stark.html", response_class=HTMLResponse)
+async def stark_html():
+    with open("static/stark.html", encoding="utf-8") as f:
         return f.read()
 
 @app.get("/dashboard-C.html", response_class=HTMLResponse)
@@ -4997,6 +5015,46 @@ async def training_summary(days: int = 14):
     return await _rcache("cache:training:summary", 30, lambda: _training_summary_raw(days))
 
 
+@app.get("/api/stark/decisions")
+async def stark_decisions(limit: int = 200):
+    try:
+        rows = await get_recent_decisions(db_pool, limit)
+        return {"success": True, "data": rows}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/stark/decisions/{symbol}")
+async def stark_decisions_by_symbol(symbol: str, limit: int = 5):
+    try:
+        rows = await get_decisions_by_symbol(db_pool, symbol, limit)
+        return {"success": True, "data": rows}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/learning/sources")
+async def learning_sources_list(limit: int = 50):
+    try:
+        rows = await get_learning_sources(limit, db_pool)
+        return {"success": True, "data": rows}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/learning/sources/{source_id}")
+async def learning_source_detail(source_id: int):
+    try:
+        detail = await get_learning_source_detail(source_id, db_pool)
+        if not detail:
+            return {"success": False, "error": "not found"}
+        rules = await get_rules_by_source(source_id, db_pool)
+        detail["rules"] = rules
+        return {"success": True, "data": detail}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 async def _training_summary_raw(days: int = 14):
     """트레이닝 페이지용: 교훈 목록 + 일별 채점 성적"""
     try:
@@ -5044,7 +5102,8 @@ async def pc_embed_page(page: str):
     """PC 데스크 전용: 하단탭이 서버에서 아예 제거된 페이지 버전"""
     file_map = {"strategy": "static/strategy.html",
                 "training": "static/training.html",
-                "logs": "static/logs.html"}
+                "logs": "static/logs.html",
+                "stark": "static/stark.html"}
     fp = file_map.get(page)
     if not fp:
         return HTMLResponse("Not found", status_code=404)

@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>AutoTrader — 주식</title>
+<title>AutoTrader — 포트폴리오</title>
 <style>
 :root[data-theme="dark"] {
-  --bg:#0d1421;--panel:#1a2332;--card:#1e2d40;--border:#2a3a4e;
-  --text:#e8edf3;--muted:#8b95a1;--up:#f75467;--dn:#4386f9;
-  --accent:#1763b6;--header:#111827;--input:#243447;--badge:#243447;
+  --bg:#0B0F17;--panel:#1E293B;--card:#1E293B;--border:#334155;
+  --text:#e8edf3;--muted:#94A3B8;--up:#EF4444;--dn:#3B82F6;
+  --accent:#38BDF8;--header:#0B0F17;--input:#0F172A;--badge:#0F172A;
 }
 :root[data-theme="light"] {
   --bg:#f4f6f9;--panel:#ffffff;--card:#ffffff;--border:#e2e8f0;
@@ -38,7 +38,7 @@ body{display:flex;flex-direction:column;}
   border-bottom:1px solid var(--border);}
 .account-top{display:flex;justify-content:space-between;margin-bottom:8px;}
 .account-label{font-size:11px;color:var(--muted);}
-.account-val{font-size:22px;font-weight:800;font-family:'SF Mono',monospace;}
+.account-val{font-size:22px;font-weight:800;font-family:'JetBrains Mono','SF Mono',monospace;}
 .account-sub{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
 .account-sub-item{display:flex;flex-direction:column;gap:2px;}
 .account-sub-label{font-size:10px;color:var(--muted);}
@@ -50,7 +50,7 @@ body{display:flex;flex-direction:column;}
   display:flex;justify-content:space-between;align-items:center;}
 .bot-name{font-size:12px;font-weight:600;}
 .bot-desc{font-size:11px;color:var(--muted);}
-.live-dot{width:6px;height:6px;border-radius:50%;background:#22c55e;
+.live-dot{width:6px;height:6px;border-radius:50%;background:#10B981;
   display:inline-block;margin-right:4px;animation:blink 1.5s infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 
@@ -66,7 +66,8 @@ body{display:flex;flex-direction:column;}
 .kpi-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;}
 .kpi-card{background:var(--card);border-radius:10px;padding:14px;border:1px solid var(--border);}
 .kpi-label{font-size:11px;color:var(--muted);margin-bottom:4px;}
-.kpi-val{font-size:18px;font-weight:800;font-family:'SF Mono',monospace;}
+.kpi-val{font-size:18px;font-weight:800;font-family:'JetBrains Mono','SF Mono',monospace;}
+.kpi-sub{font-size:11px;color:var(--muted);margin-top:3px;font-family:'JetBrains Mono','SF Mono',monospace;}
 .pos-card{background:var(--card);border-radius:10px;padding:14px;
   border:1px solid var(--border);margin-bottom:10px;}
 .pos-header-row{display:flex;justify-content:space-between;margin-bottom:10px;align-items:center;}
@@ -79,21 +80,23 @@ body{display:flex;flex-direction:column;}
 .pos-gi-val{font-size:13px;font-weight:600;}
 
 /* 감시 종목 리스트 */
-.watch-col-header{display:grid;grid-template-columns:1fr 80px 60px 70px;
+.watch-col-header{display:grid;grid-template-columns:1fr 76px 56px 56px 64px;
   padding:8px 16px;font-size:11px;color:var(--muted);
   border-bottom:1px solid var(--border);background:var(--panel);}
-.watch-row{display:grid;grid-template-columns:1fr 80px 60px 70px;
+.watch-row{display:grid;grid-template-columns:1fr 76px 56px 56px 64px;
   padding:12px 16px;border-bottom:1px solid var(--border);
   align-items:center;background:var(--panel);}
 .watch-name{font-size:13px;font-weight:600;}
 .watch-code{font-size:10px;color:var(--muted);}
-.watch-price{text-align:right;font-size:13px;font-weight:700;font-family:'SF Mono',monospace;}
+.watch-price{text-align:right;font-size:13px;font-weight:700;font-family:'JetBrains Mono','SF Mono',monospace;}
 .watch-rate{text-align:right;font-size:12px;font-weight:700;}
+.watch-conf{text-align:right;font-size:12px;font-weight:700;color:#F59E0B;font-family:'JetBrains Mono','SF Mono',monospace;}
 .watch-signal{text-align:right;}
 .sig-badge{font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;}
-.sig-buy{background:rgba(247,84,103,0.15);color:var(--up);}
-.sig-sell{background:rgba(67,134,249,0.15);color:var(--dn);}
-.sig-hold{background:var(--badge);color:var(--muted);}
+.sig-buy{background:rgba(239,68,68,.15);color:#F87171;}
+.sig-sell{background:rgba(59,130,246,.15);color:#60A5FA;}
+.sig-hold{background:rgba(245,158,11,.15);color:#F59E0B;}
+.sig-skip{background:rgba(148,163,184,.15);color:#94A3B8;}
 
 /* Jarvis 신호 */
 .signal-card{background:var(--card);border-radius:10px;padding:14px;
@@ -122,8 +125,8 @@ body{display:flex;flex-direction:column;}
 .trade-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px;}
 .trade-amount{font-size:14px;font-weight:700;}
 .trade-side{font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;}
-.side-buy{background:rgba(247,84,103,0.15);color:var(--up);}
-.side-sell{background:rgba(67,134,249,0.15);color:var(--dn);}
+.side-buy{background:rgba(239,68,68,.15);color:#F87171;}
+.side-sell{background:rgba(59,130,246,.15);color:#60A5FA;}
 
 .up{color:var(--up);}
 .dn{color:var(--dn);}
@@ -135,7 +138,7 @@ body{display:flex;flex-direction:column;}
 .bn-item{flex:1;display:flex;flex-direction:column;align-items:center;
   justify-content:center;gap:3px;text-decoration:none;
   color:var(--muted);font-size:10px;font-weight:500;}
-.bn-item.active{color:#f0b90b;}
+.bn-item.active{color:#F59E0B;}
 .bn-icon{font-size:22px;line-height:1;}
 </style>
 </head>
@@ -144,7 +147,7 @@ body{display:flex;flex-direction:column;}
 <!-- 헤더 -->
 <div class="header">
   <div style="width:44px"></div>
-  <div class="header-title">주식</div>
+  <div class="header-title">포트폴리오</div>
   <div>
     <button class="theme-btn" onclick="toggleTheme()" id="theme-icon">🌙</button>
   </div>
@@ -166,30 +169,27 @@ body{display:flex;flex-direction:column;}
   </div>
 </div>
 
-<!-- 계좌 요약 -->
-<div class="account-bar">
-  <div class="account-top">
-    <div>
-      <div class="account-label">총 평가금액</div>
-      <div class="account-val" id="total-eval">-</div>
+<!-- 계좌 요약 (KPI) -->
+<div class="section" style="padding-bottom:0;">
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-label">총 평가금액</div>
+      <div class="kpi-val mono" id="total-eval">-</div>
+      <div class="kpi-sub mono" id="stock-eval">-</div>
     </div>
-    <div style="text-align:right">
-      <div class="account-label">평가손익</div>
-      <div class="account-val" id="total-pnl" style="font-size:18px">-</div>
+    <div class="kpi-card">
+      <div class="kpi-label">당일 평가손익률</div>
+      <div class="kpi-val mono" id="pnl-rate">-</div>
+      <div class="kpi-sub mono" id="total-pnl">-</div>
     </div>
-  </div>
-  <div class="account-sub">
-    <div class="account-sub-item">
-      <span class="account-sub-label">주식평가</span>
-      <span class="account-sub-val" id="stock-eval">-</span>
+    <div class="kpi-card">
+      <div class="kpi-label">실현손익</div>
+      <div class="kpi-val mono" id="realized-pnl">-</div>
+      <div class="kpi-sub">최근 100건 매도 기준</div>
     </div>
-    <div class="account-sub-item">
-      <span class="account-sub-label">예수금</span>
-      <span class="account-sub-val" id="deposit">-</span>
-    </div>
-    <div class="account-sub-item">
-      <span class="account-sub-label">수익률</span>
-      <span class="account-sub-val" id="pnl-rate">-</span>
+    <div class="kpi-card">
+      <div class="kpi-label">예수금</div>
+      <div class="kpi-val mono" id="deposit">-</div>
     </div>
   </div>
 </div>
@@ -226,7 +226,8 @@ body{display:flex;flex-direction:column;}
     <span>종목</span>
     <span style="text-align:right">현재가</span>
     <span style="text-align:right">등락률</span>
-    <span style="text-align:right">ML신호</span>
+    <span style="text-align:right">STARK</span>
+    <span style="text-align:right">상태</span>
   </div>
   <div id="watch-list"></div>
 </div>
@@ -255,9 +256,11 @@ body{display:flex;flex-direction:column;}
 <!-- 하단 네비 -->
 <nav class="bottom-nav">
   <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
-  <a href="/stock" class="bn-item active"><span class="bn-icon">📈</span>주식</a>
-    <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략</a>
-  <a href="/jarvis" class="bn-item"><span class="bn-icon">🤖</span>자비스</a>
+  <a href="/stock" class="bn-item active"><span class="bn-icon">📈</span>포트폴리오</a>
+  <a href="/stark" class="bn-item"><span class="bn-icon">🧠</span>STARK 브레인</a>
+  <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략/설정</a>
+  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>트레이닝</a>
+  <a href="/logs" class="bn-item"><span class="bn-icon">📋</span>시스템 로그</a>
 </nav>
 
 <script>
@@ -311,14 +314,14 @@ async function fetchPositions(){
     const pr=acct.pnl_rate||0;
 
     document.getElementById('total-eval').textContent=fmt(te)+'원';
+    document.getElementById('stock-eval').textContent='주식평가 '+fmt(se)+'원';
     const tpEl=document.getElementById('total-pnl');
     tpEl.textContent=(pnl>=0?'+':'')+fmt(Math.round(pnl))+'원';
-    tpEl.className='account-val '+(pnl>=0?'up':'dn');
-    document.getElementById('stock-eval').textContent=fmt(se)+'원';
+    tpEl.className='kpi-sub mono '+(pnl>=0?'up':'dn');
     document.getElementById('deposit').textContent=fmt(cash)+'원';
     const prEl=document.getElementById('pnl-rate');
     prEl.textContent=fmtR(pr);
-    prEl.className='account-sub-val '+(pr>=0?'up':'dn');
+    prEl.className='kpi-val mono '+(pr>=0?'up':'dn');
 
     const positions=d.data||[];
     const list=document.getElementById('pos-list');
@@ -348,29 +351,62 @@ async function fetchPositions(){
   }catch(e){}
 }
 
+function starkBadgeClass(decision){
+  if(decision==='BUY')return 'sig-buy';
+  if(decision==='SELL')return 'sig-sell';
+  if(decision==='HOLD')return 'sig-hold';
+  return 'sig-skip';
+}
+
 async function fetchWatchlist(){
   try{
-    let mlMap={}, newsMap={};
-    try{const mr=await fetch(`${API}/api/ml/predictions`);const md=await mr.json();(md.data||[]).forEach(p=>mlMap[p.symbol]=p);}catch(e){}
-    try{const nr=await fetch(`${API}/api/data/sentiment`);const nd=await nr.json();(nd.data||[]).forEach(n=>newsMap[n.symbol]=n);}catch(e){}
-
     const r=await fetch(`${API}/api/prices/stock`);
     const d=await r.json();
     const list=document.getElementById('watch-list');
     const entries=Object.values(d.data||{});
     if(!entries.length){list.innerHTML='<div class="empty">감시 종목 없음</div>';return;}
+
+    // STARK 최신 판단(확신도/상태) — 종목별 병렬 조회
+    const starkMap={};
+    await Promise.all(entries.map(async p=>{
+      try{
+        const sr=await fetch(`${API}/api/stark/decisions/${p.symbol}?limit=1`);
+        const sd=await sr.json();
+        if(sd.success && sd.data && sd.data.length) starkMap[p.symbol]=sd.data[0];
+      }catch(e){}
+    }));
+
     list.innerHTML=entries.map(p=>{
       const rate=parseFloat(p.change_rate||0);
       const cls=rate>=0?'up':'dn';
-      const ml=mlMap[p.symbol];
-      const mlBadge=ml?`<span class="sig-badge ${ml.signal==='BUY'?'sig-buy':ml.signal==='SELL'?'sig-sell':'sig-hold'}">${ml.signal}</span>`:'<span class="sig-badge sig-hold">-</span>';
+      const dec=starkMap[p.symbol];
+      const conf=(dec && dec.confidence!==null && dec.confidence!==undefined)
+        ? Math.round(Number(dec.confidence)*100)+'%' : '-';
+      const action=dec ? dec.decision : null;
+      const badge=action
+        ? `<span class="sig-badge ${starkBadgeClass(action)}">${action}</span>`
+        : '<span class="sig-badge sig-skip">-</span>';
       return `<div class="watch-row">
         <div><div class="watch-name">${p.name||p.symbol}</div><div class="watch-code">${p.symbol}</div></div>
         <div class="watch-price ${cls}">${fmt(p.price)}</div>
         <div class="watch-rate ${cls}">${fmtR(rate)}</div>
-        <div class="watch-signal">${mlBadge}</div>
+        <div class="watch-conf">${conf}</div>
+        <div class="watch-signal">${badge}</div>
       </div>`;
     }).join('');
+  }catch(e){}
+}
+
+async function fetchRealizedPnl(){
+  try{
+    const r=await fetch(`${API}/api/trades?bot=stock_trader&limit=100`);
+    const d=await r.json();
+    const trades=d.data||[];
+    const sells=trades.filter(t=>t.side==='SELL');
+    const total=sells.reduce((s,t)=>s+(parseFloat(t.pnl)||0),0);
+    const el=document.getElementById('realized-pnl');
+    el.textContent=(total>=0?'+':'')+fmt(Math.round(total))+'원';
+    el.className='kpi-val mono '+(total>=0?'up':'dn');
   }catch(e){}
 }
 
@@ -443,7 +479,7 @@ async function fetchMarketIndex(){
 }
 
 async function loadAll(){
-  await Promise.all([fetchPositions(),fetchWatchlist(),fetchML(),fetchTrades(),fetchMarketIndex()]);
+  await Promise.all([fetchPositions(),fetchWatchlist(),fetchML(),fetchTrades(),fetchMarketIndex(),fetchRealizedPnl()]);
 }
 loadAll();
 setInterval(loadAll,30000);
@@ -454,7 +490,7 @@ setInterval(fetchMarketIndex,60000);
 .bottom-nav, .nav {
   display:flex !important; position:fixed !important; bottom:0 !important;
   left:0 !important; right:0 !important; z-index:50 !important;
-  background:#131920 !important; border-top:1px solid #232d3a !important;
+  background:#1E293B !important; border-top:1px solid #334155 !important;
   padding:0 0 env(safe-area-inset-bottom) 0 !important; margin:0 !important;
   height:calc(56px + env(safe-area-inset-bottom)) !important;
 }
@@ -463,9 +499,9 @@ setInterval(fetchMarketIndex,60000);
   align-items:center !important; justify-content:center !important;
   gap:2px !important; padding:0 !important; margin:0 !important;
   font-size:11px !important; font-weight:600 !important;
-  color:#7d8896 !important; text-decoration:none !important; line-height:1.2 !important;
+  color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
 }
-.bottom-nav a.active, .nav a.active, .bn-item.active { color:#f0b90b !important; }
+.bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 </style>

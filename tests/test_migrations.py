@@ -66,6 +66,9 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V002__create_stocks_and_migrate.sql",
                 "V003__create_stark_decisions.sql",
                 "V004__add_indexes.sql",
+                "V005__create_learning_tables.sql",
+                "V006__enhance_jarvis_memory.sql",
+                "V007__add_learning_indexes.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -106,19 +109,19 @@ class TestMigrationFilesStructure(unittest.TestCase):
 
 
 class TestMigrationRoundTrip(unittest.TestCase):
-    """Up을 V001→V004 순서로 전부 적용한 뒤, Down을 V004→V001 역순으로 적용하면
+    """Up을 V001→V007 순서로 전부 적용한 뒤, Down을 V007→V001 역순으로 적용하면
     가상 스키마 상태(테이블/인덱스 이름 집합)가 정확히 시작 상태(빈 집합)로
     복귀하는지 검증한다."""
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 4, "마이그레이션 파일 4개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 7, "마이그레이션 파일 7개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
         initial = (frozenset(tables), frozenset(indexes))
 
-        # Up: V001 -> V004 순서
+        # Up: V001 -> V007 순서
         for version, up_sql, _down_sql in self.migrations:
             apply_sql_to_state(up_sql, tables, indexes)
 
@@ -129,7 +132,14 @@ class TestMigrationRoundTrip(unittest.TestCase):
         self.assertIn("idx_stocks_symbol_name", indexes)
         self.assertIn("idx_stark_decisions_decided_at_symbol", indexes)
 
-        # Down: V004 -> V001 역순
+        # 중간 상태 확인: V005~V007(학습 테이블 및 인덱스)도 모두 반영되어야 함
+        self.assertIn("learning_sources", tables)
+        self.assertIn("learning_rules", tables)
+        self.assertIn("idx_learning_sources_url", indexes)
+        self.assertIn("idx_learning_rules_source_id", indexes)
+        self.assertIn("idx_jarvis_memory_session_created", indexes)
+
+        # Down: V007 -> V001 역순
         for version, _up_sql, down_sql in reversed(self.migrations):
             apply_sql_to_state(down_sql, tables, indexes)
 

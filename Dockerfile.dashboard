@@ -3,6 +3,11 @@ WORKDIR /app
 
 COPY common/ ./common/
 COPY ml/ ./ml/
+COPY market/ ./market/
+COPY stark/ ./stark/
+COPY chat/ ./chat/
+COPY learning/ ./learning/
+COPY migrations/ ./migrations/
 COPY dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY dashboard/ ./dashboard/

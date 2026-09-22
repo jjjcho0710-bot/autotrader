@@ -40,6 +40,10 @@ from learning.curator import (
     get_jarvis_knowledge as _curator_get_jarvis_knowledge,
     jarvis_knowledge_curate as _curator_jarvis_knowledge_curate,
 )
+from router import intent_router
+from router.handlers import directive_handler, order_handler, setting_handler, watchlist_handler
+from stark import context_collector, decision_engine, execution_guard
+from bot import telegram_bot
 
 import time as _time
 
@@ -226,25 +230,16 @@ async def startup():
 
 
 async def _auto_register_webhook():
-    """서버 시작 시 텔레그램 webhook 자동 등록"""
-    import os
-    import aiohttp as http
-    token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+    """서버 시작 시 STARK 텔레그램 webhook 자동 등록 (bot/telegram_bot.py 이관)"""
     public_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
-    if not token or not public_url:
+    if not telegram_bot.resolve_token(config) or not public_url:
         logger.warning("텔레그램 webhook 자동 등록 스킵 (토큰 또는 도메인 없음)")
         return
-    webhook_url = f"https://{public_url}/api/telegram/webhook"
-    try:
-        async with http.ClientSession() as session:
-            res = await session.post(
-                f"https://api.telegram.org/bot{token}/setWebhook",
-                json={"url": webhook_url, "drop_pending_updates": True},
-            )
-            data = await res.json()
-            logger.info(f"텔레그램 webhook 자동 등록: {webhook_url} → {data}")
-    except Exception as e:
-        logger.warning(f"텔레그램 webhook 자동 등록 실패: {e}")
+    result = await telegram_bot.register_webhook(f"https://{public_url}", config)
+    if result.get("success"):
+        logger.info(f"텔레그램 webhook 자동 등록: {result.get('webhook_url')} → {result.get('result')}")
+    else:
+        logger.warning(f"텔레그램 webhook 자동 등록 실패: {result.get('error')}")
 
 
 async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
@@ -3850,120 +3845,8 @@ async def _manual_collect():
 
 
 async def _handle_watchlist_command(msg: str) -> str | None:
-    """감시 종목 추가/삭제/조회 명령 감지 후 실행"""
-    msg_lower = msg.lower().strip()
-
-    # ── 조회 ──────────────────────────────────────────
-    if any(k in msg_lower for k in ["감시 종목 보여", "감시종목 보여", "감시 종목 목록", "watchlist"]):
-        try:
-            async with db_pool.acquire() as conn:
-                rows = await conn.fetch("SELECT symbol, name FROM watchlist WHERE is_active=TRUE ORDER BY created_at")
-            if not rows:
-                return "📋 현재 감시 종목이 없어요."
-            lines = [f"  {r['symbol']} {r['name'] or ''}" for r in rows]
-            return "📋 **현재 감시 종목**\n" + "\n".join(lines)
-        except Exception as e:
-            return f"❌ 조회 실패: {e}"
-
-    # ── 추가 ──────────────────────────────────────────
-    is_add = any(k in msg_lower for k in ["감시 종목 추가", "감시종목 추가", "추가해줘", "추가해", "등록해", "감시해줘"])
-    if is_add:
-        # STOCK_NAME_MAP에서 종목명 매칭
-        matched_symbol, matched_name = None, None
-        for name_key, (symbol, name) in STOCK_NAME_MAP.items():
-            if name_key in msg_lower:
-                matched_symbol, matched_name = symbol, name
-                break
-
-        # MAP에 없으면 메모리 캐시에서 빠른 검색
-        if not matched_symbol:
-            # 정확한 종목명 매칭
-            for stock_name, ticker in universe.name_cache.items():
-                if stock_name in msg:
-                    matched_symbol = ticker
-                    matched_name = stock_name
-                    break
-            # 부분 매칭 (앞 2글자 이상)
-            if not matched_symbol:
-                for stock_name, ticker in universe.name_cache.items():
-                    if len(stock_name) >= 2 and stock_name[:2] in msg and len(stock_name) >= 2:
-                        words = [w for w in msg_lower.split() if len(w) >= 2]
-                        if any(stock_name.startswith(w) or w in stock_name for w in words):
-                            matched_symbol = ticker
-                            matched_name = stock_name
-                            break
-
-        if matched_symbol:
-            try:
-                async with db_pool.acquire() as conn:
-                    existing = [r["symbol"] for r in await conn.fetch(
-                        "SELECT symbol FROM watchlist WHERE is_active=TRUE"
-                    )]
-                    if matched_symbol in existing:
-                        return f"📋 **{matched_name}**({matched_symbol})은 이미 감시 종목이에요."
-                    await conn.execute("""
-                        INSERT INTO watchlist (symbol, name, added_by, reason, is_active)
-                        VALUES ($1, $2, 'jarvis', $3, TRUE)
-                        ON CONFLICT (symbol) DO UPDATE
-                        SET is_active=TRUE, name=$2, added_by='jarvis', reason=$3, updated_at=NOW()
-                    """, matched_symbol, matched_name, msg)
-                return f"✅ **{matched_name}**({matched_symbol})을 감시 종목에 추가했어요!"
-            except Exception as e:
-                return f"❌ 추가 실패: {e}"
-
-        # 6자리 코드 직접 입력
-        import re
-        codes = re.findall(r'\b\d{6}\b', msg)
-        if codes:
-            results = []
-            for code in codes:
-                try:
-                    async with db_pool.acquire() as conn:
-                        await conn.execute("""
-                            INSERT INTO watchlist (symbol, added_by, reason, is_active)
-                            VALUES ($1, 'jarvis', $2, TRUE)
-                            ON CONFLICT (symbol) DO UPDATE
-                            SET is_active=TRUE, added_by='jarvis', updated_at=NOW()
-                        """, code, msg)
-                    results.append(f"✅ {code} 추가")
-                except Exception as e:
-                    results.append(f"❌ {code} 실패: {e}")
-            return "\n".join(results)
-
-        return None  # Gemini로 넘김
-
-    # ── 삭제/제거 ──────────────────────────────────────
-    is_remove = any(k in msg_lower for k in ["감시 종목 제거", "감시종목 제거", "제거해줘", "삭제해줘", "빼줘"])
-    if is_remove:
-        for name_key, (symbol, name) in STOCK_NAME_MAP.items():
-            if name_key in msg_lower:
-                try:
-                    async with db_pool.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", symbol
-                        )
-                    return f"🗑️ **{name}**({symbol})을 감시 종목에서 제거했어요."
-                except Exception as e:
-                    return f"❌ {name} 제거 실패: {e}"
-
-        import re
-        codes = re.findall(r'\b\d{6}\b', msg)
-        if codes:
-            results = []
-            for code in codes:
-                try:
-                    async with db_pool.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", code
-                        )
-                    results.append(f"🗑️ {code} 제거")
-                except Exception as e:
-                    results.append(f"❌ {code} 실패: {e}")
-            return "\n".join(results)
-
-        return "❓ 종목명을 찾지 못했어요. 예: '삼성전자 감시 종목 제거해줘'"
-
-    return None  # 일반 채팅으로 처리
+    """감시 종목 추가/삭제/조회 명령 감지 후 실행 (router/handlers/watchlist_handler.py 이관)"""
+    return await watchlist_handler.handle_command(msg, db_pool, universe, STOCK_NAME_MAP)
 
 
 async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
@@ -4010,269 +3893,48 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
 
 
 import re as _re_mod
-_re_prop = _re_mod.compile(r"(승인|오케이|오케|ok|ㅇㅋ|사자|매수 ?해|매수 ?하자|고고|거절|취소해|사지 ?마)", _re_mod.I)
-_re_reject = _re_mod.compile(r"(거절|취소해|사지 ?마|안 ?사)")
 
 
 async def _handle_trade_command(user_msg: str):
-    """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
-    import re as _re
-    msg = user_msg.strip()
-    is_buy = bool(_re.search(r"(매수|사자|사줘|사라)", msg))
-    is_sell = bool(_re.search(r"(매도|팔아|팔자|팔아줘)", msg))
-    if not (is_buy or is_sell):
-        return None
-    qty_m = _re.search(r"(\d+)\s*주", msg)
-    all_sell = "전량" in msg or "다 팔" in msg
-    if not qty_m and not all_sell:
-        return None  # 수량 없는 문장은 일반 대화로
-
-    symbol, name = await universe.resolve_symbol(msg)
-    if not symbol:
-        return "⚠️ 종목을 특정할 수 없어요. 종목코드 6자리 또는 감시종목 이름으로 다시 지시해주세요. (예: 000660 2주 매수)"
-
-    action = "buy" if is_buy else "sell"
-    action_kr = "매수" if is_buy else "매도"
-
-    # 현재가 (검증된 KIS 직접 조회 경로)
-    price = 0
-    try:
-        token = await get_kis_token()
-        if token:
-            import ssl as _ssl
-            _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
-            async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
-                pr = await sess.get(
-                    f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
-                    headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
-                             "appsecret": config.kis_app_secret,
-                             "tr_id": "FHKST01010100", "custtype": "P"},
-                    params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
-                    timeout=_aiohttp.ClientTimeout(total=8))
-                o = (await pr.json()).get("output", {})
-                price = int(o.get("stck_prpr", 0) or 0)
-                if o.get("hts_kor_isnm"):
-                    name = o.get("hts_kor_isnm")
-    except Exception as e:
-        logger.warning(f"수동주문 현재가 조회 실패 [{symbol}]: {e}")
-    if price <= 0:
-        return f"⚠️ {name}({symbol}) 현재가 조회 실패 — 주문 불가"
-
-    # 수량
-    if all_sell and not qty_m:
-        try:
-            pos = await get_stock_positions()
-            qty = next((int(p["qty"]) for p in pos.get("data", []) if p["symbol"] == symbol), 0)
-        except Exception:
-            qty = 0
-        if qty <= 0:
-            return f"⚠️ {name}({symbol}) 보유 수량이 없어요"
-    else:
-        qty = int(qty_m.group(1))
-
-    # 실제 주문 (dashboard 내장 함수 — 모듈 의존 없음)
-    result = await _kis_stock_order(symbol, price, qty, is_buy)
-
-    if result.get("success"):
-        try:
-            async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
-                    VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,'수동지시')
-                """, symbol, action.upper(), float(price), float(qty), float(price * qty))
-        except Exception:
-            pass
-        # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
-        try:
-            for k in ("cache:positions:stock", "cache:account:stock"):
-                await redis_client.delete(k)
-        except Exception:
-            pass
-        await _send_telegram(
-            f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
-            f"가격: {price:,}원 × {qty}주 = {price*qty:,}원",
-            broadcast=True)
-        await _log_journal("stock_trader", symbol, name, action, "수동지시",
-                           user_msg[:200], "MANUAL", "사용자 직접 지시",
-                           True, True, price, qty, source="chat")
-        return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
-                f"{price:,}원 × {qty}주 = {price*qty:,}원")
-    else:
-        return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error', '알 수 없음')}"
+    """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None
+    (router/handlers/order_handler.py 이관)"""
+    return await order_handler.handle_trade_command(
+        user_msg, pool=db_pool, redis=redis_client, universe=universe,
+        get_kis_token_fn=get_kis_token, config=config, kis_order_fn=_kis_stock_order,
+        get_stock_positions_fn=get_stock_positions, send_telegram_fn=_send_telegram,
+        log_journal_fn=_log_journal)
 
 
 async def _stamp_plan_change(note: str):
-    """지시 변경 시 오늘의 작전 상단에 변경 메모 삽입 → 이후 판단에서 옛 규칙 무력화"""
-    try:
-        cur = await redis_client.get("jarvis:daily_plan")
-        cur = cur if isinstance(cur, str) else (cur or b"").decode()
-        stamp = f"※ [{datetime.now(KST).strftime('%H:%M')} 지시 변경] {note} — 이전 작전의 상충 규칙은 무효.\n"
-        await redis_client.setex("jarvis:daily_plan", 60 * 60 * 12, (stamp + cur)[:2000])
-    except Exception:
-        pass
+    """지시 변경 시 오늘의 작전 상단에 변경 메모 삽입 → 이후 판단에서 옛 규칙 무력화
+    (router/handlers/directive_handler.py 이관)"""
+    await directive_handler.stamp_plan_change(redis_client, note)
 
 
 async def _get_active_directives(limit: int = 10) -> str:
-    """활성 지시사항 텍스트 (판단·작전 프롬프트 주입용)"""
-    try:
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT id, content FROM jarvis_notes
-                WHERE category='directive' AND is_active=TRUE
-                ORDER BY created_at DESC LIMIT $1""", limit)
-        if not rows:
-            return ""
-        return "\n".join(f"- (#{r['id']}) {r['content']}" for r in rows)
-    except Exception:
-        return ""
+    """활성 지시사항 텍스트 (판단·작전 프롬프트 주입용) (router/handlers/directive_handler.py 이관)"""
+    return await directive_handler.get_active_directives(db_pool, limit)
 
 
 async def _handle_directive_command(user_msg: str):
-    """지시사항 저장/목록/취소. 해당 없으면 None"""
-    import re as _re
-    msg = user_msg.strip()
-
-    # 목록
-    if msg in ("지시 목록", "지시목록", "지시사항 목록", "지시사항"):
-        txt = await _get_active_directives(20)
-        return f"📌 활성 지시사항:\n{txt}" if txt else "📌 활성 지시사항이 없습니다."
-
-    # 취소: "지시 취소 12" / "지시 삭제 12"
-    m = _re.match(r"지시\s*(취소|삭제)\s*#?(\d+)", msg)
-    if m:
-        did = int(m.group(2))
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1 AND category='directive'", did)
-            await _stamp_plan_change(f"지시 #{did} 취소됨")
-        return f"🗑️ 지시 #{did} 를 해제했습니다."
-
-    # 저장: "지시: ..." / "지시 ..." / "앞으로 ..." / "내일부터 ..."
-    directive = None
-    if msg.startswith("지시:"):
-        directive = msg[3:].strip()
-    elif msg.startswith("지시 ") and len(msg) > 4:
-        directive = msg[3:].strip()
-    elif msg.startswith(("앞으로 ", "내일부터 ", "오늘부터 ")):
-        directive = msg
-    if directive and len(directive) >= 4:
-        async with db_pool.acquire() as conn:
-            did = await conn.fetchval(
-                "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('directive', $1, TRUE) RETURNING id",
-                directive[:300])
-        await _stamp_plan_change(f"지시 추가 #{did}: {directive[:80]}")
-        return (f"📌 지시 #{did} 저장 완료 — 다음 매매 판단부터 즉시 반영됩니다.\n"
-                f"\"{directive[:100]}\"\n(해제: '지시 취소 {did}')")
-    return None
+    """지시사항 저장/목록/취소. 해당 없으면 None (router/handlers/directive_handler.py 이관)"""
+    return await directive_handler.handle(user_msg, db_pool, redis_client)
 
 
 async def _handle_setting_command(user_msg: str):
-    """전략 설정 실시간 변경 (배포 없음). 해당 없으면 None"""
-    import re as _re
-    msg = user_msg.replace(",", "").strip()
-
-    # 패턴: 손절 -7% / 익절 3% / 매수금액 100만원(또는 1000000원) + 변경/바꿔/설정/해줘
-    if not _re.search(r"(변경|바꿔|바꾸|설정|해줘|올려|내려|조정)", msg):
-        return None
-    m_sl = _re.search(r"손절[을를]?\s*(-?\d+(?:\.\d+)?)\s*%", msg)
-    m_tp = _re.search(r"익절[을를]?\s*(\+?\d+(?:\.\d+)?)\s*%", msg)
-    m_amt = _re.search(r"매수\s*금액[을를]?\s*(\d+(?:\.\d+)?)\s*(만원|원)", msg)
-    if not (m_sl or m_tp or m_amt):
-        return None
-
-    changes = {}
-    if m_sl:
-        v = -abs(float(m_sl.group(1)))
-        if not (-15 <= v <= -0.5):
-            return f"⚠️ 손절 {v}%는 허용 범위(-0.5% ~ -15%)를 벗어나 적용하지 않았습니다."
-        changes["stop_loss"] = v
-    if m_tp:
-        v = abs(float(m_tp.group(1)))
-        if not (0.5 <= v <= 20):
-            return f"⚠️ 익절 {v}%는 허용 범위(0.5% ~ 20%)를 벗어나 적용하지 않았습니다."
-        changes["take_profit"] = v
-    if m_amt:
-        v = float(m_amt.group(1)) * (10000 if m_amt.group(2) == "만원" else 1)
-        if not (50000 <= v <= 5000000):
-            return f"⚠️ 매수금액 {v:,.0f}원은 허용 범위(5만~500만원)를 벗어나 적용하지 않았습니다."
-        changes["buy_amount"] = int(v)
-
-    applied = []
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, name, is_active, params FROM strategy_config WHERE bot='stock_trader'")
-        for r in rows:
-            params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
-            for k, v in changes.items():
-                # 단위는 항상 '퍼센트 숫자 그대로'(-7, 5 등)로 저장한다.
-                # 예전엔 기존값 크기로 단위를 추측하다가 한 번 잘못 변환되면 계속 더 잘못되는
-                # 연쇄 버그가 있었음(예: take_profit이 0.01까지 줄어듦) — 추측 로직 완전 제거.
-                params[k] = v
-            await conn.execute(
-                "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
-                json.dumps(params), r["id"])
-            try:
-                await redis_client.publish("strategy:update", json.dumps({
-                    "bot": "stock_trader", "name": r["name"],
-                    "is_active": r["is_active"], "params": params}))
-            except Exception:
-                pass
-            applied.append(r["name"])
-
-    desc = " · ".join(
-        [f"손절 {changes['stop_loss']}%" if "stop_loss" in changes else "",
-         f"익절 {changes['take_profit']}%" if "take_profit" in changes else "",
-         f"매수금액 {changes['buy_amount']:,}원" if "buy_amount" in changes else ""])
-    desc = " · ".join([d for d in desc.split(" · ") if d])
-    await _send_telegram(f"⚙️ 전략 설정 변경 (채팅 지시)\n{desc}\n적용 전략: {', '.join(applied)}", broadcast=True)
-    return (f"⚙️ 설정 변경 완료 — {desc}\n"
-            f"적용: {', '.join(applied)} (봇이 1분 내 자동 반영, 배포 없음)")
+    """전략 설정 실시간 변경 (배포 없음). 해당 없으면 None (router/handlers/setting_handler.py 이관)"""
+    return await setting_handler.handle(user_msg, db_pool, redis_client, _send_telegram)
 
 
 async def _apply_strategy_settings(changes: dict) -> list:
-    """전략 설정 변경 공용 적용기 (검증된 changes만 받음). 반환: 적용 전략명"""
-    applied = []
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, name, is_active, params FROM strategy_config WHERE bot='stock_trader'")
-        for r in rows:
-            params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
-            for k, v in changes.items():
-                # 단위 추측 로직 제거 — 항상 퍼센트 숫자 그대로 저장 (위 함수와 동일 사유)
-                params[k] = v
-            await conn.execute(
-                "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
-                json.dumps(params), r["id"])
-            try:
-                await redis_client.publish("strategy:update", json.dumps({
-                    "bot": "stock_trader", "name": r["name"],
-                    "is_active": r["is_active"], "params": params}))
-            except Exception:
-                pass
-            applied.append(r["name"])
-    return applied
+    """전략 설정 변경 공용 적용기 (검증된 changes만 받음). 반환: 적용 전략명
+    (router/handlers/setting_handler.py 이관)"""
+    return await setting_handler.apply_strategy_settings(db_pool, redis_client, changes)
 
 
 def _validate_setting(k: str, v) -> tuple:
-    """(ok, normalized_value or 오류메시지)"""
-    try:
-        v = float(v)
-    except Exception:
-        return False, f"{k} 값이 숫자가 아님"
-    if k == "stop_loss":
-        v = -abs(v)
-        return ((-15 <= v <= -0.5), v if -15 <= v <= -0.5 else "손절 허용범위 -0.5~-15%")
-    if k == "take_profit":
-        v = abs(v)
-        return ((0.5 <= v <= 20), v if 0.5 <= v <= 20 else "익절 허용범위 0.5~20%")
-    if k == "buy_amount":
-        return ((50000 <= v <= 5000000), int(v) if 50000 <= v <= 5000000 else "매수금액 허용범위 5만~500만원")
-    if k == "max_num_stocks":
-        return ((1 <= v <= 20), int(v) if 1 <= v <= 20 else "보유종목 허용범위 1~20개")
-    if k == "max_buy_percent_of_cash":
-        v = v / 100 if v > 1 else v  # "70" 또는 "0.7" 둘 다 허용
-        return ((0.05 <= v <= 1.0), v if 0.05 <= v <= 1.0 else "예수금 비율 허용범위 5~100%")
-    return False, f"알 수 없는 설정 {k}"
+    """(ok, normalized_value or 오류메시지) (router/handlers/setting_handler.py 이관)"""
+    return setting_handler.validate_setting(k, v)
 
 
 async def _search_past_chats(query: str, limit: int = 5) -> str:
@@ -4338,67 +4000,33 @@ async def _jarvis_chat_impl(body: dict):
     user_msg = body.get("message", "").strip()
     # 텔레그램과 완전히 같은 세션 공유
     session_id = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
+    # 채널 구분 — 웹 대화/텔레그램 대화가 같은 세션을 공유해도 대화기록에는 출처를 남긴다
+    # (bot/telegram_bot.py가 채널 발신 시 "channel":"telegram"을 body에 실어 보낸다)
+    channel = body.get("channel", "web")
     if not user_msg:
         return {"success": False, "error": "메시지가 없어요"}
 
+    router_ctx = intent_router.RouterContext(
+        pool=db_pool, redis=redis_client, universe=universe, config=config,
+        stock_name_map=STOCK_NAME_MAP,
+        session_id=body.get("session_id") or "advice",
+        send_telegram=_send_telegram,
+        get_kis_token=get_kis_token,
+        kis_order=_kis_stock_order,
+        analyze_chart=_analyze_chart,
+        get_stock_positions=get_stock_positions,
+        log_journal=_log_journal,
+        web_research=_web_research_stock,
+        jarvis_chat=jarvis_chat,
+        channel=channel,
+    )
+
     try:
-        # 지시사항 저장/목록/취소
-        directive_result = await _handle_directive_command(user_msg)
-        if directive_result:
-            return {"success": True, "reply": directive_result, "context_used": False}
-
-        # 전략 설정 실시간 변경 (손절/익절/매수금액)
-        setting_result = await _handle_setting_command(user_msg)
-        if setting_result:
-            return {"success": True, "reply": setting_result, "context_used": False}
-
-        # 감시 종목 추가/삭제 명령 감지 (Open-WebUI 거치지 않고 직접 처리)
-        action_result = await _handle_watchlist_command(user_msg)
-        if action_result:
-            return {"success": True, "reply": action_result, "context_used": False}
-
-        # 감시 추가/제외 (확정 명령)
-        _wm = _re_mod.search(r"(.+?)\s*(감시|관심)\s*(종목)?\s*(추가|등록|넣어)", user_msg)
-        if _wm and "http" not in user_msg:
-            _ws, _wn = await universe.resolve_symbol(_wm.group(1))
-            if _ws:
-                try:
-                    async with db_pool.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO watchlist (symbol, name, is_active) VALUES ($1, $2, TRUE) "
-                            "ON CONFLICT (symbol) DO UPDATE SET is_active=TRUE, name=EXCLUDED.name", _ws, _wn)
-                    return {"success": True, "reply": f"👁️ {_wn}({_ws}) 감시종목에 추가했어요. 다음 스캔부터 신호 감시합니다.", "context_used": False}
-                except Exception as we:
-                    return {"success": True, "reply": f"❌ 감시 추가 실패: {str(we)[:80]}", "context_used": False}
-            else:
-                q = _wm.group(1).strip()
-                reply = await _web_research_stock(q, name=q)
-                return {"success": True, "reply": reply + "\n\n(시스템 종목코드를 못 찾아 감시 추가는 안 됐어요. 정식 종목명으로 다시 시도해보세요.)", "context_used": False}
-
-        # 학습 지식 목록 (확정 명령, AI 미경유)
-        if _re_mod.search(r"(학습|배운|지식).*(내용|목록|뭐|알려|정리|보여)", user_msg) and "http" not in user_msg:
-            try:
-                async with db_pool.acquire() as conn:
-                    rows = await conn.fetch(
-                        "SELECT id, content, created_at FROM jarvis_notes WHERE category='knowledge' "
-                        "AND is_active=TRUE ORDER BY created_at DESC LIMIT 20")
-                if not rows:
-                    return {"success": True, "reply": "📚 아직 학습한 자료가 없어요. URL과 함께 '이거 배워'라고 보내주세요.", "context_used": False}
-                lines = [f"#{r['id']} {r['content']}" for r in rows]
-                return {"success": True, "reply": "📚 학습한 매매 원칙 (" + str(len(rows)) + "건)\n" + "\n".join(lines)
-                        + "\n\n(제외: '지식 삭제 N')", "context_used": False}
-            except Exception as e:
-                logger.warning(f"지식 목록 오류: {e}")
-
-        # 지식 삭제 N
-        _kd = _re_mod.search(r"지식\s*삭제\s*(\d+)", user_msg)
-        if _kd:
-            try:
-                async with db_pool.acquire() as conn:
-                    await conn.execute("UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1 AND category='knowledge'", int(_kd.group(1)))
-                return {"success": True, "reply": f"🗑️ 지식 #{_kd.group(1)} 제외했어요.", "context_used": False}
-            except Exception:
-                pass
+        # Tier 1 라우터 앞부분: 지시/설정/감시종목(명령·확정추가)/지식(목록·삭제)
+        # (router/intent_router.py — 구 레거시 정규식 9분기 중 앞 6개 분기)
+        early_reply = await intent_router.route_early(user_msg, router_ctx)
+        if early_reply is not None:
+            return {"success": True, "reply": early_reply, "context_used": False}
 
         # 학습 명령: URL + (배워|학습|공부)
         _url_m = _re_mod.search(r"https?://\S+", user_msg)
@@ -4424,87 +4052,11 @@ async def _jarvis_chat_impl(body: dict):
                     "reply": "📚 학습 시작했어요! 영상은 1~3분 걸릴 수 있어요. 끝나면 텔레그램·알림으로 결과 알려드릴게요.",
                     "context_used": False}
 
-        # 차트 리서치 명령: "차트 OO" / "OO 차트 어때"
-        if "차트" in user_msg:
-            _sym, _nm = await universe.resolve_symbol(user_msg)
-            if _sym:
-                chart_txt = await _analyze_chart(_sym, _nm)
-                if chart_txt:
-                    return {"success": True, "reply": chart_txt, "context_used": False}
-                return {"success": True, "reply": f"⚠️ {_nm}({_sym}) 차트 데이터를 가져오지 못했어요.", "context_used": False}
-
-        # 능동 제안 승인/거절: "승인 2" / "거절 1"
-        _um = user_msg.strip()
-        _adv = _re_mod.match(r"^(승인|거절|오케이|ok)\s*(\d)\s*$", _um, _re_mod.I)
-        if _adv:
-            n = _adv.group(2)
-            raw = await redis_client.get(f"advice:{n}")
-            if raw:
-                it = json.loads(raw if isinstance(raw, str) else raw.decode())
-                await redis_client.delete(f"advice:{n}")
-                if _adv.group(1) == "거절":
-                    return {"success": True, "reply": f"❌ 제안 {n} '{it.get('title')}' 거절했어요.", "context_used": False}
-                cmd = it.get("command", "")
-                _is_trade = ("매수" in cmd or "매도" in cmd) and not cmd.startswith("지시:")
-                _now = datetime.now(KST)
-                _open = (_now.weekday() < 5 and dtime(9, 0) <= _now.time().replace(tzinfo=None) <= dtime(15, 20))
-                if _is_trade and not _open:
-                    await redis_client.rpush("advice:queue", json.dumps({"command": cmd, "title": it.get("title", "")}, ensure_ascii=False))
-                    out = f"⏰ 제안 {n} 승인 — 장외라 다음 개장(09:01)에 자동 실행 예약: {cmd}"
-                    await _send_telegram(out)
-                    return {"success": True, "reply": out, "context_used": False}
-                sub = await jarvis_chat({"message": cmd, "session_id": body.get("session_id") or "advice", "_no_mirror": True})
-                rep = sub.get("reply") or sub.get("error") or "실행 결과 없음"
-                out = f"✅ 제안 {n} 승인 → 실행: {cmd}\n{rep}"
-                await _send_telegram(out)
-                return {"success": True, "reply": out, "context_used": False}
-            return {"success": True, "reply": f"제안 {n}은(는) 없거나 만료됐어요.", "context_used": False}
-
-        # 매수 제안 승인/거절 처리
-        if _re_prop.search(_um):
-            try:
-                target = None
-                latest = await redis_client.get("proposal:latest")
-                latest = latest if isinstance(latest, str) else (latest or b"").decode()
-                # 종목명이 함께 오면 그 제안, 아니면 최신 제안
-                keys = [k if isinstance(k, str) else k.decode() for k in await redis_client.keys("proposal:*")]
-                cands = [k.split(":", 1)[1] for k in keys if not k.startswith("proposal:cool") and k != "proposal:latest"]
-                for sym_ in cands:
-                    raw = await redis_client.get(f"proposal:{sym_}")
-                    pj = json.loads(raw if isinstance(raw, str) else raw.decode())
-                    if pj.get("name") and pj["name"] in _um:
-                        target = pj; break
-                if not target and latest:
-                    raw = await redis_client.get(f"proposal:{latest}")
-                    if raw:
-                        target = json.loads(raw if isinstance(raw, str) else raw.decode())
-                if not target:
-                    raise StopIteration  # 대기 제안 없음 → 일반 대화로 진행
-                if _re_reject.search(_um):
-                    await redis_client.delete(f"proposal:{target['symbol']}")
-                    return {"success": True, "reply": f"❌ {target['name']} 매수 제안 거절 처리했어요.", "context_used": False}
-                # 승인 → 실제 매수
-                order = await _kis_stock_order(target["symbol"], int(target["price"]), int(target["qty"]), True)
-                await redis_client.delete(f"proposal:{target['symbol']}")
-                if order.get("success"):
-                    await _log_journal("stock_trader", target["symbol"], target["name"], "buy",
-                                       target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
-                                       target.get("reason", ""), True, True,
-                                       int(target["price"]), int(target["qty"]))
-                    msg = (f"✅ <b>{target['name']} 매수 체결 (주인 승인)</b>\n"
-                           f"{target['qty']}주 @ {int(target['price']):,}원")
-                    await _send_telegram(msg, broadcast=True)
-                    return {"success": True, "reply": msg.replace("<b>", "").replace("</b>", ""), "context_used": False}
-                return {"success": True, "reply": f"❌ 매수 실패: {order.get('error')}", "context_used": False}
-            except StopIteration:
-                pass
-            except Exception as pe:
-                logger.warning(f"제안 승인 처리 오류: {pe}")
-
-        # 매매 지시 감지 → 실제 KIS 주문 실행 (자비스 경유 X)
-        trade_result = await _handle_trade_command(user_msg)
-        if trade_result:
-            return {"success": True, "reply": trade_result, "context_used": False}
+        # Tier 1 라우터 뒷부분: 차트 → 능동제안 승인/거절 → 매수제안 승인/거절 → 직접 매매 지시
+        # (학습 URL 블록 바로 다음이어야 원본의 분기 우선순위와 동일하다)
+        late_reply = await intent_router.route_late(user_msg, router_ctx)
+        if late_reply is not None:
+            return {"success": True, "reply": late_reply, "context_used": False}
 
         # 수동 수집 명령
         if any(k in user_msg for k in ["수동 수집", "뉴스 수집", "감성 수집", "데이터 수집"]):
@@ -4588,7 +4140,7 @@ async def _jarvis_chat_impl(body: dict):
                     "근거는 핵심 1~2개만 짧게.")
 
         # 순수 사용자 발화 원문 저장 (STARK v2: full_msg가 아닌 user_msg만 저장하여 오염 방지)
-        await _save_chat_history(session_id, "user", user_msg, channel="web", is_pure_user=True)
+        await _save_chat_history(session_id, "user", user_msg, channel=channel, is_pure_user=True)
 
         # Open-WebUI 통해서 호출 (순수 LLM 호출, 내부 저장 없음)
         reply = await _ask_openwebui(full_msg, session_id=session_id)
@@ -4622,10 +4174,7 @@ async def _jarvis_chat_impl(body: dict):
                     try:
                         _ws, _wn = await universe.resolve_symbol(wa)
                         if _ws:
-                            async with db_pool.acquire() as conn:
-                                await conn.execute(
-                                    "INSERT INTO watchlist (symbol, name, is_active) VALUES ($1, $2, TRUE) "
-                                    "ON CONFLICT (symbol) DO UPDATE SET is_active=TRUE, name=EXCLUDED.name", _ws, _wn)
+                            await watchlist_handler.add_symbol(db_pool, _ws, _wn)
                             notes.append(f"👁️ 감시종목 추가: {_wn}({_ws})")
                         else:
                             notes.append(f"⚠️ 감시 추가 실패: '{wa}' 종목을 찾지 못함")
@@ -4637,10 +4186,7 @@ async def _jarvis_chat_impl(body: dict):
                     try:
                         _is, _in = await universe.resolve_symbol(wi)
                         if _is:
-                            async with db_pool.acquire() as conn:
-                                await conn.execute(
-                                    "INSERT INTO watchlist (symbol, name, is_active, priority) VALUES ($1, $2, TRUE, TRUE) "
-                                    "ON CONFLICT (symbol) DO UPDATE SET is_active=TRUE, priority=TRUE, name=EXCLUDED.name", _is, _in)
+                            await watchlist_handler.add_symbol(db_pool, _is, _in, priority=True)
                             notes.append(f"⭐ 관심종목 등록: {_in}({_is}) — 더 자주 확인합니다")
                         else:
                             notes.append(f"⚠️ 관심종목 등록 실패: '{wi}' 종목을 찾지 못함")
@@ -4648,43 +4194,22 @@ async def _jarvis_chat_impl(body: dict):
                         notes.append(f"⚠️ 관심종목 등록 오류: {str(we)[:60]}")
                 d = (action.get("directive") or "").strip()
                 if d and len(d) >= 4:
-                    async with db_pool.acquire() as conn:
-                        # 충돌 해소: 해제성 지시면 같은 핵심어(예: 5만원)의 옛 지시 비활성화
-                        deactivated = []
-                        _relax = any(k in d for k in ("해제", "취소", "풀", "허용", "포함", "완화", "없애")) or \
-                                 (_re.search(r"(초과|이상|넘)", d) and _re.search(r"(제안|매수|가능|사도|살 수)", d))
-                        if _relax:
-                            keys = set(_re.findall(r"\d+\s*만\s*원|\d+\s*종목|\d+\s*%", d))
-                            if keys:
-                                olds = await conn.fetch(
-                                    "SELECT id, content FROM jarvis_notes "
-                                    "WHERE category='directive' AND is_active=TRUE")
-                                for o in olds:
-                                    oc = o["content"].replace(" ", "")
-                                    if any(k.replace(" ", "") in oc for k in keys) and \
-                                       not any(x in o["content"] for x in ("해제", "취소", "허용", "포함")):
-                                        await conn.execute(
-                                            "UPDATE jarvis_notes SET is_active=FALSE WHERE id=$1", o["id"])
-                                        deactivated.append(f"#{o['id']}")
-                        did = await conn.fetchval(
-                            "INSERT INTO jarvis_notes (category, content, is_active) "
-                            "VALUES ('directive', $1, TRUE) RETURNING id", d[:300])
-                    notes.append(f"📌 지시 #{did} 저장됨 (해제: '지시 취소 {did}')")
-                    if deactivated:
-                        notes.append(f"🔄 충돌 지시 자동 해제: {', '.join(deactivated)}")
-                    await _stamp_plan_change(f"지시 추가 #{did}: {d[:80]}"
-                                             + (f" / 해제: {', '.join(deactivated)}" if deactivated else ""))
+                    saved = await directive_handler.save_directive_with_conflict_resolution(db_pool, redis_client, d)
+                    if saved:
+                        notes.append(f"📌 지시 #{saved['id']} 저장됨 (해제: '지시 취소 {saved['id']}')")
+                        if saved["deactivated"]:
+                            notes.append(f"🔄 충돌 지시 자동 해제: {', '.join(saved['deactivated'])}")
                 # 설정 적용
                 st = action.get("settings") or {}
                 valid = {}
                 for k, v in st.items():
-                    ok, nv = _validate_setting(k, v)
+                    ok, nv = setting_handler.validate_setting(k, v)
                     if ok:
                         valid[k] = nv
                     else:
                         notes.append(f"⚠️ {k} 변경 거부: {nv}")
                 if valid:
-                    applied = await _apply_strategy_settings(valid)
+                    applied = await setting_handler.apply_strategy_settings(db_pool, redis_client, valid)
                     desc = ", ".join(f"{k}={v}" for k, v in valid.items())
                     notes.append(f"⚙️ 설정 적용됨 [{desc}] → {', '.join(applied)}")
                     await _send_telegram(f"⚙️ 전략 설정 변경 (대화 인식)\n{desc}", broadcast=True)
@@ -4694,7 +4219,7 @@ async def _jarvis_chat_impl(body: dict):
             logger.warning(f"액션 파싱 오류(무시): {ae}")
 
         # 순수 어시스턴트 답변 저장
-        await _save_chat_history(session_id, "assistant", reply, channel="web", is_pure_user=True)
+        await _save_chat_history(session_id, "assistant", reply, channel=channel, is_pure_user=True)
 
         logger.info(f"Jarvis 웹 응답: {reply[:100]}...")
         return {"success": True, "reply": reply, "context_used": True}
@@ -4967,41 +4492,38 @@ async def _ask_gemini_direct(message: str) -> str:
         portfolio_ctx = await get_portfolio_context()
 
         # 시세 관련 키워드 감지 → KIS API 직접 조회
+        # market/universe.py의 resolve_symbol로 감시종목 여부와 무관하게 전종목(2,500+) 동적 조회
+        # (예전엔 8종목 하드코딩 딕셔너리 안에 있는 것만 답할 수 있었음)
         price_ctx = ""
         keywords = ["시세", "현재가", "얼마", "가격", "주가", "시가"]
-        stock_map = {"삼성전자": "005930", "SK하이닉스": "000660", "현대차": "005380",
-                     "NAVER": "035420", "카카오": "035720", "LG화학": "051910",
-                     "삼성SDI": "006400", "셀트리온": "068270"}
-
         if any(k in message for k in keywords):
-            for name, code in stock_map.items():
-                if name in message or code in message:
-                    try:
-                        import aiohttp as http
-                        base_url = config.kis_base_url
-                        async with http.ClientSession() as sess:
-                            tr = await sess.post(f"{base_url}/oauth2/tokenP", json={
-                                "grant_type": "client_credentials",
+            code, name = await universe.resolve_symbol(message)
+            if code:
+                try:
+                    import aiohttp as http
+                    base_url = config.kis_base_url
+                    async with http.ClientSession() as sess:
+                        tr = await sess.post(f"{base_url}/oauth2/tokenP", json={
+                            "grant_type": "client_credentials",
+                            "appkey": config.KIS_APP_KEY,
+                            "appsecret": config.KIS_APP_SECRET,
+                        })
+                        token = (await tr.json()).get("access_token", "")
+                        hdrs = {"authorization": f"Bearer {token}",
                                 "appkey": config.KIS_APP_KEY,
                                 "appsecret": config.KIS_APP_SECRET,
-                            })
-                            token = (await tr.json()).get("access_token", "")
-                            hdrs = {"authorization": f"Bearer {token}",
-                                    "appkey": config.KIS_APP_KEY,
-                                    "appsecret": config.KIS_APP_SECRET,
-                                    "tr_id": "FHKST01010100", "custtype": "P"}
-                            pr = await sess.get(
-                                f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
-                                headers=hdrs, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
-                            )
-                            output = (await pr.json()).get("output", {})
-                            price = int(output.get("stck_prpr", 0))
-                            change = float(output.get("prdy_ctrt", 0))
-                        if price > 0:
-                            price_ctx = f"\n[실시간 시세] {name}({code}): {price:,}원 ({change:+.2f}%)"
-                    except:
-                        pass
-                    break
+                                "tr_id": "FHKST01010100", "custtype": "P"}
+                        pr = await sess.get(
+                            f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                            headers=hdrs, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}
+                        )
+                        output = (await pr.json()).get("output", {})
+                        price = int(output.get("stck_prpr", 0))
+                        change = float(output.get("prdy_ctrt", 0))
+                    if price > 0:
+                        price_ctx = f"\n[실시간 시세] {name}({code}): {price:,}원 ({change:+.2f}%)"
+                except Exception:
+                    pass
 
         full_msg = f"{message}\n\n---\n현재 데이터:\n{portfolio_ctx}{price_ctx}"
         genai.configure(api_key=config.GEMINI_API_KEY)
@@ -5015,170 +4537,32 @@ async def _ask_gemini_direct(message: str) -> str:
         return f"❌ AI 오류: {e}"
 
 
+def _build_bot_ctx() -> "telegram_bot.BotContext":
+    """bot/telegram_bot.py에 넘길 의존성 묶음 — dashboard/main.py 인프라를 그대로 주입."""
+    return telegram_bot.BotContext(
+        config=config,
+        send_telegram=_send_telegram,
+        typing_action=_typing_action,
+        ask_openwebui=_ask_openwebui,
+        jarvis_chat=jarvis_chat,
+        get_trades=get_trades,
+        trigger_manual_collect=lambda: asyncio.create_task(_manual_collect()),
+        session_id=os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"),
+    )
+
+
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(body: dict):
-    """텔레그램 Bot webhook — 메시지 수신 → Jarvis 처리"""
-    try:
-        # 채널 게시물(channel_post)은 봇이 굳이 처리할 내용 없음 — 조용히 무시
-        if body.get("channel_post"):
-            return {"ok": True}
-
-        # 버튼 클릭(callback_query) 처리
-        cq = body.get("callback_query")
-        if cq:
-            data = cq.get("data", "")
-            cq_chat = str(cq.get("message", {}).get("chat", {}).get("id", ""))
-            cq_msg_id = cq.get("message", {}).get("message_id")
-            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            cmd = None
-            if data.startswith("adv:"):
-                _, act, n = data.split(":")
-                cmd = f"{'승인' if act == 'ok' else '거절'} {n}"
-            elif data.startswith("prop:"):
-                _, act, sym = data.split(":")
-                cmd = "승인" if act == "ok" else "거절"
-            reply = ""
-            if cmd:
-                try:
-                    res = await jarvis_chat({"message": cmd, "session_id": os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "_no_mirror": True})
-                    reply = res.get("reply") or res.get("error") or "처리됨"
-                except Exception as e:
-                    reply = f"❌ 처리 실패: {e}"
-            try:
-                import aiohttp as http
-                async with http.ClientSession() as sess:
-                    await sess.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery",
-                                    json={"callback_query_id": cq.get("id"), "text": "처리 중..."}, timeout=http.ClientTimeout(total=5))
-                    # 버튼 제거 (중복 클릭 방지)
-                    await sess.post(f"https://api.telegram.org/bot{token}/editMessageReplyMarkup",
-                                    json={"chat_id": cq_chat, "message_id": cq_msg_id,
-                                          "reply_markup": {"inline_keyboard": []}}, timeout=http.ClientTimeout(total=5))
-            except Exception:
-                pass
-            if reply:
-                await _send_telegram(reply[:3500], cq_chat, token)
-            return {"ok": True}
-
-        message = body.get("message", {})
-        chat_id = str(message.get("chat", {}).get("id", ""))
-        text = message.get("text", "").strip()
-
-        if not text or not chat_id:
-            return {"ok": True}
-
-        logger.info(f"텔레그램 수신: {text} (chat_id: {chat_id})")
-
-        # 명령어 처리
-        if text == "/start":
-            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            await _send_telegram(
-                "🤖 <b>TradeJarvis입니다!</b>\n\n"
-                "AI 트레이딩 어시스턴트예요. 실시간 데이터로 분석해드려요!\n\n"
-                "<b>명령어:</b>\n"
-                "/analyze — 포트폴리오 종합 분석\n"
-                "/positions — 보유 포지션\n"
-                "/status — 봇 상태\n"
-                "/history — 매매 이력\n\n"
-                "또는 자유롭게 질문하세요! 💬", chat_id, token
-            )
-            return {"ok": True}
-
-        elif text == "/analyze":
-            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            await _typing_action(chat_id, token)
-            reply = await _ask_openwebui(
-                "현재 포트폴리오를 종합 분석하고 리스크와 액션 포인트를 알려줘",
-                session_id=chat_id
-            )
-            await _send_telegram(f"📊 <b>TradeJarvis 분석</b>\n\n{reply}", chat_id, token)
-            return {"ok": True}
-
-        elif text == "/status":
-            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            reply = await _ask_openwebui("현재 봇 상태 알려줘", session_id=chat_id)
-            await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)
-            return {"ok": True}
-
-        elif text == "/positions":
-            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            await _typing_action(chat_id, token)
-            reply = await _ask_openwebui("현재 보유 포지션 현황 알려줘", session_id=chat_id)
-            await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)
-            return {"ok": True}
-
-        elif text == "/history":
-            try:
-                trades_res = await get_trades(limit=10)
-                trades = trades_res.get("data", [])
-                if not trades:
-                    await _send_telegram("📋 오늘 매매 이력 없음", chat_id)
-                else:
-                    lines = [f"📋 <b>최근 매매 {len(trades)}건</b>\n"]
-                    for t in trades:
-                        ts = t["ts"][11:16] if t["ts"] else "-"
-                        side = "매수" if t["side"] == "BUY" else "매도"
-                        pnl = f" {t['pnl']:+,}원" if t.get("pnl") else ""
-                        lines.append(f"  {ts} {side} {t.get('name') or t['symbol']}{pnl}")
-                    await _send_telegram("\n".join(lines), chat_id)
-            except Exception as e:
-                await _send_telegram(f"❌ 이력 조회 실패: {e}", chat_id)
-            return {"ok": True}
-
-        else:
-            # 수동 수집 명령 감지
-            if any(k in text for k in ["뉴스 수집", "수동 수집", "감성 수집", "데이터 수집"]):
-                token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-                await _send_telegram("📰 데이터 수집 시작했어요! 잠시 기다려주세요...", chat_id, token)
-                asyncio.create_task(_manual_collect())
-                return {"ok": True}
-
-            # 자유 대화 → Open-WebUI Jarvis (Tools + 메모리 포함)
-            # 웹과 같은 세션 공유
-            shared_session = os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main")
-            token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-            await _typing_action(chat_id, token)
-            # 웹 채팅과 동일 파이프라인 (컨텍스트·지시·설정·차트·ACTION 실행 전부 공유)
-            try:
-                res = await jarvis_chat({"message": text, "session_id": shared_session, "_no_mirror": True})
-                reply = res.get("reply") or res.get("error") or "응답 없음"
-            except Exception as _e:
-                reply = await _ask_openwebui(text, session_id=shared_session)
-            if len(reply) > 3800:
-                reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"
-            await _send_telegram(f"🤖 <b>TradeJarvis</b>\n\n{reply}", chat_id, token)
-
-        return {"ok": True}
-    except Exception as e:
-        logger.error(f"텔레그램 webhook 오류: {e}")
-        return {"ok": True}
+    """STARK 텔레그램 봇 webhook — 메시지 수신 → 라우터+AI 채팅 처리 (bot/telegram_bot.py 이관)"""
+    return await telegram_bot.handle_update(body, _build_bot_ctx())
 
 
 @app.get("/api/telegram/set-webhook")
 async def set_telegram_webhook(request: fastapi.Request):
-    """텔레그램 webhook URL 등록"""
-    try:
-        import aiohttp as http
-        token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-        if not token:
-            return {"success": False, "error": "JARVIS_ANALYST_TOKEN 없음"}
-
-        # 현재 서버 URL 자동 감지
-        base_url = str(request.base_url).rstrip("/")
-        # Railway는 항상 HTTPS
-        base_url = base_url.replace("http://", "https://")
-        webhook_url = f"{base_url}/api/telegram/webhook"
-
-        async with http.ClientSession() as session:
-            res = await session.post(
-                f"https://api.telegram.org/bot{token}/setWebhook",
-                json={"url": webhook_url, "drop_pending_updates": True},
-            )
-            data = await res.json()
-
-        logger.info(f"텔레그램 webhook 등록: {webhook_url} → {data}")
-        return {"success": data.get("ok"), "webhook_url": webhook_url, "result": data}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    """STARK 텔레그램 webhook URL 등록 (bot/telegram_bot.py 이관)"""
+    # 현재 서버 URL 자동 감지 — Railway는 항상 HTTPS
+    base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
+    return await telegram_bot.register_webhook(base_url, config)
 
 
 @app.get("/api/debug/stock-account")
@@ -6083,6 +5467,10 @@ async def jarvis_signal(request: Request):
     """
     stock-trader/crypto-trader가 매매 신호 발생시 Jarvis에게 전달
     Jarvis가 분석 후 자동 실행 + 텔레그램 보고
+
+    STARK v2: 판단(stark/decision_engine)과 실행(stark/execution_guard)을 물리적으로 분리
+    (router/handlers·bot과 달리 이 엔드포인트는 코인 경로가 아직 남아있어 전체를 이관하지
+    않고, 사전 안전장치·컨텍스트 수집·AI 판단·주식 실행 4단계만 stark/ 모듈에 위임한다).
     """
     try:
         body = await request.json()
@@ -6102,163 +5490,47 @@ async def jarvis_signal(request: Request):
         if not name or name == symbol:
             name = await _code_to_name(symbol)
 
-        # 매도 신호인데 이미 '잔고 없음'으로 당일 차단된 종목이면 판단 자체를 건너뜀 (반복 방지)
-        if action in ("sell", "SELL"):
-            try:
-                if await redis_client.get(f"sell_fail_suppress:{symbol}"):
-                    logger.info(f"⏸️ 매도 신호 무시 (당일 잔고없음 차단): {symbol}")
-                    return {"success": True, "executed": False, "suppressed": True}
-            except Exception:
-                pass
-
-        # 당일 2회 이상 손절 → 신규 매수 강제 차단 (지금까지 프롬프트 텍스트로만 존재해
-        # AI 판단에만 의존했던 안전장치를 코드 레벨에서 강제 집행으로 전환)
-        if bot == "stock_trader" and action in ("buy", "BUY"):
-            try:
-                async with db_pool.acquire() as conn:
-                    _sc = await conn.fetchval("""
-                        SELECT COUNT(*) FROM trade_history
-                        WHERE bot='stock_trader' AND side='SELL' AND strategy LIKE '%손절%'
-                          AND DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
-                    """)
-                if int(_sc or 0) >= 2:
-                    logger.info(f"🛑 당일 손절 {_sc}회 — 신규 매수 강제 차단: {symbol}")
-                    return {"success": True, "executed": False, "blocked": "daily_stop_loss_limit"}
-            except Exception as e:
-                logger.error(f"당일 손절횟수 확인 실패(안전을 위해 매수 차단): {e}")
-                return {"success": False, "error": "안전장치 확인 실패로 매수 보류"}
+        # 실행 레이어 사전 안전장치 — AI를 부르기 전에 먼저 차단 (불필요한 LLM 호출 방지)
+        guard = await execution_guard.precheck(symbol, action, bot, pool=db_pool, redis=redis_client)
+        if guard is not None:
+            if "error" in guard:
+                return {"success": False, "error": guard["error"]}
+            if guard["blocked"] == "sell_fail_suppress":
+                return {"success": True, "executed": False, "suppressed": True}
+            return {"success": True, "executed": False, "blocked": guard["blocked"]}
 
         action_kr = "매수" if action == "buy" else "매도"
         token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
         chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
 
-        # 1. DB 컨텍스트 수집
-        ctx = await get_portfolio_context()
+        signal = {"bot": bot, "action": action, "symbol": symbol, "name": name,
+                  "price": price, "qty": qty, "strategy": strategy, "reason": reason}
 
-        # 1-1. 오늘의 작전 (아침에 캐시된 1장 — 빠른 판단용)
-        daily_plan = ""
-        try:
-            cached_plan = await redis_client.get("jarvis:daily_plan")
-            if cached_plan:
-                daily_plan = cached_plan if isinstance(cached_plan, str) else cached_plan.decode()
-        except Exception:
-            pass
+        # 1. 판단용 컨텍스트 수집 (stark/context_collector.py)
+        ctx_data = await context_collector.collect(
+            signal, pool=db_pool, redis=redis_client,
+            get_portfolio_context=get_portfolio_context,
+            get_active_directives=_get_active_directives,
+            get_jarvis_lessons=_get_jarvis_lessons,
+            get_jarvis_knowledge=_get_jarvis_knowledge,
+            analyze_chart=_analyze_chart,
+        )
+        analysis_prompt = context_collector.build_analysis_prompt(signal, ctx_data)
 
-        # 1-1b. 주인 지시사항 (최우선)
-        directives = await _get_active_directives()
+        # 2. 순수 AI 판단 (stark/decision_engine.py) — 실행은 하지 않고 stark_decisions에 기록만
+        decision = await decision_engine.decide(signal, analysis_prompt, ask_llm_fn=_ask_openwebui, pool=db_pool)
+        jarvis_reply = decision["reply"]
+        is_small = decision["is_small"]
+        should_execute = decision["should_execute"]
 
-        # 1-1b2. 최근 복기 교훈 + 학습 지식
-        lessons_txt = ""
-        knowledge_txt = ""
-        try:
-            lessons_txt = await _get_jarvis_lessons(3)
-            knowledge_txt = await _get_jarvis_knowledge(5)
-        except Exception:
-            pass
-
-        # 1-1c. 차트 리서치 (지지/저항·추세·캔들·거래량)
-        chart_ctx = ""
-        try:
-            chart_ctx = await _analyze_chart(symbol, name)
-        except Exception:
-            pass
-
-        # 1-2. 오늘 이 종목에 대한 내 판단 이력 (기회놓침 반복 방지)
-        self_history = ""
-        try:
-            async with db_pool.acquire() as conn:
-                hist = await conn.fetch("""
-                    SELECT jarvis_decision, price, ts
-                    FROM trade_journal
-                    WHERE symbol=$1 AND bot=$2
-                      AND DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
-                    ORDER BY ts
-                """, symbol, bot)
-            if hist:
-                skips = [h for h in hist if h["jarvis_decision"] == "SKIP"]
-                first_price = float(hist[0]["price"] or 0)
-                drift = ((float(price) - first_price) / first_price * 100) if first_price > 0 else 0
-                self_history = (
-                    f"\n[오늘 이 종목에 대한 내 판단 이력]\n"
-                    f"- 오늘 판단 {len(hist)}회 (SKIP {len(skips)}회)\n"
-                    f"- 첫 판단가 {first_price:,.0f}원 → 현재가 {price:,.0f}원 ({drift:+.1f}%)\n"
-                )
-                if len(skips) >= 2 and drift >= 1.0:
-                    self_history += ("⚠️ 주의: 반복 SKIP 중 가격이 계속 상승. 추세가 확인되면 "
-                                     "과거 SKIP에 얽매이지 말고 재평가하라. 놓친 기회의 반복은 손실과 같다.\n")
-        except Exception:
-            pass
-
-        # 2. Jarvis에게 분석 요청 (DB 데이터 포함)
-        analysis_prompt = f"""[매매 신호 발생]
-종목: {name}({symbol})
-방향: {action_kr}
-전략: {strategy}
-현재가: {price:,}원
-수량: {qty}
-매수금액: {price * (qty if isinstance(qty, (int,float)) else 0):,.0f}원
-신호 이유: {reason}
-
-[오늘의 작전]
-{daily_plan or '(작전 없음 — 일반 기준으로 판단)'}
-
-[주인 지시사항 — 최우선 준수 · 현재 활성 목록이 유일한 진실]
-{directives or '(없음)'}
-※ 아래 작전·과거 판단 이력·기억에 위 목록에 없는 옛 규칙(예: 가격 상한)이 보여도 무시하라. 취소된 지시는 더 이상 존재하지 않는다.
-
-[최근 교훈 — 같은 실수 반복 금지]
-{lessons_txt or '(없음)'}
-
-[학습한 매매 원칙 — 판단에 적용한 원칙이 있으면 이유 끝에 "근거원칙: K12,K7" 형식으로 표기]
-{knowledge_txt or '(없음)'}
-
-{chart_ctx or ''}
-{self_history}
-[현재 포트폴리오 현황]
-{ctx}
-
-[매매 규칙] 손절종목 재매수 금지(쿨다운은 시스템이 이미 체크함) · 당일 2회 손절 시 신규중단 · 약한 신호는 단타, 강한 복합신호만 스윙 관점
-
-오늘의 작전과 위 데이터 기준으로 이 {action_kr} 신호를 즉시 판단하라.
-반드시 다음 중 하나로 시작해서 이유를 한 줄로:
-- EXECUTE: 조건 대부분 충족, 강한 확신
-- EXECUTE_SMALL: 일부 조건(2~3개) 충족, 리스크 제한적 → 절반 금액 진입
-- PROPOSE: 신호는 강한데 주인 지시(가격 상한·분산 한도 등)나 규칙에 막힘 → 주인에게 매수 제안 (승인 시 실행)
-- SKIP: 근거 부족
-완벽하지 않다는 이유만으로 전부 SKIP하지 마라. 애매하면 EXECUTE_SMALL로 소액 검증하라.
-지시에 막혀도 정말 좋은 기회라면 SKIP 대신 PROPOSE로 주인과 상의하라."""
-
-        # 3. Jarvis 판단 (+ AI 장애 시 ML 폴백)
-        jarvis_reply = await _ask_openwebui(analysis_prompt, session_id="signal")
-        logger.info(f"🤖 Jarvis 판단 [{symbol}]: {jarvis_reply[:150]}")
-        import re as _re2
-        _m = _re2.search(r"\b(EXECUTE_SMALL|EXECUTE|PROPOSE|SKIP)\b", jarvis_reply.upper())
-        _verdict = _m.group(1) if _m else ""
-        is_small = _verdict == "EXECUTE_SMALL"
-        should_execute = _verdict in ("EXECUTE", "EXECUTE_SMALL")
-
-        # PROPOSE: 규칙(가격상한·분산 등) 밖 강신호 — 승인 없이 자동 실행 (주인 지시: 완전 자동화)
-        # 안전을 위해 소액(절반 수량)으로 진입
-        if _verdict == "PROPOSE" and action in ["buy", "BUY"]:
-            is_small = True
-            should_execute = True
-            jarvis_reply = jarvis_reply + "\n[자동 실행: 규칙 외 강신호 — 소액 자동 진입]"
-        if is_small and action in ["buy", "BUY"]:
+        # EXECUTE_SMALL(또는 규칙 밖 강신호 PROPOSE 자동승격)은 절반 수량으로 진입 —
+        # 코인/주식 두 실행 경로가 공유해야 해서 분기 전에 한 번만 적용한다.
+        if is_small and action in ("buy", "BUY"):
             try:
-                qty = max(1, int(float(qty) // 2))  # 절반 금액 진입
+                qty = max(1, int(float(qty) // 2))
             except Exception:
                 pass
-
-        # 429/오류 폴백: AI 응답 불가 시 신호의 ML 확률로 규칙 판단 (봇 생존)
-        ai_failed = (not jarvis_reply) or jarvis_reply.startswith("❌") or "429" in jarvis_reply[:200]
-        if ai_failed:
-            import re as _re
-            m = _re.search(r"ML매수확률[:\s]*([0-9]+)%", reason or "")
-            ml_prob = int(m.group(1)) if m else 0
-            should_execute = (action == "buy" and ml_prob >= 70)
-            jarvis_reply = (f"[AI폴백] ML확률 {ml_prob}% 기준 "
-                            f"{'EXECUTE' if should_execute else 'SKIP'} (Gemini 응답 불가)")
-            logger.warning(f"🤖 AI 폴백 판단 [{symbol}]: {jarvis_reply}")
+            signal["qty"] = qty
 
         if should_execute:
             # 3. 실제 매매 실행 (주식 vs 코인 분기)
@@ -6324,77 +5596,16 @@ async def jarvis_signal(request: Request):
                     return {"success": False, "executed": False, "error": result.get("error")}
 
             else:
-                # 주식 매매 (dashboard 내장 주문 — 모듈 의존 없음)
-                result = await _kis_stock_order(symbol, int(price), int(qty), action in ["buy", "BUY"])
-
-            if result.get("success"):
-                # DB에 매매 기록
-                if db_pool:
-                    async with db_pool.acquire() as conn:
-                        await conn.execute("""
-                            INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
-                            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                        """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price*qty), strategy)
-
-                # 텔레그램 보고
-                emoji = "📈" if action == "buy" else "📉"
-                msg = (
-                    f"{emoji} <b>{name} {action_kr} 완료</b>\n"
-                    f"가격: {price:,}원 × {qty}주\n"
-                    f"금액: {price*qty:,}원\n"
-                    f"전략: {strategy}\n"
-                    f"Jarvis 판단: {jarvis_reply[:80]}"
+                # 주식 매매 — 실행 레이어(stark/execution_guard.py)가 KIS 실주문과
+                # 매매기록/텔레그램 보고/캐시 무효화/매매일지까지 전담한다.
+                return await execution_guard.execute(
+                    signal, decision, pool=db_pool, redis=redis_client,
+                    kis_order_fn=_kis_stock_order,
+                    send_telegram_fn=lambda text: _send_telegram(text, chat_id, token),
+                    log_journal_fn=_log_journal,
+                    save_trade_memory_fn=_save_trade_memory,
+                    code_to_name_fn=_code_to_name,
                 )
-                await _send_telegram(msg, chat_id, token)
-                logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")
-                # 체결 즉시 보유/계좌 캐시 무효화 (화면 즉시 반영)
-                try:
-                    for _k in ("cache:positions:stock", "cache:account:stock"):
-                        await redis_client.delete(_k)
-                except Exception:
-                    pass
-
-                # Jarvis 메모리에 매매 기록 저장
-                await _save_trade_memory(
-                    symbol=symbol, action=action_kr,
-                    price=float(price), amount=float(price*qty),
-                    result="성공", reason=reason
-                )
-                await _log_journal(bot, symbol, name, action, strategy, reason,
-                                   "EXECUTE_SMALL" if is_small else "EXECUTE",
-                                   jarvis_reply, True, True, price, qty)
-                return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
-            else:
-                _err = str(result.get("error") or "")
-                _disp = await _code_to_name(symbol)
-                # '잔고 없음' 류 실패는 재시도해도 소용없음 → 당일 재시도·재알림 차단 (반복 스팸 방지)
-                _is_no_balance = any(k in _err for k in ("잔고", "보유", "수량이 부족", "매도가능"))
-                _suppress_key = f"sell_fail_suppress:{symbol}"
-                if _is_no_balance:
-                    try:
-                        already = await redis_client.get(_suppress_key)
-                    except Exception:
-                        already = None
-                    if not already:
-                        try:
-                            await redis_client.setex(_suppress_key, 6 * 3600, "1")
-                        except Exception:
-                            pass
-                        await _send_telegram(
-                            f"❌ {_disp} {action_kr} 실패\n{_err}\n"
-                            f"⚠️ 시스템 보유목록과 KIS 실계좌가 불일치할 수 있어요. "
-                            f"보유목록 새로고침 후 계속 보이면 알려주세요. (당일 재시도 중단)",
-                            chat_id, token
-                        )
-                else:
-                    await _send_telegram(
-                        f"❌ {_disp} {action_kr} 실패\n{_err}",
-                        chat_id, token
-                    )
-                await _log_journal(bot, symbol, name, action, strategy, reason,
-                                   "EXECUTE_SMALL" if is_small else "EXECUTE",
-                                   jarvis_reply, True, False, price, qty)
-                return {"success": False, "executed": False, "error": result.get("error")}
         else:
             # 4. 건너뜀 — 텔레그램 알림 없이 로그·채점 기록만 (완전자동화 후 SKIP은 액션 불필요)
             logger.info(f"⏭️ Jarvis가 {action_kr} 신호 건너뜀: {symbol}")

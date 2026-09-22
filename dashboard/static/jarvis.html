@@ -14,7 +14,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 :root{
   --bg:#0a0e14;--panel:#131920;--panel2:#1a222c;--border:#232d3a;
-  --stock:#3b82f6;--crypto:#f0b90b;--green:#16c784;--red:#f6465d;
+  --stock:#3b82f6;--green:#16c784;--red:#f6465d;
   --purple:#a78bfa;--gold:#f0b90b;--muted:#7d8896;--text:#c9d4e0;--bright:#e6edf3;
   --font:'Inter',sans-serif;--mono:'JetBrains Mono',monospace;
 }
@@ -35,7 +35,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .nav-item.active{background:#f5f3ff;color:var(--purple);font-weight:600;}
 .nav-item.active.d{background:rgba(59,130,246,.15);color:var(--stock);}
 .nav-item.active.s{background:rgba(59,130,246,.15);color:var(--stock);}
-.nav-item.active.c{background:#fef3c7;color:var(--crypto);}
+
 .nav-item.active.t{background:#f5f3ff;color:var(--purple);}
 .nav-item.active.l{background:#f0fdf4;color:var(--green);}
 .nav-icon{font-size:16px;width:20px;text-align:center;}
@@ -169,7 +169,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 /* Positions */
 .pos-scroll{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:6px;}
 .pos-card{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;border-left:3px solid var(--stock);}
-.pos-card.crypto{border-left-color:var(--crypto);}
+
 .pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;}
 .pos-name{font-size:13px;font-weight:600;color:var(--bright);}
 .pos-pct{font-size:12px;font-weight:700;font-family:var(--mono);}
@@ -417,7 +417,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
         <div class="ps-title">봇 상태</div>
         <div class="bot-list">
           <div class="bot-row"><span class="bot-name">stock-trader</span><span class="bot-pill" id="pill-stk">-</span></div>
-          <div class="bot-row"><span class="bot-name">crypto-trader</span><span class="bot-pill" id="pill-cry">-</span></div>
           <div class="bot-row"><span class="bot-name">data-collector</span><span class="bot-pill" id="pill-dat">-</span></div>
         </div>
       </div>
@@ -462,7 +461,6 @@ async function refreshPanel() {
         if (dot) { dot.style.background = on ? 'var(--green)' : 'var(--red)'; dot.style.boxShadow = on ? '0 0 5px var(--green)' : 'none'; }
       };
       setPill('pill-stk','stock_trader');
-      setPill('pill-cry','crypto_trader');
       setPill('pill-dat','data_collector');
     }
   } catch(e) {}
@@ -483,13 +481,7 @@ async function refreshPanel() {
       document.getElementById('p-cash').textContent = Math.round(account.cash || 0).toLocaleString();
     }
 
-    // 코인 포지션
-    const cRes = await fetch('/api/positions/crypto');
-    const { data: cryptoPos } = await cRes.json();
-    const allPos = [
-      ...(stockPos || []).map(p => ({...p, type:'stock'})),
-      ...(cryptoPos || []).map(p => ({...p, type:'crypto'})),
-    ];
+    const allPos = (stockPos || []).map(p => ({...p, type:'stock'}));
 
     document.getElementById('p-count').textContent = allPos.length + '종목';
     const list = document.getElementById('pos-list');
@@ -504,7 +496,7 @@ async function refreshPanel() {
         const cls = p.pnl_rate >= 0 ? 'pos' : 'neg';
         const pnl = Math.round(p.pnl || 0).toLocaleString();
         list.innerHTML += `
-          <div class="pos-card ${p.type === 'crypto' ? 'crypto' : ''}">
+          <div class="pos-card">
             <div class="pos-head">
               <span class="pos-name">${name}</span>
               <span class="pos-pct ${cls}">${p.pnl_rate >= 0 ? '+' : ''}${rate}%</span>

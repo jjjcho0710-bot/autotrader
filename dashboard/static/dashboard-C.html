@@ -169,33 +169,7 @@ body{display:flex;flex-direction:column;padding-bottom:70px;}
     </div>
   </div>
 
-  <!-- crypto-trader -->
-  <div class="bot-card">
-    <div class="bot-header">
-      <div class="bot-left">
-        <div class="bot-avatar bot-cry">CRY</div>
-        <div>
-          <div class="bot-name">crypto-trader</div>
-          <div class="bot-desc" id="cry-desc">업비트 · 확인 중...</div>
-        </div>
-      </div>
-      <div class="status-dot dot-ok" id="cry-dot"></div>
-    </div>
-    <div class="bot-stats">
-      <div class="bot-stat">
-        <span class="bot-stat-label">마지막 사이클</span>
-        <span class="bot-stat-val" id="cry-last">-</span>
-      </div>
-      <div class="bot-stat">
-        <span class="bot-stat-label">보유 코인</span>
-        <span class="bot-stat-val" id="cry-coins">-</span>
-      </div>
-      <div class="bot-stat">
-        <span class="bot-stat-label">KRW 잔고</span>
-        <span class="bot-stat-val" id="cry-bal">-</span>
-      </div>
-    </div>
-  </div>
+
 </div>
 
 <!-- 매매 모니터 -->
@@ -234,12 +208,6 @@ body{display:flex;flex-direction:column;padding-bottom:70px;}
 <div class="section">
   <div class="section-title">데이터 관리</div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <button onclick="resetCryptoPairs()" style="background:var(--up);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;flex:1;">
-      🔄 코인 초기화+수집
-    </button>
-    <button onclick="collectCryptoOHLCV()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;flex:1;">
-      📊 코인 데이터 수집
-    </button>
     <button onclick="collectData()" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;flex:1;">
       📰 뉴스/수급 수집
     </button>
@@ -310,17 +278,6 @@ async function loadHealth(){
       document.getElementById('stk-desc').textContent=`KIS API · ${st.status==='ok'?'정상':'이상'}`;
     }
 
-    // crypto-trader
-    if(c.crypto_trader){
-      const ct=c.crypto_trader;
-      statusDot(document.getElementById('cry-dot'), ct.status);
-      const ago=ct.seconds_ago||0;
-      document.getElementById('cry-last').textContent=ago<60?`${ago}초 전`:`${Math.floor(ago/60)}분 전`;
-      document.getElementById('cry-coins').textContent=`${ct.positions||0}종목`;
-      document.getElementById('cry-bal').textContent=fmt(ct.krw_balance||0)+'원';
-      document.getElementById('cry-desc').textContent=`업비트 · KRW ${fmt(ct.krw_balance||0)}원`;
-    }
-
     // 계좌
     if(c.stock_account){
       const sa=c.stock_account;
@@ -329,11 +286,6 @@ async function loadHealth(){
       document.getElementById('stk-pnl').className='kpi-val '+(pnl>=0?'up':'dn');
       document.getElementById('stk-rate').textContent=fmtR(sa.pnl_rate||0);
       document.getElementById('total-eval').textContent=fmt(sa.total_eval||0);
-    }
-    if(c.crypto_account){
-      const ca=c.crypto_account;
-      document.getElementById('cry-krw').textContent=fmt(ca.krw_balance||0)+'원';
-      document.getElementById('cry-pos').textContent=ca.coins?.length?`${ca.coins.join(', ')} 보유`:'보유 없음';
     }
 
     // 매매 현황
@@ -389,7 +341,7 @@ async function loadHealth(){
     const healthItems=[
       ['database','DB'],['redis','Redis'],
       ['kis_tokens','KIS 토큰'],['stock_trader','주식봇'],
-      ['crypto_trader','코인봇'],['today_trades','매매이력'],
+      ['today_trades','매매이력'],
     ];
     document.getElementById('health-grid').innerHTML=healthItems.map(([key,label])=>{
       const item=c[key]||{};
@@ -407,35 +359,6 @@ async function loadHealth(){
 
 loadHealth();
 setInterval(loadHealth,15000);
-
-async function collectCryptoOHLCV(){
-  const msg=document.getElementById('collect-msg');
-  msg.textContent='수집 중...';
-  try{
-    const r=await fetch(`${API}/api/collect/crypto/ohlcv`,{method:'POST'});
-    const d=await r.json();
-    msg.textContent=d.message||'완료!';
-    msg.style.color='var(--green)';
-  }catch(e){
-    msg.textContent='오류: '+e.message;
-    msg.style.color='var(--up)';
-  }
-}
-
-async function resetCryptoPairs(){
-  const msg=document.getElementById('collect-msg');
-  msg.textContent='메이저 코인으로 초기화 중...';
-  msg.style.color='var(--muted)';
-  try{
-    const r=await fetch(`${API}/api/collect/crypto/reset`,{method:'POST'});
-    const d=await r.json();
-    msg.textContent=d.message||'완료!';
-    msg.style.color='var(--green)';
-  }catch(e){
-    msg.textContent='오류: '+e.message;
-    msg.style.color='var(--up)';
-  }
-}
 
 async function collectData(){
   const msg=document.getElementById('collect-msg');

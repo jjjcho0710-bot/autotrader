@@ -21,6 +21,7 @@ import asyncpg
 import redis.asyncio as aioredis
 
 from common.config import config
+from common.migrations import run_migrations
 
 import time as _time
 
@@ -159,14 +160,14 @@ def _code_to_name_sync(code: str) -> str:
 
 
 async def _code_to_name(code: str) -> str:
-    """종목코드→이름, 메모리 캐시 실패 시 stock_master·watchlist DB까지 확인하는 완전한 조회.
+    """종목코드→이름, 메모리 캐시 실패 시 stocks·watchlist DB까지 확인하는 완전한 조회.
     종목마스터 캐시가 불완전해도(재적재 중 등) watchlist에 등록된 종목이면 정확한 이름을 찾는다."""
     name = _stock_code_cache.get(code)
     if name:
         return name
     try:
         async with db_pool.acquire() as conn:
-            name = await conn.fetchval("SELECT name FROM stock_master WHERE symbol=$1", code)
+            name = await conn.fetchval("SELECT name FROM stocks WHERE symbol=$1", code)
             if not name:
                 name = await conn.fetchval("SELECT name FROM watchlist WHERE symbol=$1", code)
     except Exception:
@@ -174,15 +175,13 @@ async def _code_to_name(code: str) -> str:
     return name or code
 
 async def _load_stock_cache():
-    """전체 종목 목록: DB(stock_master) 즉시 로드 → 7일 이상 오래됐거나 비어있으면 pykrx로 갱신 후 DB 저장"""
+    """전체 종목 목록: DB(stocks) 즉시 로드 → 7일 이상 오래됐거나 비어있으면 pykrx로 갱신 후 DB 저장"""
     global _stock_name_cache, _stock_code_cache
-    # 1) DB에서 즉시 로드
+    # 1) DB에서 즉시 로드 (테이블 스키마는 migrations/ 정본을 따름)
     try:
         async with db_pool.acquire() as conn:
-            await conn.execute("""CREATE TABLE IF NOT EXISTS stock_master (
-                symbol VARCHAR(10) PRIMARY KEY, name VARCHAR(80), updated_at TIMESTAMPTZ DEFAULT NOW())""")
-            rows = await conn.fetch("SELECT symbol, name FROM stock_master")
-            age = await conn.fetchval("SELECT NOW() - MAX(updated_at) FROM stock_master")
+            rows = await conn.fetch("SELECT symbol, name FROM stocks")
+            age = await conn.fetchval("SELECT NOW() - MAX(updated_at) FROM stocks")
         if rows:
             _stock_name_cache = {r["name"]: r["symbol"] for r in rows if r["name"]}
             _stock_code_cache = {r["symbol"]: r["name"] for r in rows}
@@ -275,7 +274,7 @@ async def _load_stock_cache():
             try:
                 async with db_pool.acquire() as conn:
                     await conn.executemany(
-                        "INSERT INTO stock_master (symbol, name, updated_at) VALUES ($1, $2, NOW()) "
+                        "INSERT INTO stocks (symbol, name, updated_at) VALUES ($1, $2, NOW()) "
                         "ON CONFLICT (symbol) DO UPDATE SET name=EXCLUDED.name, updated_at=NOW()",
                         [(v, k) for k, v in name_map.items()])
             except Exception as e:
@@ -294,58 +293,17 @@ async def startup():
     redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
     logger.info("✅ Dashboard 서버 시작")
 
-    # ML 테이블 생성
+    # 스키마 정본은 migrations/*.sql (common/migrations.py 러너로 순차 적용).
+    # dashboard는 common.database.Database를 쓰지 않고 자체 db_pool을 관리하므로
+    # 여기서 직접 마이그레이션을 실행해야 테이블이 생성된다.
     try:
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS ml_models (
-                    id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    model_name VARCHAR(50) NOT NULL,
-                    model_data TEXT NOT NULL,
-                    accuracy NUMERIC(6,2),
-                    updated_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(symbol, model_name)
-                );
-                CREATE TABLE IF NOT EXISTS ml_predictions (
-                    id BIGSERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    ts TIMESTAMPTZ NOT NULL,
-                    model_name VARCHAR(50),
-                    buy_prob NUMERIC(6,4),
-                    sell_prob NUMERIC(6,4),
-                    signal VARCHAR(10),
-                    features JSONB,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                CREATE TABLE IF NOT EXISTS stock_daily_ohlcv (
-                    id BIGSERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    ts DATE NOT NULL,
-                    open BIGINT, high BIGINT, low BIGINT, close BIGINT,
-                    volume BIGINT, change_rate NUMERIC(8,2),
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(symbol, ts)
-                );
-                CREATE TABLE IF NOT EXISTS stock_indicators (
-                    id BIGSERIAL PRIMARY KEY,
-                    symbol VARCHAR(10) NOT NULL,
-                    ts DATE NOT NULL,
-                    rsi14 NUMERIC(8,2), macd NUMERIC(12,2),
-                    macd_signal NUMERIC(12,2), macd_hist NUMERIC(12,2),
-                    bb_upper NUMERIC(12,2), bb_middle NUMERIC(12,2),
-                    bb_lower NUMERIC(12,2), bb_pct NUMERIC(8,4),
-                    atr14 NUMERIC(12,2), stoch_k NUMERIC(8,2), stoch_d NUMERIC(8,2),
-                    sma5 NUMERIC(12,2), sma20 NUMERIC(12,2), sma60 NUMERIC(12,2),
-                    ema12 NUMERIC(12,2), ema26 NUMERIC(12,2),
-                    golden_cross BOOLEAN, dead_cross BOOLEAN,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(symbol, ts)
-                );
-            """)
-        logger.info("✅ ML 테이블 확인 완료")
+        applied = await run_migrations(db_pool)
+        if applied:
+            logger.info(f"✅ 신규 마이그레이션 적용: {', '.join(applied)}")
+        else:
+            logger.info("✅ DB 스키마 최신 상태 (신규 마이그레이션 없음)")
     except Exception as e:
-        logger.warning(f"ML 테이블 생성 오류 (무시): {e}")
+        logger.error(f"마이그레이션 실행 실패: {e}")
 
     # 텔레그램 webhook 자동 등록
     await _auto_register_webhook()
@@ -355,14 +313,6 @@ async def startup():
     asyncio.create_task(_load_stock_cache())
     asyncio.create_task(_jarvis_scheduler())
     asyncio.create_task(_cache_warmer())
-    # trade_history 시간컬럼 호환 보강 (ts ↔ created_at)
-    try:
-        async with db_pool.acquire() as conn:
-            await conn.execute("ALTER TABLE trade_history ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ")
-            await conn.execute("UPDATE trade_history SET created_at = ts WHERE created_at IS NULL AND ts IS NOT NULL")
-            await conn.execute("ALTER TABLE trade_history ALTER COLUMN created_at SET DEFAULT NOW()")
-    except Exception as _e:
-        logger.debug(f"trade_history 컬럼 보강 스킵: {_e}")
 
 
 async def _auto_register_webhook():
@@ -1209,14 +1159,6 @@ async def _get_jarvis_lessons(limit: int = 5) -> str:
     """최근 복기 교훈 로드 (아침 작전 수립용)"""
     try:
         async with db_pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS jarvis_notes (
-                    id SERIAL PRIMARY KEY,
-                    category VARCHAR(30) DEFAULT 'note',
-                    content TEXT NOT NULL,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                )""")
             rows = await conn.fetch(
                 "SELECT content FROM jarvis_notes WHERE category='lesson' ORDER BY created_at DESC LIMIT $1",
                 limit)
@@ -1288,10 +1230,6 @@ async def _score_journal() -> str:
     """오늘의 판단(SKIP/EXECUTE)을 당일 종가로 채점 → 요약 반환"""
     try:
         async with db_pool.acquire() as conn:
-            await conn.execute("""CREATE TABLE IF NOT EXISTS principle_stats (
-                principle_id INT PRIMARY KEY, applied INT DEFAULT 0, hits INT DEFAULT 0,
-                updated_at TIMESTAMPTZ DEFAULT NOW())""")
-            await conn.execute("ALTER TABLE trade_journal ADD COLUMN IF NOT EXISTS principles TEXT")
             rows = await conn.fetch("""
                 SELECT id, symbol, name, action, jarvis_decision, price, principles
                 FROM trade_journal
@@ -1696,7 +1634,6 @@ async def _priority_watch_check():
     (자동매매 신호 파이프라인과 별개, '지켜봐달라'는 요청에 대한 순수 관찰·알림용)"""
     try:
         async with db_pool.acquire() as conn:
-            await conn.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS priority BOOLEAN DEFAULT FALSE")
             rows = await conn.fetch(
                 "SELECT symbol, name FROM watchlist WHERE is_active=TRUE AND priority=TRUE")
         if not rows:
@@ -4384,7 +4321,7 @@ async def _resolve_stock_symbol(text: str) -> tuple:
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT symbol, name FROM stock_master WHERE $1 LIKE '%' || name || '%' "
+                "SELECT symbol, name FROM stocks WHERE $1 LIKE '%' || name || '%' "
                 "ORDER BY LENGTH(name) DESC LIMIT 1", text)
         if rows:
             return rows[0]["symbol"], rows[0]["name"]
@@ -4500,8 +4437,6 @@ async def _get_active_directives(limit: int = 10) -> str:
     """활성 지시사항 텍스트 (판단·작전 프롬프트 주입용)"""
     try:
         async with db_pool.acquire() as conn:
-            await conn.execute(
-                "ALTER TABLE jarvis_notes ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
             rows = await conn.fetch("""
                 SELECT id, content FROM jarvis_notes
                 WHERE category='directive' AND is_active=TRUE
@@ -4517,12 +4452,6 @@ async def _handle_directive_command(user_msg: str):
     """지시사항 저장/목록/취소. 해당 없으면 None"""
     import re as _re
     msg = user_msg.strip()
-
-    async with db_pool.acquire() as _c:
-        await _c.execute("""CREATE TABLE IF NOT EXISTS jarvis_notes (
-            id SERIAL PRIMARY KEY, category VARCHAR(30) DEFAULT 'note',
-            content TEXT NOT NULL, is_active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMPTZ DEFAULT NOW())""")
 
     # 목록
     if msg in ("지시 목록", "지시목록", "지시사항 목록", "지시사항"):
@@ -4549,8 +4478,6 @@ async def _handle_directive_command(user_msg: str):
         directive = msg
     if directive and len(directive) >= 4:
         async with db_pool.acquire() as conn:
-            await conn.execute(
-                "ALTER TABLE jarvis_notes ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
             did = await conn.fetchval(
                 "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('directive', $1, TRUE) RETURNING id",
                 directive[:300])
@@ -5059,7 +4986,6 @@ async def _jarvis_chat_impl(body: dict):
                         _is, _in = await _resolve_stock_symbol(wi)
                         if _is:
                             async with db_pool.acquire() as conn:
-                                await conn.execute("ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS priority BOOLEAN DEFAULT FALSE")
                                 await conn.execute(
                                     "INSERT INTO watchlist (symbol, name, is_active, priority) VALUES ($1, $2, TRUE, TRUE) "
                                     "ON CONFLICT (symbol) DO UPDATE SET is_active=TRUE, priority=TRUE, name=EXCLUDED.name", _is, _in)
@@ -5071,10 +4997,6 @@ async def _jarvis_chat_impl(body: dict):
                 d = (action.get("directive") or "").strip()
                 if d and len(d) >= 4:
                     async with db_pool.acquire() as conn:
-                        await conn.execute("""CREATE TABLE IF NOT EXISTS jarvis_notes (
-                            id SERIAL PRIMARY KEY, category VARCHAR(30) DEFAULT 'note',
-                            content TEXT NOT NULL, is_active BOOLEAN DEFAULT TRUE,
-                            created_at TIMESTAMPTZ DEFAULT NOW())""")
                         # 충돌 해소: 해제성 지시면 같은 핵심어(예: 5만원)의 옛 지시 비활성화
                         deactivated = []
                         _relax = any(k in d for k in ("해제", "취소", "풀", "허용", "포함", "완화", "없애")) or \
@@ -5211,14 +5133,6 @@ async def _store_notification(text: str, actions: list = None):
             return
         title = clean.split("\n")[0][:80]
         async with db_pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS notifications (
-                    id SERIAL PRIMARY KEY,
-                    title VARCHAR(120), body TEXT,
-                    is_read BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                )""")
-            await conn.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS meta TEXT")
             await conn.execute(
                 "INSERT INTO notifications (title, body, meta) VALUES ($1, $2, $3)",
                 title, clean[:1500], json.dumps(actions, ensure_ascii=False) if actions else None)
@@ -5234,7 +5148,6 @@ async def get_notifications(limit: int = 30):
 async def _get_notifications_raw(limit: int = 30):
     try:
         async with db_pool.acquire() as conn:
-            await conn.execute("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS meta TEXT")
             rows = await conn.fetch(
                 "SELECT id, title, body, is_read, created_at, meta FROM notifications "
                 "ORDER BY created_at DESC LIMIT $1", limit)
@@ -6026,15 +5939,6 @@ async def create_strategy_table():
     try:
         async with db_pool.acquire() as conn:
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS strategy_config (
-                    id          SERIAL PRIMARY KEY,
-                    bot         VARCHAR(20) NOT NULL,
-                    name        VARCHAR(50) NOT NULL,
-                    is_active   BOOLEAN DEFAULT FALSE,
-                    params      JSONB DEFAULT '{}',
-                    updated_at  TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(bot, name)
-                );
                 INSERT INTO strategy_config (bot, name, is_active, params) VALUES
                 ('stock_trader','MA크로스',true,'{"short":5,"long":20,"stop_loss":-2,"take_profit":5,"buy_amount":500000,"max_positions":5}'),
                 ('stock_trader','RSI반등',false,'{"period":14,"entry":30,"exit":60,"stop_loss":-2,"buy_amount":500000}'),
@@ -6168,20 +6072,6 @@ async def _log_journal(bot: str, symbol: str, name: str, action: str,
     try:
         async with db_pool.acquire() as conn:
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS trade_journal (
-                    id SERIAL PRIMARY KEY,
-                    ts TIMESTAMPTZ DEFAULT NOW(),
-                    bot VARCHAR(20), symbol VARCHAR(15), name VARCHAR(50),
-                    action VARCHAR(10), strategy VARCHAR(50),
-                    signal_reason TEXT,
-                    jarvis_decision VARCHAR(10), jarvis_reason TEXT,
-                    executed BOOLEAN, order_success BOOLEAN,
-                    price NUMERIC, qty NUMERIC,
-                    source VARCHAR(10) DEFAULT 'auto',
-                    eval_price NUMERIC, eval_pnl_rate NUMERIC, eval_at TIMESTAMPTZ
-                )""")
-            await conn.execute("ALTER TABLE trade_journal ADD COLUMN IF NOT EXISTS principles TEXT")
-            await conn.execute("""
                 INSERT INTO trade_journal (bot,symbol,name,action,strategy,signal_reason,
                  jarvis_decision,jarvis_reason,executed,order_success,price,qty,source, principles) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, $14)
             """, bot, symbol, name, action, strategy, (signal_reason or "")[:500],
@@ -6289,7 +6179,7 @@ async def stock_name_lookup(code: str):
     if not name:
         try:
             async with db_pool.acquire() as conn:
-                name = await conn.fetchval("SELECT name FROM stock_master WHERE symbol=$1", code)
+                name = await conn.fetchval("SELECT name FROM stocks WHERE symbol=$1", code)
         except Exception:
             name = None
     if not name:
@@ -6308,10 +6198,10 @@ async def stock_lookup(q: str):
     similar = []
     try:
         async with db_pool.acquire() as conn:
-            db_count = await conn.fetchval("SELECT COUNT(*) FROM stock_master")
+            db_count = await conn.fetchval("SELECT COUNT(*) FROM stocks")
             if not sym and len(q) >= 2:
                 rows = await conn.fetch(
-                    "SELECT symbol, name FROM stock_master WHERE name LIKE '%' || $1 || '%' LIMIT 10", q[:2])
+                    "SELECT symbol, name FROM stocks WHERE name LIKE '%' || $1 || '%' LIMIT 10", q[:2])
                 similar = [f"{r['name']}({r['symbol']})" for r in rows]
     except Exception as e:
         db_count = f"error: {e}"
@@ -6346,8 +6236,8 @@ async def purge_and_reload_stock_cache():
     global _stock_name_cache, _stock_code_cache
     try:
         async with db_pool.acquire() as conn:
-            deleted = await conn.fetchval("SELECT COUNT(*) FROM stock_master")
-            await conn.execute("TRUNCATE TABLE stock_master")
+            deleted = await conn.fetchval("SELECT COUNT(*) FROM stocks")
+            await conn.execute("TRUNCATE TABLE stocks")
         _stock_name_cache = {}
         _stock_code_cache = {}
         asyncio.create_task(_load_stock_cache())

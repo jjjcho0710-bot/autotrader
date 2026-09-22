@@ -22,6 +22,8 @@ import redis.asyncio as aioredis
 
 from common.config import config
 from common.migrations import run_migrations
+from market.universe import Universe
+from market.sync_batch import sync_stock_universe
 
 import time as _time
 
@@ -80,6 +82,9 @@ app.add_middleware(
 # DB / Redis 연결
 db_pool: Optional[asyncpg.Pool] = None
 redis_client: Optional[aioredis.Redis] = None
+
+# 전종목 코드/이름 조회기 (market/universe.py) — startup()에서 db_pool 생성 후 초기화
+universe: Universe = Universe(None)
 
 
 
@@ -148,21 +153,16 @@ async def get_kis_token(force_new: bool = False) -> str:
         logger.error(f"KIS 토큰 발급 실패: {e}")
         return _kis_token_cache.get("token", "")
 
-# 전체 종목 코드+이름 캐시 (서버 시작 시 로드)
-_stock_name_cache: dict = {}  # {종목명: 종목코드}
-_stock_code_cache: dict = {}  # {종목코드: 종목명}
-
-
 def _code_to_name_sync(code: str) -> str:
     """메모리 캐시만으로 즉시 조회 (동기, DB 접근 없음) — 실패 시 code 그대로 반환.
     급하지 않은 표시용(로그, 텔레그램 메시지 등)에 사용. 확실한 이름이 필요하면 _code_to_name 사용."""
-    return _stock_code_cache.get(code) or code
+    return universe.code_cache.get(code) or code
 
 
 async def _code_to_name(code: str) -> str:
     """종목코드→이름, 메모리 캐시 실패 시 stocks·watchlist DB까지 확인하는 완전한 조회.
     종목마스터 캐시가 불완전해도(재적재 중 등) watchlist에 등록된 종목이면 정확한 이름을 찾는다."""
-    name = _stock_code_cache.get(code)
+    name = universe.code_cache.get(code)
     if name:
         return name
     try:
@@ -174,123 +174,17 @@ async def _code_to_name(code: str) -> str:
         name = None
     return name or code
 
-async def _load_stock_cache():
-    """전체 종목 목록: DB(stocks) 즉시 로드 → 7일 이상 오래됐거나 비어있으면 pykrx로 갱신 후 DB 저장"""
-    global _stock_name_cache, _stock_code_cache
-    # 1) DB에서 즉시 로드 (테이블 스키마는 migrations/ 정본을 따름)
-    try:
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT symbol, name FROM stocks")
-            age = await conn.fetchval("SELECT NOW() - MAX(updated_at) FROM stocks")
-        if rows:
-            _stock_name_cache = {r["name"]: r["symbol"] for r in rows if r["name"]}
-            _stock_code_cache = {r["symbol"]: r["name"] for r in rows}
-            logger.info(f"✅ 종목 캐시 DB 로드: {len(rows)}개")
-            # 한국 상장종목은 최소 2000개 이상이어야 정상. 그보다 적으면 이전 부분실패 데이터로 보고
-            # '최신이니 그냥 씀' 판정을 내리지 않고 반드시 재적재를 시도한다.
-            if age is not None and age.days < 7 and len(rows) >= 2000:
-                return
-    except Exception as e:
-        logger.warning(f"종목 캐시 DB 로드 실패: {e}")
-    # 2) pykrx 우선 시도 (정확한 한글 종목명 보장) — 시장별 독립 실행, 한쪽 실패해도 다른 쪽은 살림
-    name_map = {}
-    try:
-        import asyncio
-        from pykrx import stock as pykrx_stock
-        loop = asyncio.get_event_loop()
-
-        def _fetch_market(market):
-            result = {}
-            tickers = pykrx_stock.get_market_ticker_list(market=market)
-            for ticker in tickers:
-                try:
-                    name = pykrx_stock.get_market_ticker_name(ticker)
-                    if name:
-                        result[name] = ticker
-                except Exception:
-                    continue
-            return result
-
-        for market in ["KOSPI", "KOSDAQ"]:
-            try:
-                part = await loop.run_in_executor(None, _fetch_market, market)
-                name_map.update(part)
-                logger.info(f"pykrx {market} 로드: {len(part)}개")
-            except Exception as me:
-                logger.warning(f"pykrx {market} 로드 실패: {me}")
-    except Exception as e:
-        logger.warning(f"pykrx 종목 로드 실패: {e}")
-
-    # pykrx가 부분적으로만 성공(예: 한쪽 시장 누락)했으면 KIS 폴백으로 빈 자리를 보완
-    if len(name_map) < 2000:
-        logger.warning(f"pykrx 결과가 부족함({len(name_map)}개) — KIS 마스터파일로 보완 시도")
-
-    # 3) pykrx 실패 시에만 KIS 마스터파일(zip) 폴백
-    # 주의: KIS .mst 파일은 종목명이 정확히 20바이트(cp949) 고정폭 필드.
-    #       단순 split()으로 자르면 ISIN/숫자 필드가 이름에 섞여 깨짐 — 반드시 고정폭으로 슬라이스.
-    if len(name_map) < 2000:
-      try:
-        import zipfile, io, ssl as _ssl
-        _c2 = _ssl.create_default_context(); _c2.check_hostname = False; _c2.verify_mode = _ssl.CERT_NONE
-        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c2)) as sess:
-            for url, enc in [
-                ("https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip", "cp949"),
-                ("https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip", "cp949"),
-            ]:
-                try:
-                    async with sess.get(url, timeout=_aiohttp.ClientTimeout(total=20)) as resp:
-                        raw = await resp.read()
-                    zf = zipfile.ZipFile(io.BytesIO(raw))
-                    fn = zf.namelist()[0]
-                    raw_bytes = zf.read(fn)
-                    # 라인 단위로 바이트에서 직접 자름 (텍스트로 디코딩 후 자르면 멀티바이트 경계가 깨짐)
-                    added = 0
-                    for line_bytes in raw_bytes.split(b"\n"):
-                        if len(line_bytes) < 30:
-                            continue
-                        try:
-                            # 표준코드(ISIN) 12바이트 + 단축코드 6바이트 뒤에 종목명(cp949, 최대 40바이트) 위치
-                            code_part = line_bytes[9:21].decode("ascii", errors="ignore").strip()
-                            code = "".join(ch for ch in code_part if ch.isdigit())[-6:]
-                            name_bytes = line_bytes[21:61]
-                            name = name_bytes.decode(enc, errors="ignore").strip()
-                            if code and name and code.isdigit() and len(code) == 6 and \
-                               not any(c.isdigit() for c in name[:1]) and code not in name_map.values():
-                                name_map[name] = code
-                                added += 1
-                        except Exception:
-                            continue
-                    logger.info(f"KIS 마스터 보완({url.split('/')[-1]}): +{added}개")
-                except Exception as ie:
-                    logger.warning(f"KIS 마스터 다운로드 실패({url}): {ie}")
-      except Exception as e:
-        logger.warning(f"KIS 마스터 처리 실패: {e}")
-
-    try:
-        if name_map:
-            _stock_name_cache = name_map
-            _stock_code_cache = {v: k for k, v in name_map.items()}
-            logger.info(f"✅ 전체 종목 캐시 pykrx 갱신: {len(name_map)}개")
-            try:
-                async with db_pool.acquire() as conn:
-                    await conn.executemany(
-                        "INSERT INTO stocks (symbol, name, updated_at) VALUES ($1, $2, NOW()) "
-                        "ON CONFLICT (symbol) DO UPDATE SET name=EXCLUDED.name, updated_at=NOW()",
-                        [(v, k) for k, v in name_map.items()])
-            except Exception as e:
-                logger.warning(f"종목 캐시 DB 저장 실패: {e}")
-    except Exception as e:
-        logger.warning(f"종목 캐시 로드 실패 (무시): {e}")
 
 @app.on_event("startup")
 async def startup():
-    global db_pool, redis_client
+    global db_pool, redis_client, universe
     db_pool = await asyncpg.create_pool(
         host=config.DB_HOST, port=config.DB_PORT,
         database=config.DB_NAME, user=config.DB_USER,
         password=config.DB_PASS, min_size=2, max_size=5,
     )
     redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+    universe = Universe(db_pool)
     logger.info("✅ Dashboard 서버 시작")
 
     # 스키마 정본은 migrations/*.sql (common/migrations.py 러너로 순차 적용).
@@ -310,7 +204,7 @@ async def startup():
 
     # 전체 종목 캐시 백그라운드 로드 (시작 지연 없이)
     import asyncio
-    asyncio.create_task(_load_stock_cache())
+    asyncio.create_task(sync_stock_universe(db_pool, universe))
     asyncio.create_task(_jarvis_scheduler())
     asyncio.create_task(_cache_warmer())
 
@@ -579,8 +473,8 @@ async def _kis_scan_candidates() -> list:
     try:
         for r_ in results:
             if r_.get("name"):
-                _stock_name_cache[r_["name"]] = r_["symbol"]
-                _stock_code_cache[r_["symbol"]] = r_["name"]
+                universe.name_cache[r_["name"]] = r_["symbol"]
+                universe.code_cache[r_["symbol"]] = r_["name"]
     except Exception:
         pass
     return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
@@ -1838,7 +1732,7 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
             mw = _r.match(r"^(\S+)\s+([\d,]+)\s*원\s*매수$", cmd)
             if mw:
                 nm, amt = mw.group(1), int(mw.group(2).replace(",", ""))
-                sym, _n = await _resolve_stock_symbol(nm)
+                sym, _n = await universe.resolve_symbol(nm)
                 pr = 0
                 try:
                     pc = await redis_client.get(f"stock:price:{sym}")
@@ -4159,14 +4053,14 @@ async def _handle_watchlist_command(msg: str) -> str | None:
         # MAP에 없으면 메모리 캐시에서 빠른 검색
         if not matched_symbol:
             # 정확한 종목명 매칭
-            for stock_name, ticker in _stock_name_cache.items():
+            for stock_name, ticker in universe.name_cache.items():
                 if stock_name in msg:
                     matched_symbol = ticker
                     matched_name = stock_name
                     break
             # 부분 매칭 (앞 2글자 이상)
             if not matched_symbol:
-                for stock_name, ticker in _stock_name_cache.items():
+                for stock_name, ticker in universe.name_cache.items():
                     if len(stock_name) >= 2 and stock_name[:2] in msg and len(stock_name) >= 2:
                         words = [w for w in msg_lower.split() if len(w) >= 2]
                         if any(stock_name.startswith(w) or w in stock_name for w in words):
@@ -4290,46 +4184,6 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
         return {"success": False, "error": str(e)}
 
 
-async def _resolve_stock_symbol(text: str) -> tuple:
-    """메시지에서 종목 식별 → (symbol, name). 실패 시 (None, None)"""
-    import re as _re
-    m = _re.search(r"\b(\d{6})\b", text)
-    if m:
-        code = m.group(1)
-        try:
-            async with db_pool.acquire() as conn:
-                nm = await conn.fetchval("SELECT name FROM watchlist WHERE symbol=$1", code)
-            return code, (nm or code)
-        except Exception:
-            return code, code
-    # 이름으로 찾기: watchlist → 캐시
-    try:
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT symbol, name FROM watchlist WHERE name IS NOT NULL")
-        for r in rows:
-            if r["name"] and r["name"] in text:
-                return r["symbol"], r["name"]
-    except Exception:
-        pass
-    try:
-        for nm, code in _stock_name_cache.items():
-            if nm and nm in text:
-                return code, nm
-    except Exception:
-        pass
-    # DB 폴백 (캐시 미로드 시): 텍스트에 포함되는 가장 긴 종목명
-    try:
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT symbol, name FROM stocks WHERE $1 LIKE '%' || name || '%' "
-                "ORDER BY LENGTH(name) DESC LIMIT 1", text)
-        if rows:
-            return rows[0]["symbol"], rows[0]["name"]
-    except Exception:
-        pass
-    return None, None
-
-
 import re as _re_mod
 _re_prop = _re_mod.compile(r"(승인|오케이|오케|ok|ㅇㅋ|사자|매수 ?해|매수 ?하자|고고|거절|취소해|사지 ?마)", _re_mod.I)
 _re_reject = _re_mod.compile(r"(거절|취소해|사지 ?마|안 ?사)")
@@ -4348,7 +4202,7 @@ async def _handle_trade_command(user_msg: str):
     if not qty_m and not all_sell:
         return None  # 수량 없는 문장은 일반 대화로
 
-    symbol, name = await _resolve_stock_symbol(msg)
+    symbol, name = await universe.resolve_symbol(msg)
     if not symbol:
         return "⚠️ 종목을 특정할 수 없어요. 종목코드 6자리 또는 감시종목 이름으로 다시 지시해주세요. (예: 000660 2주 매수)"
 
@@ -4711,7 +4565,7 @@ async def _jarvis_chat_impl(body: dict):
         # 감시 추가/제외 (확정 명령)
         _wm = _re_mod.search(r"(.+?)\s*(감시|관심)\s*(종목)?\s*(추가|등록|넣어)", user_msg)
         if _wm and "http" not in user_msg:
-            _ws, _wn = await _resolve_stock_symbol(_wm.group(1))
+            _ws, _wn = await universe.resolve_symbol(_wm.group(1))
             if _ws:
                 try:
                     async with db_pool.acquire() as conn:
@@ -4777,7 +4631,7 @@ async def _jarvis_chat_impl(body: dict):
 
         # 차트 리서치 명령: "차트 OO" / "OO 차트 어때"
         if "차트" in user_msg:
-            _sym, _nm = await _resolve_stock_symbol(user_msg)
+            _sym, _nm = await universe.resolve_symbol(user_msg)
             if _sym:
                 chart_txt = await _analyze_chart(_sym, _nm)
                 if chart_txt:
@@ -4882,7 +4736,7 @@ async def _jarvis_chat_impl(body: dict):
         # AI가 모르는 종목이라 판단하면 [[NEED_SEARCH: 종목명]] 태그를 응답에 붙이도록 프롬프트로 지시한다.
         stock_ctx = ""
         try:
-            _sym, _nm = await _resolve_stock_symbol(user_msg)
+            _sym, _nm = await universe.resolve_symbol(user_msg)
             if _sym:
                 _rows = await _fetch_daily_ohlcv(_sym, 5)
                 _cur = _rows[-1]["close"] if _rows else 0
@@ -4968,7 +4822,7 @@ async def _jarvis_chat_impl(body: dict):
                 wa = (action.get("watch_add") or "").strip()
                 if wa:
                     try:
-                        _ws, _wn = await _resolve_stock_symbol(wa)
+                        _ws, _wn = await universe.resolve_symbol(wa)
                         if _ws:
                             async with db_pool.acquire() as conn:
                                 await conn.execute(
@@ -4983,7 +4837,7 @@ async def _jarvis_chat_impl(body: dict):
                 wi = (action.get("watch_interest") or "").strip()
                 if wi:
                     try:
-                        _is, _in = await _resolve_stock_symbol(wi)
+                        _is, _in = await universe.resolve_symbol(wi)
                         if _is:
                             async with db_pool.acquire() as conn:
                                 await conn.execute(
@@ -6175,7 +6029,7 @@ async def run_review_now():
 async def stock_name_lookup(code: str):
     """종목코드 → 종목명 (역방향 조회, 내부 서비스용)
     종목마스터 캐시/DB에 없어도 watchlist에 등록돼 있으면 그 이름을 사용 (감시종목은 항상 이름이 있음)"""
-    name = _stock_code_cache.get(code)
+    name = universe.code_cache.get(code)
     if not name:
         try:
             async with db_pool.acquire() as conn:
@@ -6193,7 +6047,7 @@ async def stock_name_lookup(code: str):
 
 @app.get("/api/stock/lookup")
 async def stock_lookup(q: str):
-    sym, nm = await _resolve_stock_symbol(q)
+    sym, nm = await universe.resolve_symbol(q)
     db_count = 0
     similar = []
     try:
@@ -6206,7 +6060,7 @@ async def stock_lookup(q: str):
     except Exception as e:
         db_count = f"error: {e}"
     return {"query": q, "query_bytes": q.encode("utf-8").hex(), "symbol": sym, "name": nm,
-            "memory_cache_size": len(_stock_name_cache), "db_count": db_count,
+            "memory_cache_size": len(universe.name_cache), "db_count": db_count,
             "similar_names_found": similar}
 
 
@@ -6226,21 +6080,19 @@ async def flush_bad_cache():
 @app.api_route("/api/stock/reload_cache", methods=["GET", "POST"])
 async def reload_stock_cache():
     """종목 캐시 즉시 강제 갱신 (pykrx, 수 분 소요될 수 있음)"""
-    asyncio.create_task(_load_stock_cache())
+    asyncio.create_task(sync_stock_universe(db_pool, universe))
     return {"success": True, "note": "백그라운드 갱신 시작됨 — 잠시 후 /api/stock/lookup으로 확인"}
 
 
 @app.api_route("/api/stock/purge_and_reload", methods=["GET", "POST"])
 async def purge_and_reload_stock_cache():
     """오염된 종목마스터 데이터를 완전 삭제 후 pykrx로 재적재 (일회성 복구용)"""
-    global _stock_name_cache, _stock_code_cache
     try:
         async with db_pool.acquire() as conn:
             deleted = await conn.fetchval("SELECT COUNT(*) FROM stocks")
             await conn.execute("TRUNCATE TABLE stocks")
-        _stock_name_cache = {}
-        _stock_code_cache = {}
-        asyncio.create_task(_load_stock_cache())
+        universe.replace_cache({})
+        asyncio.create_task(sync_stock_universe(db_pool, universe))
         return {"success": True, "purged": deleted,
                 "note": "삭제 후 재적재 시작 — pykrx라 5~15분 소요, 이후 /api/stock/lookup으로 확인"}
     except Exception as e:

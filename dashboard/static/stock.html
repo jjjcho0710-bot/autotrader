@@ -504,6 +504,10 @@ setInterval(fetchMarketIndex,60000);
 .bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
 .bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
+@media (min-width: 769px) {
+  .bottom-nav, .nav { display:none !important; }
+  body { padding-bottom:0 !important; }
+}
 </style>
 </body>
 </html>

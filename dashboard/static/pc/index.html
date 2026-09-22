@@ -8,8 +8,8 @@
 <style>
 body{height:100vh;display:flex;overflow:hidden;}
 /* 사이드바 */
-.side{width:216px;flex-shrink:0;background:var(--p);border-right:1px solid var(--bd);
-      display:flex;flex-direction:column;padding:18px 12px;}
+.side{width:216px;min-width:216px;flex-shrink:0;background:var(--p);border-right:1px solid var(--bd);
+      display:flex;flex-direction:column;padding:18px 12px;position:relative;z-index:100;}
 .logo{font-size:17px;font-weight:800;color:var(--br);padding:0 10px 18px;}
 .logo span{color:var(--gd);}
 .jbtn{display:flex;align-items:center;gap:12px;padding:13px 12px;border-radius:14px;
@@ -30,7 +30,7 @@ body{height:100vh;display:flex;overflow:hidden;}
 .side-foot{margin-top:auto;padding:10px 12px;font-size:10px;color:var(--dim);}
 .side-foot a{color:var(--dim);}
 /* 메인 */
-.main{flex:1;overflow-y:auto;position:relative;}
+.main{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;}
 #page{min-height:100%;}
 .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
          color:var(--dim);background:var(--bg);}

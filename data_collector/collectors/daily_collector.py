@@ -34,9 +34,13 @@ class DailyCollector:
             await self.session.close()
 
     async def _get_token(self):
-        # Redis에서 토큰 재사용 (kis_collector와 공유)
+        # Redis에서 토큰 재사용 (kis_collector와 공유). 모의/실전 계좌 토큰은 서로 호환되지
+        # 않으므로 키를 분리 — 분리하지 않으면 이 프로세스가 다른 모드로 발급받은 토큰을
+        # 실주문 프로세스와 같은 키로 공유하게 되어 "모의투자 주문이 불가한 계좌입니다" 류의
+        # 주문 거부를 유발할 수 있다.
+        redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
         try:
-            cached = await cache.client.get("kis:access_token")
+            cached = await cache.client.get(redis_key)
             if cached:
                 if isinstance(cached, bytes):
                     cached = cached.decode('utf-8')
@@ -50,8 +54,8 @@ class DailyCollector:
         url = f"{self.BASE_URL}/oauth2/tokenP"
         payload = {
             "grant_type": "client_credentials",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
+            "appkey": config.kis_app_key,
+            "appsecret": config.kis_app_secret,
         }
         try:
             async with self.session.post(url, json=payload) as resp:
@@ -61,7 +65,7 @@ class DailyCollector:
                     self.access_token = token
                     # Redis에 저장 (23시간)
                     try:
-                        await cache.client.setex("kis:access_token", 23 * 3600, token)
+                        await cache.client.setex(redis_key, 23 * 3600, token)
                     except Exception:
                         pass
                     logger.info("✅ KIS 일봉 토큰 발급 완료")
@@ -72,8 +76,8 @@ class DailyCollector:
         return {
             "Content-Type": "application/json",
             "authorization": f"Bearer {self.access_token}",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
+            "appkey": config.kis_app_key,
+            "appsecret": config.kis_app_secret,
             "tr_id": tr_id,
             "custtype": "P",
         }

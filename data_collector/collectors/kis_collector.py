@@ -36,8 +36,12 @@ class KISCollector:
     # ── 인증 ───────────────────────────────────────────
     async def _get_token(self):
         # Redis에서 토큰 확인 (재시작해도 재사용)
+        # 모의/실전 계좌 토큰은 서로 호환되지 않으므로 키를 분리 — 분리하지 않으면
+        # 이 프로세스가 다른 모드로 발급받은 토큰을 실주문 프로세스와 같은 키로 공유하게 되어
+        # "모의투자 주문이 불가한 계좌입니다" 류의 주문 거부를 유발할 수 있다.
+        redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
         try:
-            cached = await cache.client.get("kis:access_token")
+            cached = await cache.client.get(redis_key)
             if cached:
                 # bytes → str 변환
                 if isinstance(cached, bytes):
@@ -59,8 +63,8 @@ class KISCollector:
             url = f"{self.BASE_URL}/oauth2/tokenP"
             payload = {
                 "grant_type": "client_credentials",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
             }
             async with self.session.post(url, json=payload) as resp:
                 data = await resp.json()
@@ -69,7 +73,7 @@ class KISCollector:
                     KISCollector._shared_token = token
                     KISCollector._token_expires = now + timedelta(hours=23)
                     try:
-                        await cache.client.setex("kis:access_token", 23 * 3600, token)
+                        await cache.client.setex(redis_key, 23 * 3600, token)
                     except Exception as e:
                         logger.warning(f"Redis 토큰 저장 실패: {e}")
                     logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
@@ -82,8 +86,8 @@ class KISCollector:
         return {
             "Content-Type": "application/json",
             "authorization": f"Bearer {KISCollector._shared_token}",
-            "appkey": config.KIS_APP_KEY,
-            "appsecret": config.KIS_APP_SECRET,
+            "appkey": config.kis_app_key,
+            "appsecret": config.kis_app_secret,
             "tr_id": tr_id,
             "custtype": "P",
         }

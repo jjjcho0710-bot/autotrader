@@ -2575,8 +2575,8 @@ async def get_single_price(symbol: str):
         async with http.ClientSession() as sess:
             token_res = await sess.post(f"{base_url}/oauth2/tokenP", json={
                 "grant_type": "client_credentials",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
             })
             token_data = await token_res.json()
             token = token_data.get("access_token", "")
@@ -2587,8 +2587,8 @@ async def get_single_price(symbol: str):
             # 현재가 조회
             headers = {
                 "authorization": f"Bearer {token}",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
                 "tr_id": "FHKST01010100",
                 "custtype": "P",
             }
@@ -3079,7 +3079,7 @@ async def full_health_check():
     # 8. KIS 토큰
     try:
         paper = await redis_client.get("kis:paper_token")
-        real = await redis_client.get("kis:real_token")
+        real = await redis_client.get("kis:access_token")
         result["checks"]["kis_tokens"] = {
             "status": "ok" if paper else "warning",
             "paper_token": "있음" if paper else "없음",
@@ -4505,13 +4505,13 @@ async def _ask_gemini_direct(message: str) -> str:
                     async with http.ClientSession() as sess:
                         tr = await sess.post(f"{base_url}/oauth2/tokenP", json={
                             "grant_type": "client_credentials",
-                            "appkey": config.KIS_APP_KEY,
-                            "appsecret": config.KIS_APP_SECRET,
+                            "appkey": config.kis_app_key,
+                            "appsecret": config.kis_app_secret,
                         })
                         token = (await tr.json()).get("access_token", "")
                         hdrs = {"authorization": f"Bearer {token}",
-                                "appkey": config.KIS_APP_KEY,
-                                "appsecret": config.KIS_APP_SECRET,
+                                "appkey": config.kis_app_key,
+                                "appsecret": config.kis_app_secret,
                                 "tr_id": "FHKST01010100", "custtype": "P"}
                         pr = await sess.get(
                             f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -4731,15 +4731,15 @@ async def get_stock_balance():
         async with http.ClientSession() as session:
             token_res = await session.post(f"{base}/oauth2/tokenP", json={
                 "grant_type": "client_credentials",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
             })
             token_data = await token_res.json()
             token = token_data.get("access_token", "")
             headers = {
                 "authorization": f"Bearer {token}",
-                "appkey": config.KIS_APP_KEY,
-                "appsecret": config.KIS_APP_SECRET,
+                "appkey": config.kis_app_key,
+                "appsecret": config.kis_app_secret,
                 "tr_id": "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R",
                 "custtype": "P",
             }

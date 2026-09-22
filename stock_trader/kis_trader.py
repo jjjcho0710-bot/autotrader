@@ -59,9 +59,12 @@ class KISTrader:
             await self.session.close()
 
     async def _get_token(self):
-        # Redis에서 토큰 재사용
+        # Redis에서 토큰 재사용 (모의/실전 계좌 토큰은 서로 호환되지 않으므로 키를 분리 —
+        # 분리하지 않으면 다른 프로세스가 모의투자 토큰을 같은 키에 써서 실전 주문이
+        # "모의투자 주문이 불가한 계좌입니다" 오류로 거부될 수 있다)
+        redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
         try:
-            cached = await cache.client.get("kis:access_token")
+            cached = await cache.client.get(redis_key)
             if cached:
                 self.access_token = cached if isinstance(cached, str) else cached.decode('utf-8')
                 logger.info("✅ KIS 토큰 Redis에서 복원")
@@ -84,7 +87,7 @@ class KISTrader:
                 if token:
                     self.access_token = token
                     try:
-                        await cache.client.setex("kis:access_token", 82800, token)
+                        await cache.client.setex(redis_key, 82800, token)
                     except Exception:
                         pass
                     logger.info("✅ KIS 토큰 발급 완료 (23시간 유효)")
@@ -233,7 +236,8 @@ class KISTrader:
         if data.get("rt_cd") == "1" and ("만료" in msg or "token" in msg.lower() or "EGW00" in data.get("msg_cd", "")):
             logger.warning("🔄 KIS 토큰 만료 → 자동 재발급")
             try:
-                await cache.client.delete("kis:access_token")
+                redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
+                await cache.client.delete(redis_key)
             except:
                 pass
             self.access_token = ""

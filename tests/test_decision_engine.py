@@ -162,5 +162,65 @@ class TestDecide(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision_label, "SKIP")
 
 
+class TestConfidence(unittest.IsolatedAsyncioTestCase):
+    """stark_decisions.confidence가 NULL로 비는 문제 보강: 판정별 확신도를 채워
+    log_decision에 실제로 전달되는지, 반환 dict에도 노출되는지 검증한다."""
+
+    async def _decide(self, reply_text, **signal_overrides):
+        pool = FakePool()
+
+        async def ask_llm(prompt, session_id):
+            return reply_text
+
+        decision = await decision_engine.decide(make_signal(**signal_overrides), "prompt", ask_llm_fn=ask_llm, pool=pool)
+        # log_decision 호출 인자 순서: symbol, name, decision, confidence, reason, ...
+        logged_confidence = pool._conn.inserted[0][3]
+        return decision, logged_confidence
+
+    async def test_execute_confidence_is_high(self):
+        decision, logged = await self._decide("EXECUTE: 강한 확신")
+        self.assertEqual(decision["confidence"], 0.85)
+        self.assertEqual(logged, 0.85)
+
+    async def test_execute_small_confidence_is_moderate(self):
+        decision, logged = await self._decide("EXECUTE_SMALL: 일부 조건")
+        self.assertEqual(decision["confidence"], 0.65)
+        self.assertEqual(logged, 0.65)
+
+    async def test_propose_auto_upgrade_confidence_differs_from_execute_small(self):
+        """PROPOSE는 stark_decisions에는 EXECUTE_SMALL로 기록되지만(is_small=True),
+        규칙 밖 강신호라는 출처를 확신도에 남기기 위해 일반 EXECUTE_SMALL(0.65)과는
+        다른 PROPOSE 전용 확신도(0.70)를 써야 한다 — 라벨만 보고는 구분이 안 되므로."""
+        decision, logged = await self._decide("PROPOSE: 규칙 밖 강신호", action="buy")
+        self.assertEqual(decision["confidence"], 0.70)
+        self.assertEqual(logged, 0.70)
+
+    async def test_skip_confidence_is_low(self):
+        decision, logged = await self._decide("SKIP: 근거 부족")
+        self.assertEqual(decision["confidence"], 0.30)
+        self.assertEqual(logged, 0.30)
+
+    async def test_ml_fallback_confidence_uses_actual_probability_not_heuristic(self):
+        pool = FakePool()
+
+        async def ask_llm(prompt, session_id):
+            return ""
+
+        decision = await decision_engine.decide(
+            make_signal(action="buy", reason="ML매수확률: 82%"), "prompt", ask_llm_fn=ask_llm, pool=pool)
+        self.assertEqual(decision["confidence"], 0.82)
+        self.assertEqual(pool._conn.inserted[0][3], 0.82)
+
+    async def test_ml_fallback_zero_probability_confidence_is_zero(self):
+        pool = FakePool()
+
+        async def ask_llm(prompt, session_id):
+            return "❌ 오류"
+
+        decision = await decision_engine.decide(
+            make_signal(reason="사유 없음"), "prompt", ask_llm_fn=ask_llm, pool=pool)
+        self.assertEqual(decision["confidence"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,11 +24,17 @@ logger = logging.getLogger("stark.decision_engine")
 _VERDICT_RE = re.compile(r"\b(EXECUTE_SMALL|EXECUTE|PROPOSE|SKIP)\b")
 _ML_PROB_RE = re.compile(r"ML매수확률[:\s]*([0-9]+)%")
 
+# 판정별 확신도 휴리스틱. 원본 코드는 EXECUTE/EXECUTE_SMALL/PROPOSE/SKIP 라벨만 파싱했을 뿐
+# 수치 확신도가 전혀 없었다 — stark_decisions.confidence를 의미 있게 채우기 위해 도입한
+# 고정 매핑이다(모델이 직접 수치를 말하게 하지 않는 이유: JARVIS_SYSTEM_PROMPT가 정한 4개
+# 판정 라벨 형식을 흔들지 않기 위함). PROPOSE는 규칙 밖 신호라 EXECUTE_SMALL보다 낮게 잡는다.
+_VERDICT_CONFIDENCE = {"EXECUTE": 0.85, "EXECUTE_SMALL": 0.65, "PROPOSE": 0.70, "SKIP": 0.30}
+
 
 async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any = None) -> Dict[str, Any]:
     """AI 판단 1회 수행 + stark_decisions 기록. 실행 여부만 판단하고 실행은 하지 않는다.
 
-    반환: {"verdict","should_execute","is_small","reply","ai_failed","source"}
+    반환: {"verdict","should_execute","is_small","reply","ai_failed","source","confidence"}
     """
     symbol = signal["symbol"]
     name = signal.get("name") or symbol
@@ -42,6 +48,7 @@ async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any =
     is_small = verdict == "EXECUTE_SMALL"
     should_execute = verdict in ("EXECUTE", "EXECUTE_SMALL")
     source = "ai"
+    confidence = None
 
     # PROPOSE: 규칙(가격상한·분산 등) 밖 강신호 — 승인 없이 자동 실행(주인 지시: 완전 자동화).
     # 안전을 위해 소액(절반 수량)으로 진입.
@@ -49,6 +56,7 @@ async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any =
         is_small = True
         should_execute = True
         reply = (reply or "") + "\n[자동 실행: 규칙 외 강신호 — 소액 자동 진입]"
+        confidence = _VERDICT_CONFIDENCE["PROPOSE"]
 
     # 429/오류 폴백: AI 응답 불가 시 신호의 ML 확률로 규칙 판단 (봇 생존)
     ai_failed = (not reply) or reply.startswith("❌") or "429" in (reply or "")[:200]
@@ -61,14 +69,19 @@ async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any =
         reply = (f"[AI폴백] ML확률 {ml_prob}% 기준 "
                  f"{'EXECUTE' if should_execute else 'SKIP'} (Gemini 응답 불가)")
         source = "rule"
+        confidence = round(ml_prob / 100.0, 2)  # ML 폴백은 실제 수치가 있으니 휴리스틱 대신 그대로 사용
         logger.warning(f"🤖 AI 폴백 판단 [{symbol}]: {reply}")
         decision_label = "EXECUTE" if should_execute else "SKIP"
     else:
         decision_label = "EXECUTE_SMALL" if is_small else (verdict or "SKIP")
 
+    if confidence is None:
+        confidence = _VERDICT_CONFIDENCE.get(decision_label, _VERDICT_CONFIDENCE["SKIP"])
+
     await log_decision(
         pool, symbol, decision_label,
         name=name,
+        confidence=confidence,
         reason=(signal.get("reason") or "")[:300],
         rationale=(reply or "")[:500],
         strategy=signal.get("strategy"),
@@ -83,4 +96,5 @@ async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any =
         "reply": reply,
         "ai_failed": ai_failed,
         "source": source,
+        "confidence": confidence,
     }

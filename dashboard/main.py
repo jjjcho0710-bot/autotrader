@@ -24,6 +24,22 @@ from common.config import config
 from common.migrations import run_migrations
 from market.universe import Universe
 from market.sync_batch import sync_stock_universe
+from chat.memory import (
+    save_chat_history as _mem_save_chat_history,
+    get_chat_history as _mem_get_chat_history,
+    summarize_old_chats as _mem_summarize_old_chats,
+)
+from chat.llm import ask_openwebui as _llm_ask_openwebui
+from learning.collector import (
+    extract_youtube_id as _collector_extract_youtube_id,
+    fetch_learning_text as _collector_fetch_learning_text,
+    gemini_watch_youtube as _collector_gemini_watch_youtube,
+    learn_from_url as _collector_learn_from_url,
+)
+from learning.curator import (
+    get_jarvis_knowledge as _curator_get_jarvis_knowledge,
+    jarvis_knowledge_curate as _curator_jarvis_knowledge_curate,
+)
 
 import time as _time
 
@@ -879,76 +895,12 @@ async def _jarvis_closing_report():
 
 
 async def _get_jarvis_knowledge(limit: int = 5) -> str:
-    """학습 지식 — 정제본(core 10개) 우선, 없으면 최근 raw N건"""
-    try:
-        async with db_pool.acquire() as conn:
-            core = await conn.fetch(
-                "SELECT id, content FROM jarvis_notes WHERE category='knowledge_core' AND is_active=TRUE "
-                "ORDER BY id LIMIT 20")
-            if core:
-                return "\n".join(f"- K{r['id']} {r['content']}" for r in core)
-            rows = await conn.fetch(
-                "SELECT content FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE "
-                "ORDER BY created_at DESC LIMIT $1", limit)
-        return "\n".join(f"- {r['content']}" for r in rows) if rows else ""
-    except Exception:
-        return ""
+    """학습 지식 — learning_rules 우선, 없으면 jarvis_notes (learning.curator 이관)"""
+    return await _curator_get_jarvis_knowledge(limit=limit, pool=db_pool)
 
 
-def _extract_youtube_id(url: str) -> str:
-    import re as _r
-    m = _r.search(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})", url)
-    return m.group(1) if m else ""
-
-
-async def _fetch_learning_text(url: str) -> tuple:
-    """URL → (제목힌트, 본문텍스트). 유튜브는 자막, 그 외는 웹 본문"""
-    vid = _extract_youtube_id(url)
-    if vid:
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            def _get():
-                # v1.x: 인스턴스 API / v0.x: 클래스 메서드 — 둘 다 지원
-                try:
-                    api = YouTubeTranscriptApi()
-                    if hasattr(api, "fetch"):
-                        try:
-                            ft = api.fetch(vid, languages=["ko", "en"])
-                        except Exception:
-                            tl = api.list(vid)
-                            try:
-                                ft = tl.find_transcript(["ko"]).fetch()
-                            except Exception:
-                                ft = tl.find_generated_transcript(["ko", "en"]).fetch()
-                        return " ".join(getattr(x, "text", None) or x.get("text", "") for x in ft)
-                except TypeError:
-                    pass
-                tl = YouTubeTranscriptApi.list_transcripts(vid)
-                try:
-                    t = tl.find_transcript(["ko"])
-                except Exception:
-                    t = tl.find_generated_transcript(["ko", "en"])
-                return " ".join(x["text"] for x in t.fetch())
-            loop = asyncio.get_event_loop()
-            txt = await loop.run_in_executor(None, _get)
-            return (f"유튜브 {vid}", txt)
-        except Exception as e:
-            raise RuntimeError(f"자막을 가져올 수 없어요 (자막 없는 영상이거나 차단): {str(e)[:80]}")
-    # 일반 웹
-    try:
-        import ssl as _ssl, re as _r
-        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
-        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
-            r = await sess.get(url, headers={"User-Agent": "Mozilla/5.0"},
-                               timeout=_aiohttp.ClientTimeout(total=12))
-            html = await r.text()
-        html = _r.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=_r.S | _r.I)
-        title = (_r.search(r"<title[^>]*>(.*?)</title>", html, _r.S | _r.I) or [None, ""])[1]
-        text = _r.sub(r"<[^>]+>", " ", html)
-        text = _r.sub(r"\s+", " ", text)
-        return ((title or "웹 문서").strip()[:60], text)
-    except Exception as e:
-        raise RuntimeError(f"페이지를 읽을 수 없어요: {str(e)[:80]}")
+_extract_youtube_id = _collector_extract_youtube_id
+_fetch_learning_text = _collector_fetch_learning_text
 
 
 async def _web_research_stock(query: str, symbol: str = "", name: str = "") -> str:
@@ -974,79 +926,11 @@ async def _web_research_stock(query: str, symbol: str = "", name: str = "") -> s
         return f"❌ 웹 조사 실패: {str(e)[:120]}"
 
 
-async def _gemini_watch_youtube(url: str, prompt: str) -> str:
-    """Gemini API로 유튜브 영상 직접 시청·요약 (자막 차단 시 폴백)"""
-    key = os.getenv("GEMINI_API_KEY", "")
-    if not key:
-        raise RuntimeError("GEMINI_API_KEY 미설정 — Railway dashboard 서비스 환경변수에 추가 필요")
-    body = {"contents": [{"parts": [
-        {"file_data": {"file_uri": url}},
-        {"text": prompt}]}]}
-    async with _aiohttp.ClientSession() as sess:
-        r = await sess.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-            params={"key": key}, json=body, timeout=_aiohttp.ClientTimeout(total=180))
-        data = await r.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
-        raise RuntimeError(f"Gemini 시청 실패: {str(data)[:120]}")
-
-
-_LEARN_PROMPT_BASE = """이 주식 투자 학습 자료의 내용을 바탕으로,
-자비스(자동매매 AI)가 실전 매수·매도 판단에 적용할 수 있는 핵심 원칙을
-정확히 3~5개, 각 1줄(40자 이내)로 뽑아라. 각 줄은 "원칙: "으로 시작.
-근거 없는 낙관·종목 추천·광고성 내용은 제외하라."""
-_LEARN_PROMPT = _LEARN_PROMPT_BASE
-
+_gemini_watch_youtube = _collector_gemini_watch_youtube
 
 async def _learn_from_url(url: str, hint: str = "") -> str:
-    """URL 학습: 자막/본문 → (실패 시 Gemini 영상 시청) → 원칙 요약 → 저장"""
-    global _LEARN_PROMPT
-    if hint:
-        _LEARN_PROMPT = _LEARN_PROMPT_BASE + f"\n특히 주인이 강조한 관점: {hint}"
-    else:
-        _LEARN_PROMPT = _LEARN_PROMPT_BASE
-    title, text = "", ""
-    vid = _extract_youtube_id(url)
-    try:
-        title, text = await _fetch_learning_text(url)
-    except Exception as fe:
-        if vid:
-            # 자막 차단/없음 → Gemini가 영상 직접 시청
-            clean_url = f"https://www.youtube.com/watch?v={vid}"
-            out = await _gemini_watch_youtube(clean_url, _LEARN_PROMPT)
-            principles = [ln.strip() for ln in out.split("\n") if "원칙" in ln and len(ln.strip()) > 6][:5]
-            if not principles:
-                return "⚠️ 영상에서 유효한 원칙을 추출하지 못했어요."
-            async with db_pool.acquire() as conn:
-                for p_ in principles:
-                    await conn.execute(
-                        "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('knowledge', $1, TRUE)",
-                        f"[유튜브 {vid}] {p_[:200]}")
-            return ("📚 학습 완료 (영상 직접 시청) — 지식 " + str(len(principles)) + "건 저장\n"
-                    + "\n".join(principles) + "\n(이후 매수 판단·작전에 반영됩니다)")
-        raise
-    if len(text) < 200:
-        return "⚠️ 학습할 내용이 너무 적어요 (자막/본문 부족)."
-    text = text[:18000]
-    prompt = f"""{_LEARN_PROMPT}
-
-[자료 내용 — {title}]
-{text}"""
-    out = await _ask_openwebui(prompt, session_id="daily_plan")
-    if not out or out.startswith("❌"):
-        return "❌ 요약에 실패했어요."
-    principles = [ln.strip() for ln in out.split("\n") if "원칙" in ln and len(ln.strip()) > 6][:5]
-    if not principles:
-        return "⚠️ 유효한 원칙을 추출하지 못했어요."
-    async with db_pool.acquire() as conn:
-        for p_ in principles:
-            await conn.execute(
-                "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('knowledge', $1, TRUE)",
-                f"[{title[:30]}] {p_[:200]}")
-    return ("📚 학습 완료 — 지식 " + str(len(principles)) + "건 저장\n"
-            + "\n".join(principles) + "\n(이후 매수 판단·작전에 반영됩니다)")
+    """URL 학습: 자막/본문 원문 전문 영구 보존 및 원칙 추출 (learning.collector 이관)"""
+    return await _collector_learn_from_url(url, hint=hint, pool=db_pool, ask_llm_fn=_ask_openwebui)
 
 
 async def _get_jarvis_lessons(limit: int = 5) -> str:
@@ -1813,67 +1697,8 @@ async def run_advice_now():
 
 
 async def _jarvis_knowledge_curate():
-    """지식 정리: 중복 통합·상충 해소·카테고리 분류 → 핵심 10개 정제본(core) 저장"""
-    try:
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT id, content FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE "
-                "ORDER BY created_at DESC LIMIT 80")
-        if len(rows) < 3:
-            logger.info("📚 지식 정리: 자료 부족 — 스킵")
-            return ""
-        raw = "\n".join(f"- {r['content']}" for r in rows)
-        # 원칙 성과 통계 (지난 정제본의 실전 적중률)
-        stats_txt = "(아직 없음)"
-        try:
-            async with db_pool.acquire() as conn:
-                st = await conn.fetch("""
-                    SELECT ps.principle_id, ps.applied, ps.hits, n.content
-                    FROM principle_stats ps JOIN jarvis_notes n ON n.id = ps.principle_id
-                    WHERE ps.applied > 0 ORDER BY ps.applied DESC LIMIT 30""")
-            if st:
-                stats_txt = "\n".join(
-                    f"- K{r['principle_id']} {r['content'][:40]}: 적용 {r['applied']}회, 적중 {r['hits']}회 "
-                    f"({r['hits']/max(1,r['applied'])*100:.0f}%)" for r in st)
-        except Exception:
-            pass
-        prompt = f"""다음은 자동매매 AI가 여러 자료에서 학습한 매매 원칙 목록이다.
-
-{raw}
-
-작업:
-1) 중복·유사 원칙은 하나로 통합, 서로 상충하는 것은 더 보수적/검증된 쪽을 택하라.
-2) 각 원칙을 [진입]/[청산]/[리스크]/[습관] 중 하나로 분류하라.
-3) 분류별로 실전 판단에 가장 유용한 원칙을 최대 5개씩(총 최대 20개) 남겨라.
-   원칙이 부족하면 있는 만큼만 출력하고, 빈 자리를 "(없음)"·"추후 추가 필요" 같은 자리채움 문구로 절대 채우지 마라.
-   아래 [원칙 성과 통계]가 있으면 적중률 낮은 원칙은 제외하고 높은 원칙은 반드시 유지하라.
-출력 형식: 각 줄 "[분류] 원칙 내용(40자 이내)" — 다른 말 없이 실제 원칙 줄만.
-
-[원칙 성과 통계 — 지난 정제본 기준]
-{stats_txt}"""
-        out = await _ask_openwebui(prompt, session_id="daily_plan")
-        if not out or out.startswith("❌"):
-            return ""
-        _placeholder = ("없음", "추후", "추가 필요", "해당 없", "N/A", "없습니다")
-        lines = [ln.strip() for ln in out.split("\n")
-                 if ln.strip().startswith("[") and len(ln.strip()) > 6
-                 and not any(pz in ln for pz in _placeholder)][:20]
-        if not lines:
-            return ""
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE jarvis_notes SET is_active=FALSE WHERE category='knowledge_core'")
-            for ln in lines:
-                await conn.execute(
-                    "INSERT INTO jarvis_notes (category, content, is_active) VALUES ('knowledge_core', $1, TRUE)",
-                    ln[:200])
-        msg = f"📚 지식 정리 완료: {len(rows)}개 → 핵심 {len(lines)}개\n" + "\n".join(lines)
-        if stats_txt != "(아직 없음)":
-            msg += "\n\n📊 원칙 성과(적용순)\n" + stats_txt[:600]
-        await _send_telegram(msg, broadcast=True)
-        return msg
-    except Exception as e:
-        logger.error(f"지식 정리 오류: {e}")
-        return ""
+    """지식 정리: 중복 통합·상충 해소·카테고리 분류 → 핵심 정제본 저장 (learning.curator 이관)"""
+    return await _curator_jarvis_knowledge_curate(pool=db_pool, ask_llm_fn=_ask_openwebui, send_telegram_fn=_send_telegram)
 
 
 @app.api_route("/api/jarvis/knowledge/curate", methods=["GET", "POST"])
@@ -4489,38 +4314,8 @@ async def _get_chat_summaries(limit: int = 3) -> str:
 
 
 async def _summarize_old_chats():
-    """7일 지난 대화를 일 단위로 요약해 장기 기억으로 이관"""
-    try:
-        async with db_pool.acquire() as conn:
-            day = await conn.fetchval("""
-                SELECT DATE(created_at AT TIME ZONE 'Asia/Seoul') FROM jarvis_memory
-                WHERE created_at < NOW() - INTERVAL '7 days'
-                ORDER BY created_at LIMIT 1""")
-            if not day:
-                return
-            rows = await conn.fetch("""
-                SELECT role, content FROM jarvis_memory
-                WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1
-                ORDER BY created_at LIMIT 200""", day)
-        if not rows:
-            return
-        convo = "\n".join(f"{'주인' if r['role']=='user' else '자비스'}: {r['content'][:200]}" for r in rows)[:6000]
-        summary = await _ask_openwebui(
-            f"다음은 {day} 하루의 주인-자비스 대화다. 나중에 참조할 핵심(결정사항, 지시, 전략 논의, 중요 사실)만 "
-            f"500자 이내로 요약하라. 잡담은 제외.\n\n{convo}", session_id="summarizer")
-        if summary and not summary.startswith("❌"):
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO jarvis_notes (category, content) VALUES ('chat_summary', $1)",
-                    f"[{day}] {summary.strip()[:600]}")
-                await conn.execute("""
-                    DELETE FROM jarvis_memory
-                    WHERE DATE(created_at AT TIME ZONE 'Asia/Seoul') = $1""", day)
-            logger.info(f"🧠 대화 요약 이관 완료: {day}")
-    except Exception as e:
-        logger.error(f"대화 요약 오류: {e}")
-
-
+    """7일 지난 대화를 일 단위로 요약해 장기 기억으로 이관 (원문 보존, chat.memory 이관)"""
+    return await _mem_summarize_old_chats(pool=db_pool, ask_llm_fn=_ask_openwebui)
 
 
 @app.post("/api/jarvis/chat")
@@ -4792,7 +4587,10 @@ async def _jarvis_chat_impl(body: dict):
                     "사고 과정, 규칙/지시 인용, 검토 중얼거림, '~라고 답변해야 한다' 류 초안, 같은 내용 반복을 절대 출력하지 마라. "
                     "근거는 핵심 1~2개만 짧게.")
 
-        # Open-WebUI 통해서 호출 (텔레그램과 같은 경로)
+        # 순수 사용자 발화 원문 저장 (STARK v2: full_msg가 아닌 user_msg만 저장하여 오염 방지)
+        await _save_chat_history(session_id, "user", user_msg, channel="web", is_pure_user=True)
+
+        # Open-WebUI 통해서 호출 (순수 LLM 호출, 내부 저장 없음)
         reply = await _ask_openwebui(full_msg, session_id=session_id)
 
         # NEED_SEARCH 태그 감지: AI가 스스로 "이 종목은 모르겠다" 판단했을 때만 웹조사 1회 수행
@@ -4894,6 +4692,9 @@ async def _jarvis_chat_impl(body: dict):
                     reply = reply + "\n\n" + "\n".join(notes)
         except Exception as ae:
             logger.warning(f"액션 파싱 오류(무시): {ae}")
+
+        # 순수 어시스턴트 답변 저장
+        await _save_chat_history(session_id, "assistant", reply, channel="web", is_pure_user=True)
 
         logger.info(f"Jarvis 웹 응답: {reply[:100]}...")
         return {"success": True, "reply": reply, "context_used": True}
@@ -5128,67 +4929,14 @@ def _kb(rows: list) -> dict:
     return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in r] for r in rows]}
 
 
-# 텔레그램 채팅별 대화 히스토리 (Redis 저장)
-async def _get_chat_history(chat_id: str, max_turns: int = 8) -> list:
-    """대화 히스토리 로드 — Redis 캐시 우선, 없으면 PostgreSQL"""
-    # Redis 캐시 먼저 (빠름)
-    if redis_client:
-        try:
-            key = f"jarvis:history:{chat_id}"
-            raw = await redis_client.get(key)
-            if raw:
-                return json.loads(raw)[-(max_turns * 2):]
-        except:
-            pass
-
-    # Redis 없으면 PostgreSQL에서 로드 (영구 메모리)
-    try:
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT role, content FROM jarvis_memory
-                    WHERE session_id = $1
-                    ORDER BY created_at DESC
-                    LIMIT $2
-                """, chat_id, max_turns * 2)
-            history = [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
-            # Redis에 캐시 복원
-            if redis_client and history:
-                key = f"jarvis:history:{chat_id}"
-                await redis_client.setex(key, 604800, json.dumps(history))
-            return history
-    except Exception as e:
-        logger.debug(f"PostgreSQL 히스토리 로드 실패: {e}")
-
-    return []
+async def _get_chat_history(chat_id: str, max_turns: int = 8, only_pure_user: bool = False) -> list:
+    """대화 히스토리 로드 — Redis 캐시 우선, 순수 발화 필터링 (chat.memory 이관)"""
+    return await _mem_get_chat_history(chat_id, max_turns=max_turns, only_pure_user=only_pure_user, pool=db_pool, redis=redis_client)
 
 
-async def _save_chat_history(chat_id: str, role: str, content: str):
-    """대화 히스토리 저장 — PostgreSQL(영구) + Redis(캐시)"""
-    # PostgreSQL 영구 저장
-    try:
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO jarvis_memory (session_id, role, content, created_at)
-                    VALUES ($1, $2, $3, NOW())
-                """, chat_id, role, content)
-    except Exception as e:
-        logger.debug(f"메모리 DB 저장 실패(테이블 없을 수 있음): {e}")
-
-    # Redis 캐시 (최근 40턴, 빠른 조회용)
-    if not redis_client:
-        return
-    try:
-        key = f"jarvis:history:{chat_id}"
-        raw = await redis_client.get(key)
-        history = json.loads(raw) if raw else []
-        history.append({"role": role, "content": content})
-        if len(history) > 40:
-            history = history[-40:]
-        await redis_client.setex(key, 604800, json.dumps(history))  # 7일 보관
-    except Exception as e:
-        logger.warning(f"히스토리 Redis 저장 실패: {e}")
+async def _save_chat_history(chat_id: str, role: str, content: str, channel: str = "web", is_pure_user: bool = True):
+    """대화 히스토리 저장 — PostgreSQL(영구) + Redis(캐시) (chat.memory 이관)"""
+    return await _mem_save_chat_history(chat_id, role, content, channel=channel, is_pure_user=is_pure_user, pool=db_pool, redis=redis_client)
 
 
 async def _save_trade_memory(symbol: str, action: str, price: float,
@@ -5209,84 +4957,8 @@ async def _save_trade_memory(symbol: str, action: str, price: float,
 
 
 async def _ask_openwebui(message: str, session_id: str = "telegram", model: str = None) -> str:
-    """Open-WebUI 모델 호출 — Tools + 대화 히스토리 포함.
-    model을 명시하면 그 모델을, 없으면 기본 JARVIS_MODEL(자비스)을 사용."""
-    import aiohttp as http
-    import os
-    openwebui_url   = os.getenv("OPENWEBUI_URL", "https://open-webui-production-5843.up.railway.app")
-    openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
-    jarvis_model    = model or os.getenv("JARVIS_MODEL", "autotrader-jarvis")
-
-    if not openwebui_token:
-        return await _ask_gemini_direct(message)
-
-    try:
-        # 이전 대화 히스토리 로드
-        history = await _get_chat_history(session_id)
-
-        # 현재 메시지 추가
-        messages = history + [{"role": "user", "content": message}]
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {openwebui_token}",
-        }
-        payload = {
-            "model": jarvis_model,
-            "messages": messages,  # Open-WebUI 모델 프롬프트 사용 (중복 제거)
-            "stream": False,
-        }
-        # 사고과정(THINK) 유출 차단: 최종답변 표식 프로토콜
-        message = (message + "\n\n[출력 프로토콜] 사고 과정이 필요하면 내부적으로만 하라. "
-                   "출력의 맨 마지막에 [[FINAL]] 표식 뒤에 최종 답변만 써라. "
-                   "[[FINAL]] 이전의 모든 내용은 사용자에게 표시되지 않는다.")
-        data = None
-        last_err = None
-        for _attempt in range(2):  # 1회 재시도
-            try:
-                async with http.ClientSession() as session:
-                    async with session.post(
-                        f"{openwebui_url}/api/chat/completions",
-                        json=payload,
-                        headers=headers,
-                        timeout=http.ClientTimeout(total=90),
-                    ) as res:
-                        data = await res.json()
-                if data and data.get("choices"):
-                    break
-                last_err = Exception(f"응답 없음: {data.get('error', data) if data else 'no data'}")
-            except Exception as _e:
-                last_err = _e
-                await asyncio.sleep(2)
-        if not data or not data.get("choices"):
-            raise last_err or Exception("응답 없음")
-        if True:
-            if True:
-                reply = data["choices"][0]["message"]["content"]
-                # [[FINAL]] 이후만 사용 (사고과정 제거) — 대소문자/공백 변형까지 견고하게 처리
-                _final_m = _re_mod.search(r"\[\[\s*FINAL\s*\]\]", reply, _re_mod.IGNORECASE)
-                if _final_m:
-                    reply = reply[_final_m.end():].strip()
-                else:
-                    # 메타 유출 감지: THINK / [최종 답변 구성] / "규칙을 지킨다" 등
-                    _head = reply.strip()[:300]
-                    _meta_markers = ("THINK", "[최종", "답변 구성", "라고 답변", "규칙을 지킨")
-                    if any(m in _head for m in _meta_markers):
-                        parts = [p_.strip() for p_ in reply.replace("\r","").split("\n\n") if p_.strip()]
-                        # 뒤에서부터 메타 아닌 첫 문단 선택
-                        for cand in reversed(parts):
-                            if not any(m in cand[:80] for m in _meta_markers) and not cand.startswith('"'):
-                                reply = cand
-                                break
-
-                # 대화 히스토리 저장
-                await _save_chat_history(session_id, "user", message)
-                await _save_chat_history(session_id, "assistant", reply)
-
-                return reply
-    except Exception as e:
-        logger.error(f"Open-WebUI 호출 실패: {e}")
-        return await _ask_gemini_direct(message)
+    """Open-WebUI 모델 호출 (순수 LLM 인터페이스, 내부 대화저장 제거, chat.llm 이관)"""
+    return await _llm_ask_openwebui(message, session_id=session_id, model=model, fallback_fn=_ask_gemini_direct, pool=db_pool, redis=redis_client)
 
 
 async def _ask_gemini_direct(message: str) -> str:

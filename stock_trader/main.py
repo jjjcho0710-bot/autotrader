@@ -359,15 +359,22 @@ class StockTrader:
                             alert_cooldown[symbol] = now_ts
                             direction = "급락" if pnl_rate < 0 else "급등"
                             if pnl_rate <= -3.0:
-                                # 손실 매도는 상의 원칙: 자동 매도 없이 알림만
+                                # 손실 매도 알림: -7% 도달 시 즉시 자동 손절 집행 예정 안내
                                 try:
                                     from common.telegram import send_stock
                                     nm = pos.get("name", symbol)
-                                    await send_stock(
-                                        f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
-                                        f"자동 매도하지 않습니다. 매도 원하시면 "
-                                        f"'{nm} 전량 매도' 지시해주세요."
-                                    )
+                                    if pnl_rate <= -7.0:
+                                        msg = (
+                                            f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
+                                            f"시스템이 즉시 자동 손절 매도 처리 중입니다."
+                                        )
+                                    else:
+                                        msg = (
+                                            f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
+                                            f"-7% 도달 시 즉시 자동 손절 집행 예정(현재 손절선 근접 감시 중)\n"
+                                            f"즉시 매도를 원하시면 '{nm} 전량 매도' 지시해주세요."
+                                        )
+                                    await send_stock(msg)
                                 except Exception:
                                     pass
                                 continue

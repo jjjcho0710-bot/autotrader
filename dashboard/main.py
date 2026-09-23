@@ -4278,7 +4278,7 @@ async def jarvis_clear_history():
 
 async def _typing_action(chat_id: str, token: str = None):
     """텔레그램 상단 '입력 중...' 표시"""
-    _token = token or config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+    _token = token or config.STARK_BOT_TOKEN or config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
     if not _token or not chat_id:
         return
     try:

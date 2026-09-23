@@ -30,7 +30,7 @@ body{height:100vh;display:flex;overflow:hidden;}
 .side-foot{margin-top:auto;padding:10px 12px;font-size:10px;color:var(--dim);}
 .side-foot a{color:var(--dim);}
 /* 메인 */
-.main{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;}
+.main{flex:1;overflow-y:auto;overflow-x:hidden;position:relative;padding-left:20px;}
 #page{min-height:100%;}
 .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
          color:var(--dim);background:var(--bg);}
@@ -49,11 +49,11 @@ body{height:100vh;display:flex;overflow:hidden;}
     <div><div class="jname">Jarvis</div><div class="jst" id="jstatus">● 온라인</div></div>
   </div>
   <div class="navlbl">메뉴</div>
-  <div class="nav-item on" id="nav-home" onclick="go('home')"><span class="ic">⊞</span>대시보드</div>
+  <div class="nav-item on" id="nav-home" onclick="go('home')"><span class="ic">⊞</span>홈</div>
   <div class="nav-item" id="nav-stock" onclick="go('stock')"><span class="ic">📈</span>포트폴리오</div>
-  <div class="nav-item" id="nav-stark" onclick="go('stark')"><span class="ic">🧠</span>STARK 브레인</div>
-    <div class="nav-item" id="nav-strategy" onclick="go('strategy')"><span class="ic">⚙️</span>전략/설정</div>
-  <div class="nav-item" id="nav-training" onclick="go('training')"><span class="ic">🎓</span>트레이닝</div>
+  <div class="nav-item" id="nav-stark" onclick="go('stark')"><span class="ic">🧠</span>판단 로그</div>
+  <div class="nav-item" id="nav-strategy" onclick="go('strategy')"><span class="ic">⚙️</span>전략/설정</div>
+  <div class="nav-item" id="nav-training" onclick="go('training')"><span class="ic">🎓</span>학습 자료</div>
   <div class="nav-item" id="nav-logs" onclick="go('logs')"><span class="ic">📋</span>시스템 로그</div>
   <div class="side-foot">v1.0 · <a href="/">모바일 버전</a></div>
 </aside>

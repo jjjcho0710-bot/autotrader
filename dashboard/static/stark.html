@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>AutoTrader — STARK 브레인</title>
+<title>AutoTrader — 판단 로그</title>
 <link rel="manifest" href="/static/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -77,14 +77,30 @@ pre.features{background:var(--bg);border:1px solid var(--border);border-radius:8
   white-space:pre-wrap;word-break:break-word;color:var(--dim);}
 
 .empty{text-align:center;color:var(--dim);padding:40px 0;font-size:13px;}
-
-.bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:50;
-  background:#1E293B;border-top:1px solid #334155;
-  padding-bottom:env(safe-area-inset-bottom);}
-.bn-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
-  padding:8px 0 6px;font-size:11px;font-weight:600;color:#94A3B8;text-decoration:none;}
-.bn-item.active{color:#F59E0B;}
-.bn-icon{font-size:20px;line-height:1;}
+</style>
+<style id="unified-nav">
+.bottom-nav, .nav {
+  display:flex !important; position:fixed !important; bottom:0 !important;
+  left:0 !important; right:0 !important; z-index:50 !important;
+  background:#1E293B !important; border-top:1px solid #334155 !important;
+  padding:0 0 env(safe-area-inset-bottom) 0 !important; margin:0 !important;
+  height:calc(56px + env(safe-area-inset-bottom)) !important;
+}
+.bottom-nav a, .nav a, .bn-item {
+  flex:1 !important; min-width:0 !important;
+  display:flex !important; flex-direction:column !important;
+  align-items:center !important; justify-content:center !important;
+  gap:2px !important; padding:0 2px !important; margin:0 !important;
+  font-size:10px !important; font-weight:600 !important;
+  letter-spacing:-0.3px !important;
+  white-space:nowrap !important;
+  overflow:hidden !important;
+  text-overflow:ellipsis !important;
+  color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
+}
+.bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
+.bn-icon, .nav-ic { font-size:18px !important; line-height:1 !important; }
+body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 @media (min-width: 769px) {
   .bottom-nav, .nav { display:none !important; }
   body { padding-bottom:0 !important; }
@@ -93,7 +109,7 @@ pre.features{background:var(--bg);border:1px solid var(--border);border-radius:8
 </head>
 <body>
 <header>
-  <div><h1>🧠 STARK 브레인</h1><div class="sub" id="sub">불러오는 중...</div></div>
+  <div><h1>🧠 판단 로그</h1><div class="sub" id="sub">불러오는 중...</div></div>
 </header>
 
 <div class="filter-bar">
@@ -124,9 +140,9 @@ pre.features{background:var(--bg);border:1px solid var(--border);border-radius:8
 <nav class="bottom-nav">
   <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
   <a href="/stock" class="bn-item"><span class="bn-icon">📈</span>포트폴리오</a>
-  <a href="/stark" class="bn-item active"><span class="bn-icon">🧠</span>STARK 브레인</a>
+  <a href="/stark" class="bn-item active"><span class="bn-icon">🧠</span>판단 로그</a>
   <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략/설정</a>
-  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>트레이닝</a>
+  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>학습 자료</a>
   <a href="/logs" class="bn-item"><span class="bn-icon">📋</span>시스템 로그</a>
 </nav>
 

@@ -257,9 +257,9 @@ body{display:flex;flex-direction:column;}
 <nav class="bottom-nav">
   <a href="/" class="bn-item"><span class="bn-icon">⊞</span>홈</a>
   <a href="/stock" class="bn-item active"><span class="bn-icon">📈</span>포트폴리오</a>
-  <a href="/stark" class="bn-item"><span class="bn-icon">🧠</span>STARK 브레인</a>
+  <a href="/stark" class="bn-item"><span class="bn-icon">🧠</span>판단 로그</a>
   <a href="/strategy" class="bn-item"><span class="bn-icon">⚙️</span>전략/설정</a>
-  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>트레이닝</a>
+  <a href="/training" class="bn-item"><span class="bn-icon">🎓</span>학습 자료</a>
   <a href="/logs" class="bn-item"><span class="bn-icon">📋</span>시스템 로그</a>
 </nav>
 
@@ -495,14 +495,19 @@ setInterval(fetchMarketIndex,60000);
   height:calc(56px + env(safe-area-inset-bottom)) !important;
 }
 .bottom-nav a, .nav a, .bn-item {
-  flex:1 !important; display:flex !important; flex-direction:column !important;
+  flex:1 !important; min-width:0 !important;
+  display:flex !important; flex-direction:column !important;
   align-items:center !important; justify-content:center !important;
-  gap:2px !important; padding:0 !important; margin:0 !important;
-  font-size:11px !important; font-weight:600 !important;
+  gap:2px !important; padding:0 2px !important; margin:0 !important;
+  font-size:10px !important; font-weight:600 !important;
+  letter-spacing:-0.3px !important;
+  white-space:nowrap !important;
+  overflow:hidden !important;
+  text-overflow:ellipsis !important;
   color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
 }
 .bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
-.bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
+.bn-icon, .nav-ic { font-size:18px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 @media (min-width: 769px) {
   .bottom-nav, .nav { display:none !important; }

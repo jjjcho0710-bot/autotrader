@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>자비스 트레이닝</title>
+<title>AutoTrader — 학습 자료</title>
 <link rel="manifest" href="/static/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -76,7 +76,7 @@
 </head>
 <body>
 <header>
-  <div><h1>🎓 자비스 트레이닝</h1><div class="sub">판단 채점 · 학습 교훈 · 성장 기록</div></div>
+  <div><h1>🎓 학습 자료</h1><div class="sub">판단 채점 · 학습 교훈 · 성장 기록</div></div>
 </header>
 
 <div class="section">
@@ -125,9 +125,9 @@
 <div class="nav">
   <a href="/"><span class="nav-ic">⊞</span>홈</a>
   <a href="/stock"><span class="nav-ic">📈</span>포트폴리오</a>
-  <a href="/stark"><span class="nav-ic">🧠</span>STARK 브레인</a>
+  <a href="/stark"><span class="nav-ic">🧠</span>판단 로그</a>
   <a href="/strategy"><span class="nav-ic">⚙️</span>전략/설정</a>
-  <a href="/training" class="active"><span class="nav-ic">🎓</span>트레이닝</a>
+  <a href="/training" class="active"><span class="nav-ic">🎓</span>학습 자료</a>
   <a href="/logs"><span class="nav-ic">📋</span>시스템 로그</a>
 </div>
 
@@ -197,14 +197,19 @@ setInterval(load, 30000);
   height:calc(56px + env(safe-area-inset-bottom)) !important;
 }
 .bottom-nav a, .nav a, .bn-item {
-  flex:1 !important; display:flex !important; flex-direction:column !important;
+  flex:1 !important; min-width:0 !important;
+  display:flex !important; flex-direction:column !important;
   align-items:center !important; justify-content:center !important;
-  gap:2px !important; padding:0 !important; margin:0 !important;
-  font-size:11px !important; font-weight:600 !important;
+  gap:2px !important; padding:0 2px !important; margin:0 !important;
+  font-size:10px !important; font-weight:600 !important;
+  letter-spacing:-0.3px !important;
+  white-space:nowrap !important;
+  overflow:hidden !important;
+  text-overflow:ellipsis !important;
   color:#94A3B8 !important; text-decoration:none !important; line-height:1.2 !important;
 }
 .bottom-nav a.active, .nav a.active, .bn-item.active { color:#F59E0B !important; }
-.bn-icon, .nav-ic { font-size:20px !important; line-height:1 !important; }
+.bn-icon, .nav-ic { font-size:18px !important; line-height:1 !important; }
 body { padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important; }
 @media (min-width: 769px) {
   .bottom-nav, .nav { display:none !important; }

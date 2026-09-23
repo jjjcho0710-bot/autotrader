@@ -89,7 +89,7 @@
   .msg-bubble { max-width: 88% !important; font-size: 13px !important; }
   .input-area { padding: 8px 10px !important; }
 
-  /* ── 대시보드 ── */
+  /* ── 홈 ── */
   .dash-content {
     flex-direction: column !important;
     padding: 10px !important;

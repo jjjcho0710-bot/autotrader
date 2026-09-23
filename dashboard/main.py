@@ -1758,7 +1758,7 @@ async def check_buy_feasibility(code: str, price: int = 0):
         token = await get_kis_token()
         if not token:
             return {"success": False, "error": "KIS 토큰 발급 실패"}
-        acct = (config.KIS_ACCOUNT_NO or "").split("-")
+        acct = (config.kis_account_no or "").split("-")
         cano = acct[0] if acct else ""
         prdt = acct[1] if len(acct) > 1 else "01"
         import ssl as _ssl
@@ -3844,7 +3844,7 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
     token = await get_kis_token(force_new=_retry)
     if not token:
         return {"success": False, "error": "KIS 토큰 없음"}
-    acct = (config.KIS_ACCOUNT_NO or "").split("-")
+    acct = (config.kis_account_no or "").split("-")
     cano = acct[0] if acct else ""
     prdt = acct[1] if len(acct) > 1 else "01"
     if config.KIS_IS_PAPER:
@@ -3872,6 +3872,11 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
         if data.get("rt_cd") == "0":
             return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
         err = data.get("msg1", "주문 실패")
+        if "모의투자" in err and ("불가" in err or "아닌" in err):
+            if config.KIS_IS_PAPER:
+                err = f"{err} (원인: KIS_IS_PAPER=True 모드이나 실전 계좌번호가 입력되었거나 모의투자 미등록 계좌입니다. Railway 환경변수에서 KIS_IS_PAPER=false로 변경하거나 올바른 모의투자 계좌를 설정하세요)"
+            else:
+                err = f"{err} (원인: KIS_IS_PAPER=False 실전 모드이나 모의투자 계좌/키가 사용되었습니다)"
         # 토큰 만료 → 강제 재발급 후 1회 재시도
         if not _retry and ("token" in err.lower() or "만료" in err):
             logger.warning(f"토큰 만료 감지 → 재발급 후 재주문 [{symbol}]")

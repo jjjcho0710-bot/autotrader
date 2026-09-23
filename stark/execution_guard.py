@@ -28,8 +28,16 @@ async def precheck(symbol: str, action: str, bot: str, *, pool: Any, redis: Any)
     if action in ("sell", "SELL"):
         try:
             if await redis.get(f"sell_fail_suppress:{symbol}"):
-                logger.info(f"⏸️ 매도 신호 무시 (당일 잔고없음 차단): {symbol}")
+                logger.info(f"⏸️ 매도 신호 무시 (매도 실패 억제 중): {symbol}")
                 return {"blocked": "sell_fail_suppress"}
+        except Exception:
+            pass
+
+    if action in ("buy", "BUY"):
+        try:
+            if await redis.get(f"buy_fail_suppress:{symbol}"):
+                logger.info(f"⏸️ 매수 신호 무시 (매수 실패 억제 중): {symbol}")
+                return {"blocked": "buy_fail_suppress"}
         except Exception:
             pass
 
@@ -115,25 +123,43 @@ async def execute(
 
     err = str(order.get("error") or "")
     disp = await code_to_name_fn(symbol)
-    # '잔고 없음' 류 실패는 재시도해도 소용없음 → 당일 재시도·재알림 차단 (반복 스팸 방지)
-    is_no_balance = any(k in err for k in ("잔고", "보유", "수량이 부족", "매도가능"))
-    suppress_key = f"sell_fail_suppress:{symbol}"
-    if is_no_balance:
+
+    if action in ("sell", "SELL"):
+        # '잔고 없음' 류 실패는 당일(6시간) 재시도·재알림 차단
+        is_no_balance = any(k in err for k in ("잔고", "보유", "수량이 부족", "매도가능"))
+        suppress_key = f"sell_fail_suppress:{symbol}"
+        ttl = 6 * 3600 if is_no_balance else 1800  # 잔고 부족은 6시간, 일반 실패(손절 실패 등)는 30분
         try:
             already = await redis.get(suppress_key)
         except Exception:
             already = None
         if not already:
             try:
-                await redis.setex(suppress_key, 6 * 3600, "1")
+                await redis.setex(suppress_key, ttl, "1")
+            except Exception:
+                pass
+            if is_no_balance:
+                await send_telegram_fn(
+                    f"❌ {disp} {action_kr} 실패\n{err}\n"
+                    f"⚠️ 시스템 보유목록과 KIS 실계좌가 불일치할 수 있어요. "
+                    f"보유목록 새로고침 후 계속 보이면 알려주세요. (당일 재시도 중단)")
+            else:
+                await send_telegram_fn(
+                    f"❌ {disp} {action_kr} 실패 (30분간 재시도 억제)\n{err}")
+    else:
+        # 매수 실패: 30분 억제 키 설정 및 1회만 알림
+        suppress_key = f"buy_fail_suppress:{symbol}"
+        try:
+            already = await redis.get(suppress_key)
+        except Exception:
+            already = None
+        if not already:
+            try:
+                await redis.setex(suppress_key, 1800, "1")
             except Exception:
                 pass
             await send_telegram_fn(
-                f"❌ {disp} {action_kr} 실패\n{err}\n"
-                f"⚠️ 시스템 보유목록과 KIS 실계좌가 불일치할 수 있어요. "
-                f"보유목록 새로고침 후 계속 보이면 알려주세요. (당일 재시도 중단)")
-    else:
-        await send_telegram_fn(f"❌ {disp} {action_kr} 실패\n{err}")
+                f"❌ {disp} {action_kr} 실패 (30분간 재시도 억제)\n{err}")
 
     await log_journal_fn(bot, symbol, name, action, strategy, reason,
                           "EXECUTE_SMALL" if is_small else "EXECUTE",

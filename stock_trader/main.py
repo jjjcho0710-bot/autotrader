@@ -555,6 +555,13 @@ class StockTrader:
 
             # 손절 -7% 도달 → 즉시 자동 매도 (주인 지시: 알아서 처리)
             if default_strategy.check_stop_loss(avg_price, cur_price):
+                suppress_key = f"sell_fail_suppress:{symbol}"
+                try:
+                    if await cache.client.get(suppress_key):
+                        logger.debug(f"⏸️ [{symbol}] 손절 실패 쿨다운 중 — 매도 스킵")
+                        continue
+                except Exception:
+                    pass
                 try:
                     nm = pos.get("name", symbol)
                     result = await self.trader.sell(symbol, cur_price, qty)
@@ -586,10 +593,14 @@ class StockTrader:
                         logger.info(f"🔴 손절 자동매도 체결 [{symbol}] {pnl_rate:+.1f}%")
                         self.positions.pop(symbol, None)
                     else:
+                        try:
+                            await cache.client.setex(suppress_key, 1800, "1")
+                        except Exception:
+                            pass
                         from common.telegram import send_stock
                         await send_stock(
                             f"⚠️ <b>{nm}({symbol}) 손절 매도 실패</b> {pnl_rate:+.1f}%\n"
-                            f"사유: {result.get('error', '알 수 없음')} — 수동 확인 필요"
+                            f"사유: {result.get('error', '알 수 없음')} — 30분간 재시도 억제"
                         )
                         logger.warning(f"손절 매도 실패 [{symbol}]: {result.get('error')}")
                 except Exception as e:

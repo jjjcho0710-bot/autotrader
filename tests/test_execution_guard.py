@@ -191,13 +191,13 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result2["success"])
         self.assertEqual(len(sent), 1)  # 여전히 1건 — 재알림 안 됨
 
-    async def test_other_failure_notifies_without_suppress_key(self):
+    async def test_buy_failure_sets_buy_suppress_key_once(self):
         pool = FakePool()
         redis = FakeRedis()
         sent = []
 
         async def kis_order(symbol, price, qty, is_buy):
-            return {"success": False, "error": "시장가 주문 거부"}
+            return {"success": False, "error": "지정가 주문 거부"}
 
         async def send_telegram(text):
             sent.append(text)
@@ -215,7 +215,49 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
             code_to_name_fn=code_to_name,
         )
         self.assertFalse(result["success"])
-        self.assertNotIn("sell_fail_suppress:005930", redis.store)
+        self.assertIn("buy_fail_suppress:005930", redis.store)
+        self.assertEqual(len(sent), 1)
+
+        # 재시도 시 이미 억제 키가 있으므로 중복 알림 방지
+        result2 = await execution_guard.execute(
+            make_signal(), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+        self.assertFalse(result2["success"])
+        self.assertEqual(len(sent), 1)
+
+    async def test_buy_fail_suppress_blocks_precheck(self):
+        redis = FakeRedis({"buy_fail_suppress:005930": "1"})
+        result = await execution_guard.precheck("005930", "buy", "stock_trader", pool=None, redis=redis)
+        self.assertEqual(result, {"blocked": "buy_fail_suppress"})
+
+    async def test_sell_other_failure_sets_sell_suppress_key(self):
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": False, "error": "모의투자 주문이 불가한 계좌입니다."}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "일동제약"
+
+        result = await execution_guard.execute(
+            make_signal(symbol="249420", action="sell"), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+        self.assertFalse(result["success"])
+        self.assertIn("sell_fail_suppress:249420", redis.store)
         self.assertEqual(len(sent), 1)
 
 

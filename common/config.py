@@ -17,15 +17,23 @@ class Config:
     REDIS_PASS: str = os.getenv("REDIS_PASS", "")
 
     # ── KIS (한국투자증권) ──
-    KIS_APP_KEY: str = os.getenv("KIS_APP_KEY", "")
-    KIS_APP_SECRET: str = os.getenv("KIS_APP_SECRET", "")
-    KIS_ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "")   # 계좌번호
+    KIS_APP_KEY: str = os.getenv("KIS_APP_KEY", "").strip()
+    KIS_APP_SECRET: str = os.getenv("KIS_APP_SECRET", "").strip()
+    KIS_ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "").strip()   # 계좌번호
     KIS_IS_PAPER: bool = os.getenv("KIS_IS_PAPER", "true").lower() == "true"  # 모의투자
 
-    # 모의투자 전용 키 (stock-trader용)
-    # 설정 시 KIS_APP_KEY/SECRET 대신 사용
-    KIS_APP_KEY_PAPER: str = os.getenv("KIS_APP_KEY_PAPER", "")
-    KIS_APP_SECRET_PAPER: str = os.getenv("KIS_APP_SECRET_PAPER", "")
+    # 모의투자 전용 키/계좌 (stock-trader용)
+    # 설정 시 KIS_APP_KEY/SECRET/ACCOUNT_NO 대신 사용
+    KIS_APP_KEY_PAPER: str = os.getenv("KIS_APP_KEY_PAPER", "").strip()
+    KIS_APP_SECRET_PAPER: str = os.getenv("KIS_APP_SECRET_PAPER", "").strip()
+    KIS_ACCOUNT_NO_PAPER: str = os.getenv("KIS_ACCOUNT_NO_PAPER", "").strip()
+
+    @property
+    def kis_account_no(self) -> str:
+        """모의투자 계좌번호 우선, 없으면 실전 계좌번호"""
+        if self.KIS_IS_PAPER and self.KIS_ACCOUNT_NO_PAPER:
+            return self.KIS_ACCOUNT_NO_PAPER
+        return self.KIS_ACCOUNT_NO
 
     @property
     def kis_app_key(self) -> str:

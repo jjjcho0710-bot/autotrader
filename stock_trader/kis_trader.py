@@ -28,7 +28,7 @@ class KISTrader:
         mode = "모의투자" if config.KIS_IS_PAPER else "실전투자"
         key = config.kis_app_key
         secret = config.kis_app_secret
-        acct = config.KIS_ACCOUNT_NO
+        acct = config.kis_account_no
         logger.info("🔑 KIS 설정: %s | 서버=%s", mode, self.BASE_URL)
         logger.info("🔑 앱키=%s | 시크릿=%s | 계좌=%s",
                     (key[:6] + "..." if key else "❌미설정"),
@@ -38,7 +38,7 @@ class KISTrader:
             logger.error("❌ KIS 앱키/시크릿 미설정 — Railway 환경변수 확인 필요"
                          " (모의투자면 KIS_APP_KEY_PAPER / KIS_APP_SECRET_PAPER)")
         if not acct:
-            logger.error("❌ KIS_ACCOUNT_NO 미설정 — 계좌번호 확인 필요")
+            logger.error("❌ KIS 계좌번호 미설정 — 계좌번호 확인 필요 (config.kis_account_no)")
 
         await self._get_token()
         if self.access_token:
@@ -102,13 +102,13 @@ class KISTrader:
     @property
     def _cano(self) -> str:
         """계좌번호 앞자리"""
-        parts = config.KIS_ACCOUNT_NO.split("-")
-        return parts[0] if parts else config.KIS_ACCOUNT_NO
+        parts = config.kis_account_no.split("-")
+        return parts[0] if parts else config.kis_account_no
 
     @property
     def _acnt_prdt_cd(self) -> str:
         """계좌번호 뒷자리 (상품코드)"""
-        parts = config.KIS_ACCOUNT_NO.split("-")
+        parts = config.kis_account_no.split("-")
         return parts[1] if len(parts) > 1 else "01"
 
     def _headers(self, tr_id: str) -> dict:

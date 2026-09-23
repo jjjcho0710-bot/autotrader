@@ -364,10 +364,33 @@ class StockTrader:
                                     from common.telegram import send_stock
                                     nm = pos.get("name", symbol)
                                     if pnl_rate <= -7.0:
-                                        msg = (
-                                            f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
-                                            f"시스템이 즉시 자동 손절 매도 처리 중입니다."
-                                        )
+                                        suppress_key = f"sell_fail_suppress:{symbol}"
+                                        suppress_raw = None
+                                        try:
+                                            suppress_raw = await cache.client.get(suppress_key)
+                                        except Exception:
+                                            pass
+
+                                        if suppress_raw:
+                                            suppress_reason = "손절 매도 실패 재시도 억제 중"
+                                            try:
+                                                parsed = json.loads(suppress_raw)
+                                                if isinstance(parsed, dict) and "reason" in parsed:
+                                                    suppress_reason = parsed["reason"]
+                                            except Exception:
+                                                if isinstance(suppress_raw, str) and ":" in suppress_raw:
+                                                    suppress_reason = suppress_raw.split(":", 1)[1]
+
+                                            msg = (
+                                                f"⏳ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
+                                                f"손절 재시도 대기 중 (원인: {suppress_reason})\n"
+                                                f"※ 30분 쿨다운 동안 재시도가 억제됩니다."
+                                            )
+                                        else:
+                                            msg = (
+                                                f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
+                                                f"시스템이 즉시 자동 손절 매도 처리 중입니다."
+                                            )
                                     else:
                                         msg = (
                                             f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
@@ -593,16 +616,18 @@ class StockTrader:
                         logger.info(f"🔴 손절 자동매도 체결 [{symbol}] {pnl_rate:+.1f}%")
                         self.positions.pop(symbol, None)
                     else:
+                        err_msg = str(result.get('error', '알 수 없음'))
                         try:
-                            await cache.client.setex(suppress_key, 1800, "1")
+                            suppress_val = json.dumps({"reason": err_msg, "ts": datetime.now().timestamp()})
+                            await cache.client.setex(suppress_key, 1800, suppress_val)
                         except Exception:
                             pass
                         from common.telegram import send_stock
                         await send_stock(
                             f"⚠️ <b>{nm}({symbol}) 손절 매도 실패</b> {pnl_rate:+.1f}%\n"
-                            f"사유: {result.get('error', '알 수 없음')} — 30분간 재시도 억제"
+                            f"사유: {err_msg} — 30분간 재시도 억제"
                         )
-                        logger.warning(f"손절 매도 실패 [{symbol}]: {result.get('error')}")
+                        logger.warning(f"손절 매도 실패 [{symbol}]: {err_msg}")
                 except Exception as e:
                     logger.warning(f"손절 자동매도 오류 [{symbol}]: {e}")
                 continue

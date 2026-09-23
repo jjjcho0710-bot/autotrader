@@ -1,7 +1,7 @@
 {
   "name": "AutoTrader",
   "short_name": "AutoTrader",
-  "description": "AI 자동매매 시스템 — 자비스",
+  "description": "AI 자동매매 시스템 — 한강뷰매니저",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0a0e14",

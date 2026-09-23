@@ -3484,7 +3484,7 @@ async def get_portfolio_context() -> str:
     try:
         # 주식 포지션
         stock_pos = await get_stock_positions()
-        if stock_pos.get("success"):
+        if stock_pos.get("success") and stock_pos.get("account"):
             positions = stock_pos.get("data") or []
             account = stock_pos.get("account", {})
             ctx_parts.append(f"\n[주식 계좌]")
@@ -3492,6 +3492,8 @@ async def get_portfolio_context() -> str:
             ctx_parts.append(f"주식평가금액: {account.get('stock_eval', 0):,}원")
             ctx_parts.append(f"예수금: {account.get('cash', 0):,}원")
             ctx_parts.append(f"평가손익: {account.get('pnl', 0):+,}원 ({account.get('pnl_rate', 0):+.2f}%)")
+            if stock_pos.get("stale"):
+                ctx_parts.append(f"(⚠️ 실시간 잔고 조회 지연 — {stock_pos.get('error', '이전 스냅샷 표시 중')})")
             if positions:
                 ctx_parts.append(f"보유종목 {len(positions)}개:")
                 for p in positions:
@@ -3511,9 +3513,16 @@ async def get_portfolio_context() -> str:
             else:
                 ctx_parts.append("보유종목: 없음 (신규 매수 가능)")
         else:
-            ctx_parts.append(f"[주식 계좌 조회 실패: {stock_pos.get('error', '알 수 없음')}]")
+            err = stock_pos.get('error', '알 수 없음') if isinstance(stock_pos, dict) else '조회 불가'
+            ctx_parts.append(
+                f"\n[주식 계좌]\n예수금 조회 실패(계좌 확인 필요): {err}\n"
+                f"※ KIS 실시간 잔고 조회 실패 상태입니다. 예수금이 0원인 것이 아니므로, 신호 본문의 예수금 정보를 참고하고 잔고 0원을 이유로 매수를 스킵하지 마십시오."
+            )
     except Exception as e:
-        ctx_parts.append(f"[주식 데이터 조회 실패: {e}]")
+        ctx_parts.append(
+            f"\n[주식 계좌]\n예수금 조회 실패(계좌 확인 필요): {e}\n"
+            f"※ KIS 실시간 잔고 조회 실패 상태입니다. 예수금이 0원인 것이 아니므로, 신호 본문의 예수금 정보를 참고하고 잔고 0원을 이유로 매수를 스킵하지 마십시오."
+        )
 
     try:
         # 코인 포지션
@@ -4649,6 +4658,21 @@ async def _get_stock_positions_raw():
                 timeout=http.ClientTimeout(total=10),
             )
             data = await res.json()
+            if res.status != 200 or data.get("rt_cd") != "0":
+                err_msg = data.get("msg1") or data.get("msg_cd") or f"KIS 잔고 조회 실패 (HTTP {res.status})"
+                logger.warning(f"⚠️ KIS 잔고 조회 실패: {err_msg}")
+                try:
+                    snap = await redis_client.get("positions:last_ok")
+                    if snap:
+                        d = json.loads(snap if isinstance(snap, str) else snap.decode())
+                        if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
+                            d["stale"] = True
+                            d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
+                            return d
+                except Exception:
+                    pass
+                return {"success": False, "error": err_msg, "data": []}
+
             positions = []
             for row in data.get("output1", []):
                 qty = int(row.get("hldg_qty", 0))
@@ -4671,6 +4695,11 @@ async def _get_stock_positions_raw():
             # output2: 계좌 총평가 요약
             out2 = data.get("output2", [{}])
             summary = out2[0] if out2 else {}
+            if not summary:
+                err_msg = data.get("msg1") or "KIS 잔고 응답(output2) 비어있음"
+                logger.warning(f"⚠️ KIS 잔고 응답 이상: {err_msg}")
+                return {"success": False, "error": err_msg, "data": []}
+
             total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
             stock_eval = int(summary.get("evlu_amt_smtl_amt", 0) or 0)  # 평가금액합계
             # 예수금: D+2 정산 예수금(실제 가용) 우선 — 매수해도 dnca_tot_amt는
@@ -4701,14 +4730,15 @@ async def _get_stock_positions_raw():
                 pass
             return result
     except Exception as e:
-        # 실패 시 마지막 성공 스냅샷으로 폴백 (계좌 데이터가 0원으로 뒤집히는 것 방지)
+        # 실패 시 마지막 성공 스냅샷으로 폴백 (유효한 데이터가 있을 때만)
         try:
             snap = await redis_client.get("positions:last_ok")
             if snap:
                 d = json.loads(snap if isinstance(snap, str) else snap.decode())
-                d["stale"] = True
-                d["error"] = f"KIS 조회 실패({str(e)[:40]}) — 마지막 확인 데이터 표시"
-                return d
+                if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
+                    d["stale"] = True
+                    d["error"] = f"KIS 조회 실패({str(e)[:40]}) — 마지막 확인 데이터 표시"
+                    return d
         except Exception:
             pass
         return {"success": False, "error": str(e), "data": []}

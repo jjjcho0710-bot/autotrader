@@ -202,7 +202,7 @@ rail();
 window.regInterval(rail, 20000);
 window.jOpenChart=function(sym,name,avg){
   if(window.openChart){window.openChart(sym,name,avg);return;}
-  // home 미방문 시: 대시보드로 이동 후 자동 오픈
+  // home 미방문 시: 홈으로 이동 후 자동 오픈
   sessionStorage.setItem('open_chart_on_home', JSON.stringify({sym,name,avg}));
   go('home');
 };

@@ -4407,7 +4407,7 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None, repl
         pass
     except Exception:
         pass
-    _token = token or config.TELEGRAM_TOKEN
+    _token = token or config.STARK_BOT_TOKEN or config.TELEGRAM_TOKEN
     cid = chat_id or config.TELEGRAM_CHAT_ID
     if not _token or not cid:
         return
@@ -5524,8 +5524,8 @@ async def jarvis_signal(request: Request):
             return {"success": True, "executed": False, "blocked": guard["blocked"]}
 
         action_kr = "매수" if action == "buy" else "매도"
-        token = config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
-        chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
+        token = config.STARK_BOT_TOKEN or config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
+        chat_id = config.TELEGRAM_CHAT_ID or config.JARVIS_ANALYST_CHAT_ID
 
         signal = {"bot": bot, "action": action, "symbol": symbol, "name": name,
                   "price": price, "qty": qty, "strategy": strategy, "reason": reason}

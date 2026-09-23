@@ -31,23 +31,24 @@ async def _send(token: str, chat_id: str, text: str):
         logger.error(f"텔레그램 전송 실패: {e}")
 
 
-# ── 기본 (기존 TELEGRAM_TOKEN 사용) ──────────────────
+# ── 기본 (STARK_BOT_TOKEN 최우선, 없으면 TELEGRAM_TOKEN) ──
 async def send_message(text: str):
-    await _send(config.TELEGRAM_TOKEN, config.TELEGRAM_CHAT_ID, text)
+    token = config.STARK_BOT_TOKEN or config.TELEGRAM_TOKEN
+    await _send(token, config.TELEGRAM_CHAT_ID, text)
 
 
-# ── 주식봇 전송 ───────────────────────────────────────
+# ── 주식봇 전송 (STARK_BOT_TOKEN 최우선) ───────────────
 async def send_stock(text: str):
-    """주식봇으로 전송"""
-    token   = config.STOCK_BOT_TOKEN
+    """주식봇 전송 (한강뷰매니저 STARK_BOT_TOKEN 최우선 통합)"""
+    token   = config.STARK_BOT_TOKEN or config.STOCK_BOT_TOKEN or config.TELEGRAM_TOKEN
     chat_id = config.STOCK_CHAT_ID or config.TELEGRAM_CHAT_ID
     await _send(token, chat_id, text)
 
 
-# ── Jarvis 전송 ───────────────────────────────────────
+# ── Jarvis/한강뷰매니저 전송 (STARK_BOT_TOKEN 최우선) ──
 async def send_jarvis(text: str):
-    """TradeJarvis 봇으로 전송"""
-    token   = config.JARVIS_ANALYST_TOKEN
+    """STARK 한강뷰매니저 봇으로 전송"""
+    token   = config.STARK_BOT_TOKEN or config.JARVIS_ANALYST_TOKEN or config.TELEGRAM_TOKEN
     chat_id = config.JARVIS_ANALYST_CHAT_ID or config.TELEGRAM_CHAT_ID
     await _send(token, chat_id, text)
 

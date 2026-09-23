@@ -4582,7 +4582,7 @@ async def debug_stock_account():
                 "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
                 "custtype": "P",
             }
-            acct = config.KIS_ACCOUNT_NO.replace("-", "")
+            acct = config.kis_account_no.replace("-", "")
             params = {
                 "CANO": acct[:8],
                 "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
@@ -4634,7 +4634,7 @@ async def _get_stock_positions_raw():
                 "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
                 "custtype": "P",
             }
-            acct = config.KIS_ACCOUNT_NO.replace("-", "")
+            acct = config.kis_account_no.replace("-", "")
             params = {
                 "CANO": acct[:8],
                 "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
@@ -4737,7 +4737,7 @@ async def get_stock_balance():
                 "tr_id": "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R",
                 "custtype": "P",
             }
-            acct = config.KIS_ACCOUNT_NO.replace("-", "")
+            acct = config.kis_account_no.replace("-", "")
             params = {
                 "CANO": acct[:8],
                 "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",

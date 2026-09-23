@@ -2188,15 +2188,6 @@ async def home_page():
     with open("static/home.html", encoding="utf-8") as f:
         return f.read()
 
-@app.get("/jarvis", response_class=HTMLResponse)
-async def jarvis_page():
-    with open("static/jarvis.html", encoding="utf-8") as f:
-        return f.read()
-
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    with open("static/dashboard-C.html", encoding="utf-8") as f:
-        return f.read()
 
 @app.get("/stock", response_class=HTMLResponse)
 async def stock():
@@ -2241,27 +2232,7 @@ async def stark_html():
     with open("static/stark.html", encoding="utf-8") as f:
         return f.read()
 
-@app.get("/dashboard-C.html", response_class=HTMLResponse)
-async def dashboard_html():
-    with open("static/dashboard-C.html", encoding="utf-8") as f:
-        return f.read()
-
-@app.get("/jarvis.html", response_class=HTMLResponse)
-async def jarvis_html():
-    with open("static/jarvis.html", encoding="utf-8") as f:
-        return f.read()
-
 # ── API 엔드포인트 ──────────────────────────────────────
-
-@app.get("/analysis", response_class=HTMLResponse)
-async def analysis_page():
-    with open("/app/dashboard/static/analysis.html") as f:
-        return f.read()
-
-@app.get("/analysis.html", response_class=HTMLResponse)
-async def analysis_page2():
-    with open("/app/dashboard/static/analysis.html") as f:
-        return f.read()
 
 # ── ML / 백테스트 API ──────────────────────────────────
 @app.get("/api/ml/indicators/{symbol}")
@@ -5115,12 +5086,6 @@ async def pc_embed_page(page: str):
 @app.get("/pc", response_class=HTMLResponse)
 async def pc_page():
     with open("static/pc/index.html", encoding="utf-8") as f:
-        return f.read()
-
-
-@app.get("/desk", response_class=HTMLResponse)
-async def desk_page():
-    with open("static/desk.html", encoding="utf-8") as f:
         return f.read()
 
 

@@ -4989,7 +4989,10 @@ async def _invalidate_strategy_cache():
 
 @app.post("/api/strategies/update")
 async def update_strategy(body: dict):
-    await _invalidate_strategy_cache()
+    return await _update_strategy_raw(body)
+
+
+async def _update_strategy_raw(body: dict):
     """전략 ON/OFF + 파라미터 저장"""
     try:
         import json
@@ -4997,6 +5000,14 @@ async def update_strategy(body: dict):
         name    = body.get("name")
         active  = body.get("is_active", False)
         params  = body.get("params", {})
+
+        # 최대 보유 종목수: 1~100 정수만 저장 (범위 밖이면 저장하지 않고 사유 반환)
+        sync_max_positions = bot == "stock_trader" and isinstance(params, dict) and "max_positions" in params
+        if sync_max_positions:
+            ok, v = setting_handler.validate_max_positions(params["max_positions"])
+            if not ok:
+                return {"success": False, "error": v}
+            params["max_positions"] = v
 
         async with db_pool.acquire() as conn:
             await conn.execute("""
@@ -5010,6 +5021,14 @@ async def update_strategy(body: dict):
                 "bot": bot, "name": name, "is_active": active, "params": params
             }))
 
+        # 신호 루프(첫 활성 전략)와 execution_guard(활성 전략 1건)가 서로 다른 행을 읽어도
+        # 한도가 어긋나지 않도록 stock_trader 전 전략에 같은 값을 맞춘다 (redis 알림 포함)
+        if sync_max_positions:
+            await setting_handler.apply_strategy_settings(
+                db_pool, redis_client, {"max_positions": params["max_positions"]})
+
+        # 저장 이후에 캐시를 비워야 화면이 방금 저장한 값을 바로 다시 읽는다
+        await _invalidate_strategy_cache()
         return {"success": True, "message": f"{name} 전략 {'활성화' if active else '비활성화'} 완료"}
     except Exception as e:
         return {"success": False, "error": str(e)}

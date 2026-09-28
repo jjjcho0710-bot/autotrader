@@ -39,6 +39,10 @@ body{display:flex;flex-direction:column;min-height:100vh;padding-bottom:70px;}
 .param-label{font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;}
 .param-input{background:var(--input);border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--text);font-size:14px;font-weight:600;outline:none;width:100%;}
 .param-input:focus{border-color:var(--accent);}
+.param-wide{grid-column:1 / -1;}
+.param-hint{font-size:11px;color:var(--muted);}
+.param-msg{font-size:12px;color:#ef4444;font-weight:600;min-height:0;}
+.param-msg:empty{display:none;}
 
 .strat-footer{padding:10px 14px 14px;display:flex;justify-content:space-between;align-items:center;}
 .strat-stats{font-size:11px;color:var(--muted);}
@@ -101,16 +105,45 @@ async function toggleStrategy(bot, name, active){
   }catch(e){showToast('오류 발생');}
 }
 
-async function saveParams(bot, name, params){
+// 최대 보유 종목수: 1~100 정수만 허용. 반환 {ok, value|error}
+function validateMaxPositions(raw){
+  const t=String(raw==null?'':raw).trim();
+  if(!/^\d+$/.test(t))return {ok:false,error:'최대 보유 종목수는 1~100 사이의 정수만 입력할 수 있습니다.'};
+  const n=parseInt(t,10);
+  if(n<1||n>100)return {ok:false,error:'최대 보유 종목수는 1~100 사이여야 합니다.'};
+  return {ok:true,value:n};
+}
+
+async function saveParams(bot, name, isActive, params){
   try{
-    await fetch(`${API}/api/strategy/params`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bot,name,params})});
+    const r=await fetch(`${API}/api/strategies/update`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bot,name,is_active:isActive,params})});
+    const d=await r.json();
+    if(!d.success){showToast(d.error||'저장 실패');return false;}
     showToast('저장 완료!');
-  }catch(e){showToast('오류 발생');}
+    return true;
+  }catch(e){showToast('오류 발생');return false;}
+}
+
+async function onSaveClick(btn){
+  const grid=btn.closest('.strat-card').querySelector('.strat-params');
+  const bot=grid.dataset.bot,name=grid.dataset.name,isActive=grid.dataset.active==='1';
+  const msg=grid.querySelector('.param-msg');
+  msg.textContent='';
+  const params={};
+  for(const i of grid.querySelectorAll('.param-input')){
+    if(i.dataset.key==='max_positions'){
+      const v=validateMaxPositions(i.value);
+      if(!v.ok){msg.textContent=v.error;showToast('저장하지 않았습니다');return;}  // 범위 밖이면 저장 안 함
+      params.max_positions=v.value;
+    }else params[i.dataset.key]=parseFloat(i.value)||i.value;
+  }
+  if(await saveParams(bot,name,isActive,params))loadStrategies();
 }
 
 function renderStrategy(s){
   const params=typeof s.params==='string'?JSON.parse(s.params):s.params||{};
-  const paramKeys=Object.keys(params).filter(k=>!['name','bot'].includes(k));
+  const paramKeys=Object.keys(params).filter(k=>!['name','bot','max_positions'].includes(k));
+  const maxPos=params.max_positions!=null?params.max_positions:5;  // 서버 기본값과 동일
   const statusText=s.is_active?'신호 감지 중':'대기 중';
   return `<div class="strat-card">
     <div class="strat-card-header">
@@ -126,24 +159,23 @@ function renderStrategy(s){
         <span class="${s.is_active?'on-label':'off-label'}">${s.is_active?'ON':'OFF'}</span>
       </div>
     </div>
-    <div class="strat-params" data-bot="${s.bot}" data-name="${s.name}">
+    <div class="strat-params" data-bot="${s.bot}" data-name="${s.name}" data-active="${s.is_active?'1':'0'}">
       ${paramKeys.map(k=>`
         <div class="param-item">
           <span class="param-label">${k.toUpperCase()}</span>
           <input class="param-input" type="number" value="${params[k]}" data-key="${k}" step="any">
         </div>
       `).join('')}
+      <div class="param-item param-wide">
+        <span class="param-label">최대 보유 종목수</span>
+        <input class="param-input" type="number" value="${maxPos}" data-key="max_positions" min="1" max="100" step="1" inputmode="numeric">
+        <span class="param-hint">1~100 정수 · 저장하면 신호 루프·주문 직전 검사에 몇 초 안에 반영됩니다</span>
+        <span class="param-msg"></span>
+      </div>
     </div>
     <div class="strat-footer">
       <span class="strat-stats">30일 수익률 - · 승률 - · 총 체결 -</span>
-      <button class="save-btn" onclick="(function(){
-        const grid=this.closest('.strat-card').querySelector('.strat-params');
-        const bot=grid.dataset.bot,name=grid.dataset.name;
-        const inputs=grid.querySelectorAll('.param-input');
-        const params={};
-        inputs.forEach(i=>params[i.dataset.key]=parseFloat(i.value)||i.value);
-        saveParams(bot,name,params);
-      }).call(this)">파라미터 저장</button>
+      <button class="save-btn" onclick="onSaveClick(this)">파라미터 저장</button>
     </div>
   </div>`;
 }

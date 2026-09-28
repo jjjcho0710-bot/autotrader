@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 설치
+        run: pip install pytest -r dashboard/requirements.txt
+
+      - name: 문법 검사
+        run: python -m compileall -q .
+
+      - name: 테스트
+        run: python -m pytest tests -q
+
+      - name: 임시 파일 검사
+        run: |
+          if ls *.py >/dev/null 2>&1; then
+            echo "루트에 .py 파일이 있음 (임시 스크립트 의심):"; ls *.py; exit 1
+          fi
+
+      - name: Dockerfile COPY 검사
+        run: |
+          python - <<'PY'
+          import re, sys, pathlib
+
+          # 이전부터 있던 알려진 예외 (별도 수정 예정). 새로 생기는 누락만 실패 처리
+          KNOWN = {("Dockerfile.dashboard", "data_collector"), ("Dockerfile.dashboard", "stock_trader")}
+
+          root = pathlib.Path(".")
+          skip = {"tests", "docs", "migrations"}
+          pkgs = {p.name for p in root.iterdir()
+                  if p.is_dir() and not p.name.startswith(".") and p.name not in skip
+                  and any(p.rglob("*.py"))}
+          bad = False
+          for df in sorted(root.glob("Dockerfile.*")):
+              copied = {c.strip("/").lstrip("./").split("/")[0]
+                        for c in re.findall(r"^COPY\s+(\S+)", df.read_text(), re.M)}
+              for d in sorted(copied & pkgs):
+                  for py in (root / d).rglob("*.py"):
+                      for m in re.finditer(r"^\s*(?:from|import)\s+(\w+)", py.read_text(errors="ignore"), re.M):
+                          need = m.group(1)
+                          if need in pkgs and need != d and need not in copied:
+                              if (df.name, need) in KNOWN:
+                                  continue
+                              print(f"FAIL {df.name}: {py} 가 '{need}' 를 import 하는데 COPY {need}/ 가 없음")
+                              bad = True
+          sys.exit(1 if bad else 0)
+          PY

@@ -14,10 +14,84 @@ STARK_PLAN 4번 원칙("판단(AI)과 실행(룰)을 코드 레벨로 분리")�
 LLM을 호출하지 않는다. execute()는 decision_engine이 이미 내린 판단(decision dict)을
 그대로 신뢰하고 집행만 담당한다.
 """
+import asyncio
+import json
 import logging
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("stark.execution_guard")
+
+
+class AsyncRLock:
+    """비동기 재진입 가능 Lock. 동일 태스크 내 중첩 진입을 허용하고 다른 태스크는 대기시킨다."""
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._owner: Optional[asyncio.Task] = None
+        self._count = 0
+
+    async def acquire(self) -> bool:
+        me = asyncio.current_task()
+        if self._owner == me:
+            self._count += 1
+            return True
+        await self._lock.acquire()
+        self._owner = me
+        self._count = 1
+        return True
+
+    async def release(self) -> None:
+        me = asyncio.current_task()
+        if self._owner != me:
+            raise RuntimeError("Cannot release un-acquired lock")
+        self._count -= 1
+        if self._count == 0:
+            self._owner = None
+            self._lock.release()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.release()
+
+
+_buy_lock: Optional[AsyncRLock] = None
+
+
+def get_buy_lock() -> AsyncRLock:
+    global _buy_lock
+    if _buy_lock is None:
+        _buy_lock = AsyncRLock()
+    return _buy_lock
+
+
+def reset_buy_lock() -> None:
+    """테스트 또는 이벤트루프 격리용 lock 리셋"""
+    global _buy_lock
+    _buy_lock = None
+
+
+async def _get_max_positions(pool: Any, default: int = 5) -> int:
+    """strategy_config에서 stock_trader의 max_positions 조회 (실패 시 기본값 반환)."""
+    if pool is None:
+        return default
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT params FROM strategy_config
+                WHERE bot='stock_trader' AND is_active=TRUE
+                LIMIT 1
+            """)
+            if row and row.get("params"):
+                params = row["params"]
+                if isinstance(params, str):
+                    params = json.loads(params)
+                if isinstance(params, dict) and "max_positions" in params:
+                    return int(params["max_positions"])
+    except Exception as e:
+        logger.warning(f"max_positions 조회 실패 (기본값 {default} 사용): {e}")
+    return default
 
 
 async def precheck(symbol: str, action: str, bot: str, *, pool: Any, redis: Any) -> Optional[Dict[str, str]]:
@@ -72,6 +146,9 @@ async def execute(
     log_journal_fn,
     save_trade_memory_fn,
     code_to_name_fn,
+    get_positions_fn: Optional[Any] = None,
+    max_positions: Optional[int] = None,
+    invalidate_cache_fn: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """decision_engine이 EXECUTE/EXECUTE_SMALL로 승인한 신호를 실제 KIS 주문으로 집행.
     signal["qty"]는 호출부가 이미 EXECUTE_SMALL 절반 수량 보정을 마친 값이어야 한다
@@ -87,39 +164,176 @@ async def execute(
     reason = signal.get("reason", "")
     is_small = decision.get("is_small", False)
     reply = decision.get("reply", "")
+    is_buy = action in ("buy", "BUY")
 
-    order = await kis_order_fn(symbol, int(price), int(qty), action in ("buy", "BUY"))
+    # (2) 매수 판단과 주문을 하나의 Lock으로 직렬화
+    async with get_buy_lock():
+        # (1) 매수 경로에서 주문 직전에 KIS 실제 보유 종목 수를 다시 조회 (실패 시 fail-closed)
+        if is_buy and bot == "stock_trader" and get_positions_fn is not None:
+            is_check_failed = False
+            positions = []
+            try:
+                pos_res = await get_positions_fn()
+                if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
+                    is_check_failed = True
+                else:
+                    positions = pos_res.get("data") or []
+            except Exception as e:
+                logger.error(f"보유 종목수 조회 예외(fail-closed 적용): {e}")
+                is_check_failed = True
 
-    if order.get("success"):
-        if pool:
-            async with pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy)
+            # (1) fail-closed: 확인 불가 시 주문하지 않고 SKIP 처리
+            if is_check_failed:
+                skip_reason = "보유 종목수 확인 불가"
+                logger.info(f"⏭️ {skip_reason} — 매수 SKIP: {symbol} ({name})")
 
-        emoji = "📈" if action == "buy" else "📉"
-        msg = (
-            f"{emoji} <b>{name} {action_kr} 완료</b>\n"
-            f"가격: {price:,}원 × {qty}주\n"
-            f"금액: {price*qty:,}원\n"
-            f"전략: {strategy}\n"
-            f"Jarvis 판단: {reply[:80]}"
-        )
-        await send_telegram_fn(msg)
-        logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")
-        try:
-            for k in ("cache:positions:stock", "cache:account:stock"):
-                await redis.delete(k)
-        except Exception:
-            pass
+                from stark.decision_logger import log_decision
+                await log_decision(
+                    pool, symbol, "SKIP",
+                    name=name,
+                    confidence=decision.get("confidence", 0.0),
+                    reason=skip_reason,
+                    rationale="실행 레이어 안전장치: KIS 보유 종목수 확인 실패/예외/stale 상태로 매수 차단(fail-closed)",
+                    strategy=strategy,
+                    source="execution_guard",
+                    executed=False,
+                    order_success=None,
+                    price=float(price),
+                    quantity=float(qty),
+                )
 
-        await save_trade_memory_fn(symbol=symbol, action=action_kr, price=float(price),
-                                    amount=float(price * qty), result="성공", reason=reason)
-        await log_journal_fn(bot, symbol, name, action, strategy, reason,
-                              "EXECUTE_SMALL" if is_small else "EXECUTE",
-                              reply, True, True, price, qty)
-        return {"success": True, "executed": True, "jarvis_reply": reply}
+                if log_journal_fn:
+                    await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                                         "SKIP", skip_reason, False, False, price, qty)
+
+                return {
+                    "success": True,
+                    "executed": False,
+                    "skipped": True,
+                    "blocked": "positions_check_failed",
+                    "reason": skip_reason,
+                    "jarvis_reply": reply,
+                }
+
+            # (2) 접수됐지만 잔고에 아직 안 나타난 in-flight 매수 추적 및 합집합 계산
+            kis_held_symbols = {
+                p.get("symbol") for p in positions
+                if isinstance(p, dict) and p.get("symbol")
+            }
+
+            inflight_symbols = set()
+            if redis is not None:
+                try:
+                    keys = await redis.keys("stark:inflight_buy:*")
+                    for k in (keys or []):
+                        k_str = k.decode() if isinstance(k, bytes) else str(k)
+                        inflight_symbols.add(k_str.split(":")[-1])
+                except Exception as e:
+                    logger.warning(f"inflight buy keys 조회 실패: {e}")
+
+            # KIS 잔고에 나타나면 in-flight 기록 삭제
+            if redis is not None and inflight_symbols and kis_held_symbols:
+                resolved = inflight_symbols & kis_held_symbols
+                for s in resolved:
+                    try:
+                        await redis.delete(f"stark:inflight_buy:{s}")
+                    except Exception:
+                        pass
+                    inflight_symbols.discard(s)
+
+            # 한도 계산: KIS 보유 종목과 in-flight 기록의 합집합
+            total_held_symbols = kis_held_symbols | inflight_symbols
+            is_already_held = symbol in total_held_symbols
+
+            limit = max_positions
+            if limit is None:
+                limit = signal.get("max_positions")
+            if limit is None:
+                limit = await _get_max_positions(pool, default=5)
+
+            # 신규 종목 매수인데 합집합이 max_positions 이상이면 SKIP
+            if not is_already_held and len(total_held_symbols) >= limit:
+                skip_reason = f"최대 보유 종목수 한도 초과 ({len(total_held_symbols)}/{limit})"
+                logger.info(f"⏭️ {skip_reason} — 매수 SKIP: {symbol} ({name})")
+
+                # (3) stark_decisions에 SKIP과 사유로 기록 (텔레그램 알림은 보내지 않음)
+                from stark.decision_logger import log_decision
+                await log_decision(
+                    pool, symbol, "SKIP",
+                    name=name,
+                    confidence=decision.get("confidence", 0.0),
+                    reason=skip_reason,
+                    rationale=f"실행 레이어 안전장치: 최대 보유 종목수({limit}) 도달로 인한 매수 차단",
+                    strategy=strategy,
+                    source="execution_guard",
+                    executed=False,
+                    order_success=None,
+                    price=float(price),
+                    quantity=float(qty),
+                )
+
+                # 매매일지 기록 (텔레그램 알림은 호출하지 않음)
+                if log_journal_fn:
+                    await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                                         "SKIP", skip_reason, False, False, price, qty)
+
+                return {
+                    "success": True,
+                    "executed": False,
+                    "skipped": True,
+                    "blocked": "max_positions_limit",
+                    "reason": skip_reason,
+                    "jarvis_reply": reply,
+                }
+
+        order = await kis_order_fn(symbol, int(price), int(qty), is_buy)
+
+        if order.get("success"):
+            # (2) 주문 접수 성공 즉시 해당 종목을 Redis(TTL 120초)에 in-flight buy로 기록
+            if is_buy and bot == "stock_trader" and redis is not None:
+                try:
+                    await redis.setex(f"stark:inflight_buy:{symbol}", 120, "1")
+                except Exception as e:
+                    logger.warning(f"inflight_buy 등록 실패: {e}")
+            if pool:
+                async with pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                    """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy)
+
+            emoji = "📈" if action == "buy" else "📉"
+            msg = (
+                f"{emoji} <b>{name} {action_kr} 완료</b>\n"
+                f"가격: {price:,}원 × {qty}주\n"
+                f"금액: {price*qty:,}원\n"
+                f"전략: {strategy}\n"
+                f"Jarvis 판단: {reply[:80]}"
+            )
+            await send_telegram_fn(msg)
+            logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")
+            try:
+                for k in ("cache:positions:stock", "cache:account:stock"):
+                    await redis.delete(k)
+            except Exception:
+                pass
+
+            if invalidate_cache_fn:
+                try:
+                    if asyncio.iscoroutinefunction(invalidate_cache_fn):
+                        await invalidate_cache_fn()
+                    else:
+                        invalidate_cache_fn()
+                except Exception:
+                    pass
+
+            if save_trade_memory_fn:
+                await save_trade_memory_fn(symbol=symbol, action=action_kr, price=float(price),
+                                            amount=float(price * qty), result="성공", reason=reason)
+            await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                                  "EXECUTE_SMALL" if is_small else "EXECUTE",
+                                  reply, True, True, price, qty)
+            return {"success": True, "executed": True, "jarvis_reply": reply}
 
     err = str(order.get("error") or "")
     disp = await code_to_name_fn(symbol)

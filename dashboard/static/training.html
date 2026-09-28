@@ -104,7 +104,7 @@
   <div class="section-title">📚 학습 라이브러리 <span class="badge" id="knCount">0</span></div>
   <div id="knCore"></div>
   <div style="font-size:11px;color:var(--dim);margin:10px 0 6px;">전체 학습 원칙 (최근순)</div>
-  <div id="knList"><div class="empty">아직 학습한 자료가 없어요 — 자비스에게 URL과 함께 '이거 배워'</div></div>
+  <div id="knList"><div class="empty">아직 학습한 자료가 없어요 — 한강뷰매니저에게 URL과 함께 '이거 배워'</div></div>
 </div>
 
 <div class="section">
@@ -113,7 +113,7 @@
 </div>
 
 <div class="section">
-  <div class="stitle">누적 교훈 (자비스가 배운 것)</div>
+  <div class="stitle">누적 교훈 (한강뷰매니저가 배운 것)</div>
   <div id="lessons"><div class="empty">아직 교훈이 없어요</div></div>
 </div>
 
@@ -256,7 +256,7 @@ async function loadSources(){
     if(!j.success){ el.innerHTML = '<div class="empty">불러오기 실패</div>'; return; }
     const list = j.data || [];
     document.getElementById('srcCount').textContent = list.length;
-    if(!list.length){ el.innerHTML = '<div class="empty">아직 학습한 원문이 없어요 — 자비스에게 URL과 함께 \'이거 배워\'</div>'; return; }
+    if(!list.length){ el.innerHTML = '<div class="empty">아직 학습한 원문이 없어요 — 한강뷰매니저에게 URL과 함께 \'이거 배워\'</div>'; return; }
     el.innerHTML = list.map(s => {
       const t = s.created_at ? new Date(s.created_at) : null;
       const ts = t ? `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}` : '';

@@ -269,20 +269,19 @@ def _scrub_kis_msg(msg) -> str:
     return _re.sub(r"\d{8,}", "********", text)
 
 
-async def _kis_daily_get(sess, base: str, token: str, symbol: str, start: str, end: str) -> dict:
-    """일봉 API 1회 호출. 동시 호출은 _KIS_QUOTE_SEM으로 제한하고,
+async def _kis_quote_get(sess, base: str, token: str, path: str, tr_id: str, params: dict,
+                         symbol: str, label: str) -> dict:
+    """KIS 시세 조회 1회 (일봉·분봉 공용). 동시 호출은 _KIS_QUOTE_SEM으로 제한하고,
     msg1에 '초당'이 있으면 0.7초 뒤 최대 2회 재시도 (대기 중에는 세마포어를 반납)"""
     data = {}
     for attempt in range(_KIS_RATE_LIMIT_RETRIES + 1):
         async with _KIS_QUOTE_SEM:
             r = await sess.get(
-                f"{base}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                f"{base}{path}",
                 headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
                          "appsecret": config.kis_app_secret,
-                         "tr_id": "FHKST03010100", "custtype": "P"},
-                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
-                        "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
-                        "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+                         "tr_id": tr_id, "custtype": "P"},
+                params=params,
                 timeout=_aiohttp.ClientTimeout(total=8))
             data = await r.json()
         if not isinstance(data, dict):
@@ -290,9 +289,20 @@ async def _kis_daily_get(sess, base: str, token: str, symbol: str, start: str, e
         if "초당" not in str(data.get("msg1", "")):
             break
         if attempt < _KIS_RATE_LIMIT_RETRIES:
-            logger.info(f"일봉 호출 제한 재시도 [{symbol}] {attempt + 1}/{_KIS_RATE_LIMIT_RETRIES}")
+            logger.info(f"{label} 호출 제한 재시도 [{symbol}] {attempt + 1}/{_KIS_RATE_LIMIT_RETRIES}")
             await asyncio.sleep(_KIS_RATE_LIMIT_DELAY)
     return data
+
+
+async def _kis_daily_get(sess, base: str, token: str, symbol: str, start: str, end: str) -> dict:
+    """일봉 API 1회 호출 (제한·재시도는 _kis_quote_get)"""
+    return await _kis_quote_get(
+        sess, base, token, "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+        "FHKST03010100",
+        {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
+         "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
+         "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+        symbol, "일봉")
 
 
 async def _fetch_daily_ohlcv_ex(symbol: str, days: int = 40) -> tuple:
@@ -2722,7 +2732,7 @@ async def _cache_warmer():
 
 
 def ttl_for(period: str) -> int:
-    return 10 if str(period).lower().endswith("m") else 300
+    return _minute_raw_ttl() if str(period).lower().endswith("m") else 300
 
 
 async def _rcache(key: str, ttl: int, fn):
@@ -5485,29 +5495,45 @@ async def _get_chart_analysis_raw(symbol: str):
         return {"success": False, "error": str(e)}
 
 
-async def _fetch_minute_ohlcv(symbol: str, unit: int = 1) -> list:
-    """KIS 당일 분봉 (unit: 1/5/30분). 최근 ~120봉"""
+_MINUTE_TTL_LIVE = 10       # 평일 장중 1분봉 원본 캐시(초)
+_MINUTE_TTL_CLOSED = 1800   # 평일 15:40 이후·주말 (더 이상 변하지 않음)
+_minute_locks: dict = {}    # 종목별 동시 미스 합치기(single-flight) — 단위 전환 연타가 KIS를 여러 번 부르지 않게
+
+
+def _minute_raw_ttl(now=None) -> int:
+    """1분봉 원본 캐시 TTL: 평일 15:40 이후·주말은 1800초, 그 외 10초"""
+    now = now or datetime.now(KST)
+    if now.weekday() >= 5 or now.time().replace(tzinfo=None) >= dtime(15, 40):
+        return _MINUTE_TTL_CLOSED
+    return _MINUTE_TTL_LIVE
+
+
+async def _fetch_minute_1m_raw(symbol: str) -> tuple:
+    """KIS 당일 1분봉 원본 → ([{date,time,open,high,low,close,vol}] 오래된→최신, 실패사유)
+    최근 ~120봉. 데이터가 있으면 사유는 빈 문자열. KIS 호출은 일봉과 같은 동시 호출 제한·'초당' 재시도를
+    적용하며, 사유의 계좌번호·키는 마스킹한다."""
     try:
         token = await get_kis_token()
         if not token:
-            return []
+            logger.warning(f"분봉 조회 불가 [{symbol}] KIS 토큰 없음")
+            return [], "KIS 토큰 없음"
         import ssl as _ssl
         _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
         now_hm = datetime.now(KST).strftime("%H%M%S")
         async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
-            r = await sess.get(
-                f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
-                headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
-                         "appsecret": config.kis_app_secret,
-                         "tr_id": "FHKST03010200", "custtype": "P"},
-                params={"FID_ETC_CLS_CODE": "", "FID_COND_MRKT_DIV_CODE": "J",
-                        "FID_INPUT_ISCD": symbol, "FID_INPUT_HOUR_1": now_hm,
-                        "FID_PW_DATA_INCU_YN": "Y"},
-                timeout=_aiohttp.ClientTimeout(total=8))
-            data = await r.json()
+            data = await _kis_quote_get(
+                sess, config.kis_base_url,
+                token, "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+                "FHKST03010200",
+                {"FID_ETC_CLS_CODE": "", "FID_COND_MRKT_DIV_CODE": "J",
+                 "FID_INPUT_ISCD": symbol, "FID_INPUT_HOUR_1": now_hm,
+                 "FID_PW_DATA_INCU_YN": "Y"},
+                symbol, "분봉")
+        msg = _scrub_kis_msg(data.get("msg1"))
         if data.get("rt_cd") != "0":
-            logger.warning(f"분봉 실패 [{symbol}] {data.get('msg1','')[:50]}")
-            return []
+            err = msg or f"KIS 분봉 조회 실패 (rt_cd={data.get('rt_cd')})"
+            logger.warning(f"분봉 실패 [{symbol}] rt_cd={data.get('rt_cd')} msg_cd={data.get('msg_cd')} msg={msg[:80]}")
+            return [], err
         rows = data.get("output2", []) or []
         out = []
         for it in rows:
@@ -5526,30 +5552,70 @@ async def _fetch_minute_ohlcv(symbol: str, unit: int = 1) -> list:
         for o in out:
             _dm[o["date"] + o["time"][:4]] = o  # 분 단위 중복 제거
         out = sorted(_dm.values(), key=lambda x: x["date"] + x["time"])
-        # 1분봉 원본 → unit 분봉 합성
-        if unit > 1 and out:
-            merged, bucket, key = [], [], None
-            for r_ in out:
-                hm = r_["time"][:4]
-                k = f"{r_['date']}{int(hm[:2]):02d}{(int(hm[2:4])//unit)*unit:02d}"
-                if k != key and bucket:
-                    merged.append({"date": bucket[-1]["date"], "time": bucket[-1]["time"],
-                        "open": bucket[0]["open"], "high": max(b["high"] for b in bucket),
-                        "low": min(b["low"] for b in bucket), "close": bucket[-1]["close"],
-                        "vol": sum(b["vol"] for b in bucket)})
-                    bucket = []
-                key = k
-                bucket.append(r_)
-            if bucket:
-                merged.append({"date": bucket[-1]["date"], "time": bucket[-1]["time"],
-                    "open": bucket[0]["open"], "high": max(b["high"] for b in bucket),
-                    "low": min(b["low"] for b in bucket), "close": bucket[-1]["close"],
-                    "vol": sum(b["vol"] for b in bucket)})
-            out = merged
-        return out
+        if not out:
+            return [], (f"분봉 데이터 없음 (KIS 응답: {msg})" if msg else "분봉 데이터 없음")
+        return out, ""
     except Exception as e:
-        logger.debug(f"분봉 조회 오류 [{symbol}]: {e}")
-        return []
+        err = f"분봉 조회 예외: {type(e).__name__}: {_scrub_kis_msg(e)}"[:200]
+        logger.warning(f"분봉 조회 실패 [{symbol}]: {err}")
+        return [], err
+
+
+def _resample_minute(rows: list, unit: int) -> list:
+    """1분봉 원본 → unit(1/5/30)분봉 합성"""
+    if unit <= 1 or not rows:
+        return rows
+    merged, bucket, key = [], [], None
+
+    def flush():
+        merged.append({"date": bucket[-1]["date"], "time": bucket[-1]["time"],
+                       "open": bucket[0]["open"], "high": max(b["high"] for b in bucket),
+                       "low": min(b["low"] for b in bucket), "close": bucket[-1]["close"],
+                       "vol": sum(b["vol"] for b in bucket)})
+
+    for r_ in rows:
+        hm = r_["time"][:4]
+        k = f"{r_['date']}{int(hm[:2]):02d}{(int(hm[2:4])//unit)*unit:02d}"
+        if k != key and bucket:
+            flush()
+            bucket = []
+        key = k
+        bucket.append(r_)
+    if bucket:
+        flush()
+    return merged
+
+
+async def _minute_cache_get(key: str):
+    try:
+        if redis_client:
+            c = await redis_client.get(key)
+            if c:
+                return json.loads(c if isinstance(c, str) else c.decode())
+    except Exception:
+        pass
+    return None
+
+
+async def _get_minute_rows(symbol: str) -> tuple:
+    """종목별 1분봉 원본 (rows, err, cache_hit). Redis 캐시 후 미스일 때만 KIS 조회.
+    단위(1m/5m/30m)와 무관하게 같은 원본을 쓰므로 단위 전환은 KIS 호출 0회. 빈 결과·실패는 캐시하지 않는다."""
+    key = f"cache:chart:min1:{symbol}"
+    cached = await _minute_cache_get(key)
+    if cached:
+        return cached, "", True
+    async with _minute_locks.setdefault(symbol, asyncio.Lock()):
+        cached = await _minute_cache_get(key)  # 대기 중 다른 요청이 채웠을 수 있음
+        if cached:
+            return cached, "", True
+        rows, err = await _fetch_minute_1m_raw(symbol)
+        if rows and not err:
+            try:
+                if redis_client:
+                    await redis_client.setex(key, _minute_raw_ttl(), json.dumps(rows))
+            except Exception:
+                pass
+        return rows, err, False
 
 
 @app.get("/api/chart/{symbol}")
@@ -5563,7 +5629,14 @@ async def _get_chart_data_raw(symbol: str, days: int = 30, period: str = "D"):
         pu = period.lower()
         if pu in ("1m", "5m", "30m"):
             unit = int(pu[:-1])
-            rows = await _fetch_minute_ohlcv(symbol, unit)
+            t0 = _time.monotonic()
+            raw, err, hit = await _get_minute_rows(symbol)
+            logger.info(f"분봉 조회 [{symbol}] 단위={pu} 캐시={'히트' if hit else '미스'} "
+                        f"결과={'성공' if raw else '실패'} {(_time.monotonic() - t0) * 1000:.0f}ms")
+            if not raw:
+                # 일봉과 같은 형식: 조용히 빈 목록 대신 사유 전달 (캐시되지 않음)
+                return {"success": False, "error": err or "분봉 데이터 없음", "data": []}
+            rows = _resample_minute(raw, unit)
             return {"success": True, "minute": True, "data": [
                 {"d": r["date"], "t": r["time"], "o": r["open"], "h": r["high"],
                  "l": r["low"], "c": r["close"], "v": r["vol"]} for r in rows]}

@@ -4621,6 +4621,13 @@ _stock_positions_cache_ts: float = 0.0
 _STOCK_POSITIONS_CACHE_TTL: float = 10.0
 
 
+def invalidate_stock_positions_cache() -> None:
+    """주식 보유 포지션 메모리 캐시 즉시 무효화 (주문 완료 후 다음 판단·조회 최신화용)"""
+    global _stock_positions_cache, _stock_positions_cache_ts
+    _stock_positions_cache = None
+    _stock_positions_cache_ts = 0.0
+
+
 @app.get("/api/positions/stock")
 async def get_stock_positions():
     return await _rcache("cache:positions:stock", 20, lambda: _get_stock_positions_raw())
@@ -5606,112 +5613,124 @@ async def jarvis_signal(request: Request):
         signal = {"bot": bot, "action": action, "symbol": symbol, "name": name,
                   "price": price, "qty": qty, "strategy": strategy, "reason": reason}
 
-        # 1. 판단용 컨텍스트 수집 (stark/context_collector.py)
-        ctx_data = await context_collector.collect(
-            signal, pool=db_pool, redis=redis_client,
-            get_portfolio_context=get_portfolio_context,
-            get_active_directives=_get_active_directives,
-            get_jarvis_lessons=_get_jarvis_lessons,
-            get_jarvis_knowledge=_get_jarvis_knowledge,
-            analyze_chart=_analyze_chart,
-        )
-        analysis_prompt = context_collector.build_analysis_prompt(signal, ctx_data)
+        is_stock_buy = (action in ("buy", "BUY") and bot == "stock_trader")
 
-        # 2. 순수 AI 판단 (stark/decision_engine.py) — 실행은 하지 않고 stark_decisions에 기록만
-        decision = await decision_engine.decide(signal, analysis_prompt, ask_llm_fn=_ask_openwebui, pool=db_pool)
-        jarvis_reply = decision["reply"]
-        is_small = decision["is_small"]
-        should_execute = decision["should_execute"]
+        async def _process_and_execute() -> Dict[str, Any]:
+            nonlocal qty
+            # 1. 판단용 컨텍스트 수집 (stark/context_collector.py)
+            ctx_data = await context_collector.collect(
+                signal, pool=db_pool, redis=redis_client,
+                get_portfolio_context=get_portfolio_context,
+                get_active_directives=_get_active_directives,
+                get_jarvis_lessons=_get_jarvis_lessons,
+                get_jarvis_knowledge=_get_jarvis_knowledge,
+                analyze_chart=_analyze_chart,
+            )
+            analysis_prompt = context_collector.build_analysis_prompt(signal, ctx_data)
 
-        # EXECUTE_SMALL(또는 규칙 밖 강신호 PROPOSE 자동승격)은 절반 수량으로 진입 —
-        # 코인/주식 두 실행 경로가 공유해야 해서 분기 전에 한 번만 적용한다.
-        if is_small and action in ("buy", "BUY"):
-            try:
-                qty = max(1, int(float(qty) // 2))
-            except Exception:
-                pass
-            signal["qty"] = qty
+            # 2. 순수 AI 판단 (stark/decision_engine.py) — 실행은 하지 않고 stark_decisions에 기록만
+            decision = await decision_engine.decide(signal, analysis_prompt, ask_llm_fn=_ask_openwebui, pool=db_pool)
+            jarvis_reply = decision["reply"]
+            is_small = decision["is_small"]
+            should_execute = decision["should_execute"]
 
-        if should_execute:
-            # 3. 실제 매매 실행 (주식 vs 코인 분기)
-            import aiohttp as http
+            # EXECUTE_SMALL(또는 규칙 밖 강신호 PROPOSE 자동승격)은 절반 수량으로 진입 —
+            # 코인/주식 두 실행 경로가 공유해야 해서 분기 전에 한 번만 적용한다.
+            if is_small and action in ("buy", "BUY"):
+                try:
+                    qty = max(1, int(float(qty) // 2))
+                except Exception:
+                    pass
+                signal["qty"] = qty
 
-            if bot == "crypto_trader":
-                # 코인 매매
-                from crypto_trader.upbit_trader import UpbitTrader
-                upbit = UpbitTrader()
-                upbit.session = http.ClientSession()
-                await upbit.start()
-                amount = body.get("amount", price * qty)
+            if should_execute:
+                # 3. 실제 매매 실행 (주식 vs 코인 분기)
+                import aiohttp as http
 
-                if action == "BUY" or action == "buy":
-                    result = await upbit.buy_market(symbol, amount)
+                if bot == "crypto_trader":
+                    # 코인 매매
+                    from crypto_trader.upbit_trader import UpbitTrader
+                    upbit = UpbitTrader()
+                    upbit.session = http.ClientSession()
+                    await upbit.start()
+                    amount = body.get("amount", price * qty)
+
+                    if action == "BUY" or action == "buy":
+                        result = await upbit.buy_market(symbol, amount)
+                    else:
+                        result = await upbit.sell_market(symbol, qty)
+
+                    await upbit.session.close()
+
+                    if result.get("success"):
+                        if db_pool:
+                            async with db_pool.acquire() as conn:
+                                await conn.execute("""
+                                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
+                                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                                """, bot, "crypto", symbol, action.upper(), float(price), float(qty), float(amount), strategy)
+
+                        emoji = "📈" if action in ["buy", "BUY"] else "📉"
+                        msg = (
+                            f"{emoji} <b>{name} {action_kr} 완료</b>\n"
+                            f"코인: {symbol}\n"
+                            f"금액: {amount:,.0f}원\n"
+                            f"전략: {strategy}\n"
+                            f"Jarvis: {jarvis_reply[:80]}"
+                        )
+                        await _send_telegram(msg, chat_id, token)
+                        logger.info(f"✅ Jarvis 코인 {action_kr}: {symbol} {amount:,.0f}원")
+
+                        # Jarvis 메모리에 매매 기록 저장
+                        await _save_trade_memory(
+                            symbol=symbol, action=action_kr,
+                            price=float(price), amount=float(amount),
+                            result="성공", reason=reason
+                        )
+
+                        # SSE 실시간 알림
+                        await push_event("trade", {
+                            "type": "trade",
+                            "action": action.upper(),
+                            "symbol": symbol,
+                            "name": name,
+                            "amount": float(amount),
+                            "price": float(price),
+                            "strategy": strategy,
+                            "jarvis": jarvis_reply[:80],
+                            "ts": datetime.now().isoformat(),
+                        })
+
+                        return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
+                    else:
+                        await _send_telegram(f"❌ {name} 코인 {action_kr} 실패\n{result.get('error')}", chat_id, token)
+                        return {"success": False, "executed": False, "error": result.get("error")}
+
                 else:
-                    result = await upbit.sell_market(symbol, qty)
-
-                await upbit.session.close()
-
-                if result.get("success"):
-                    if db_pool:
-                        async with db_pool.acquire() as conn:
-                            await conn.execute("""
-                                INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
-                                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                            """, bot, "crypto", symbol, action.upper(), float(price), float(qty), float(amount), strategy)
-
-                    emoji = "📈" if action in ["buy", "BUY"] else "📉"
-                    msg = (
-                        f"{emoji} <b>{name} {action_kr} 완료</b>\n"
-                        f"코인: {symbol}\n"
-                        f"금액: {amount:,.0f}원\n"
-                        f"전략: {strategy}\n"
-                        f"Jarvis: {jarvis_reply[:80]}"
+                    # 주식 매매 — 실행 레이어(stark/execution_guard.py)가 KIS 실주문과
+                    # 매매기록/텔레그램 보고/캐시 무효화/매매일지까지 전담한다.
+                    return await execution_guard.execute(
+                        signal, decision, pool=db_pool, redis=redis_client,
+                        kis_order_fn=_kis_stock_order,
+                        send_telegram_fn=lambda text: _send_telegram(text, chat_id, token),
+                        log_journal_fn=_log_journal,
+                        save_trade_memory_fn=_save_trade_memory,
+                        code_to_name_fn=_code_to_name,
+                        get_positions_fn=get_stock_positions,
+                        invalidate_cache_fn=invalidate_stock_positions_cache,
                     )
-                    await _send_telegram(msg, chat_id, token)
-                    logger.info(f"✅ Jarvis 코인 {action_kr}: {symbol} {amount:,.0f}원")
-
-                    # Jarvis 메모리에 매매 기록 저장
-                    await _save_trade_memory(
-                        symbol=symbol, action=action_kr,
-                        price=float(price), amount=float(amount),
-                        result="성공", reason=reason
-                    )
-
-                    # SSE 실시간 알림
-                    await push_event("trade", {
-                        "type": "trade",
-                        "action": action.upper(),
-                        "symbol": symbol,
-                        "name": name,
-                        "amount": float(amount),
-                        "price": float(price),
-                        "strategy": strategy,
-                        "jarvis": jarvis_reply[:80],
-                        "ts": datetime.now().isoformat(),
-                    })
-
-                    return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
-                else:
-                    await _send_telegram(f"❌ {name} 코인 {action_kr} 실패\n{result.get('error')}", chat_id, token)
-                    return {"success": False, "executed": False, "error": result.get("error")}
-
             else:
-                # 주식 매매 — 실행 레이어(stark/execution_guard.py)가 KIS 실주문과
-                # 매매기록/텔레그램 보고/캐시 무효화/매매일지까지 전담한다.
-                return await execution_guard.execute(
-                    signal, decision, pool=db_pool, redis=redis_client,
-                    kis_order_fn=_kis_stock_order,
-                    send_telegram_fn=lambda text: _send_telegram(text, chat_id, token),
-                    log_journal_fn=_log_journal,
-                    save_trade_memory_fn=_save_trade_memory,
-                    code_to_name_fn=_code_to_name,
-                )
-        else:
-            # 4. 건너뜀 — 텔레그램 알림 없이 로그·채점 기록만 (완전자동화 후 SKIP은 액션 불필요)
-            logger.info(f"⏭️ Jarvis가 {action_kr} 신호 건너뜀: {symbol}")
-            await _log_journal(bot, symbol, name, action, strategy, reason,
-                               "SKIP", jarvis_reply, False, False, price, qty)
-            return {"success": True, "executed": False, "jarvis_reply": jarvis_reply}
+                # 4. 건너뜀 — 텔레그램 알림 없이 로그·채점 기록만 (완전자동화 후 SKIP은 액션 불필요)
+                logger.info(f"⏭️ Jarvis가 {action_kr} 신호 건너뜀: {symbol}")
+                await _log_journal(bot, symbol, name, action, strategy, reason,
+                                   "SKIP", jarvis_reply, False, False, price, qty)
+                return {"success": True, "executed": False, "jarvis_reply": jarvis_reply}
+
+        # (2) 매수 판단과 주문을 하나의 asyncio.Lock으로 직렬화
+        if is_stock_buy:
+            async with execution_guard.get_buy_lock():
+                return await _process_and_execute()
+        return await _process_and_execute()
 
     except Exception as e:
         logger.error(f"Jarvis 신호 처리 오류: {e}")

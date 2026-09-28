@@ -19,6 +19,7 @@ dashboard/main.py는 startup 훅과 /api/stock/reload_cache,
 import asyncio
 import io
 import logging
+import re
 import ssl
 import zipfile
 from typing import Any, Dict, Optional, Tuple
@@ -70,28 +71,64 @@ async def _fetch_from_pykrx() -> Dict[str, str]:
     return name_map
 
 
+# 단축코드 필드: line[0:9] (9바이트, 우측 공백 패딩). 일반 종목/ETF는 6자, ETN(Q500067)은 7자,
+# 수익증권·워런트·신주인수권(F70100030, J0036221D)은 9자. 신규 상장분은 0001A0 처럼 영문이 섞인다.
+# 표준코드(ISIN)는 [9:21], 종목명(cp949 40바이트 고정폭)은 [21:61].
+_KIS_SHORTCODE_END = 9
+_KIS_NAME_START, _KIS_NAME_END = 21, 61
+_KIS_CODE_RE = re.compile(r"^[0-9A-Z]{6}$")
+
+
 def _parse_kis_master_bytes(raw_bytes: bytes, enc: str, name_map: Dict[str, str]) -> int:
     """KIS 마스터파일(.mst) 원본 바이트를 라인 단위 고정폭으로 파싱해 name_map에 채운다.
-    주의: 종목명은 정확히 40바이트(cp949) 고정폭 필드. 단순 split()으로 자르면
-    ISIN/숫자 필드가 이름에 섞여 깨짐 — 반드시 바이트 오프셋으로 슬라이스한다
-    (텍스트로 디코딩 후 자르면 멀티바이트 경계가 깨짐).
+    레이아웃: [0:9] 단축코드, [9:21] 표준코드(ISIN), [21:61] 종목명(cp949 40바이트).
+    종목명은 반드시 바이트 오프셋으로 슬라이스한다(텍스트로 디코딩 후 자르면 멀티바이트 경계가 깨짐).
+    6자 영숫자 단축코드만 채택한다(ETN·수익증권·워런트 등 7·9자 코드는 제외).
+    name_map에 이미 있는 코드는 덮어쓰지 않고 건너뛴다. 코드는 다르지만 종목명이 같으면
+    '이름(코드)'로 구분해 추가하고 경고를 남긴다 — name→code 맵에서 조용히 사라지지 않게.
     반환값: 이번 호출에서 새로 추가된 종목 수."""
     added = 0
+    skipped_dup_code = 0
+    renamed = 0
+    known_codes = set(name_map.values())
     for line_bytes in raw_bytes.split(b"\n"):
-        if len(line_bytes) < 30:
+        if len(line_bytes) < _KIS_NAME_START + 1:
             continue
-        try:
-            # 표준코드(ISIN) 12바이트 + 단축코드 6바이트 뒤에 종목명(cp949, 최대 40바이트) 위치
-            code_part = line_bytes[9:21].decode("ascii", errors="ignore").strip()
-            code = "".join(ch for ch in code_part if ch.isdigit())[-6:]
-            name_bytes = line_bytes[21:61]
-            name = name_bytes.decode(enc, errors="ignore").strip()
-            if code and name and code.isdigit() and len(code) == 6 and \
-               not any(c.isdigit() for c in name[:1]) and code not in name_map.values():
-                name_map[name] = code
-                added += 1
-        except Exception:
+        code = line_bytes[:_KIS_SHORTCODE_END].decode("ascii", errors="ignore").strip()
+        name = line_bytes[_KIS_NAME_START:_KIS_NAME_END].decode(enc, errors="ignore").strip()
+        if not name or not _KIS_CODE_RE.match(code):
             continue
+        if code in known_codes:
+            skipped_dup_code += 1
+            continue
+        if name in name_map:
+            logger.warning(f"KIS 마스터 종목명 중복: {name!r} 코드 {name_map[name]} / {code} — 이름(코드)로 구분")
+            name = f"{name}({code})"
+            renamed += 1
+        name_map[name] = code
+        known_codes.add(code)
+        added += 1
+    if skipped_dup_code:
+        logger.info(f"KIS 마스터: 이미 있는 코드 {skipped_dup_code}건 건너뜀")
+    if renamed:
+        logger.warning(f"KIS 마스터: 종목명 충돌 {renamed}건을 이름(코드)로 구분해 추가")
+    return added
+
+
+def _merge_kis_supplement(name_map: Dict[str, str], kis_map: Dict[str, str]) -> int:
+    """pykrx 결과(name_map)를 우선하고, KIS 보완분(kis_map)은 name_map에 없는 코드만 추가한다.
+    KIS가 같은 종목명/코드를 가져도 pykrx 값은 덮어쓰지 않는다. 반환값: 추가된 종목 수."""
+    known_codes = set(name_map.values())
+    added = 0
+    for name, code in kis_map.items():
+        if code in known_codes:
+            continue
+        if name in name_map:  # 코드는 다른데 이름이 같음 — pykrx 항목을 지키고 KIS 쪽을 구분
+            logger.warning(f"KIS 보완 종목명 충돌: {name!r} pykrx={name_map[name]} / KIS={code} — 이름(코드)로 구분")
+            name = f"{name}({code})"
+        name_map[name] = code
+        known_codes.add(code)
+        added += 1
     return added
 
 
@@ -165,7 +202,8 @@ async def sync_stock_universe(pool: Any, universe: Universe, *, force: bool = Fa
     name_map = await _fetch_from_pykrx()
     if len(name_map) < _MIN_EXPECTED_COUNT:
         logger.warning(f"pykrx 결과가 부족함({len(name_map)}개) — KIS 마스터파일로 보완 시도")
-        name_map.update(await _fetch_from_kis_master())
+        added = _merge_kis_supplement(name_map, await _fetch_from_kis_master())
+        logger.info(f"KIS 마스터 보완 병합: pykrx에 없는 {added}개 추가")
 
     if not name_map:
         logger.warning("종목 캐시 갱신 실패 (무시) — 기존 캐시 유지")

@@ -249,40 +249,90 @@ async def _auto_register_webhook():
         logger.warning(f"텔레그램 webhook 자동 등록 실패: {result.get('error')}")
 
 
-async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
-    """KIS 일봉 조회 → [{date,open,high,low,close,vol}] 오래된→최신
+# KIS 시세 조회 동시 호출 제한 — 모의서버 "초당 거래건수 초과" 거절 대응 (화면 진입 시 동시 요청 폭주)
+_KIS_QUOTE_CONCURRENCY = 2
+_KIS_QUOTE_SEM = asyncio.Semaphore(_KIS_QUOTE_CONCURRENCY)
+_KIS_RATE_LIMIT_RETRIES = 2
+_KIS_RATE_LIMIT_DELAY = 0.7
+_KIS_REAL_BASE = "https://openapi.koreainvestment.com:9443"
+
+
+def _scrub_kis_msg(msg) -> str:
+    """KIS 응답/예외 메시지에서 계좌번호·앱키·시크릿 제거 (로그·API 응답 노출 방지)"""
+    import re as _re
+    text = str(msg or "")
+    acct = config.kis_account_no or ""
+    for secret in (acct, acct.split("-")[0], config.kis_app_key, config.kis_app_secret):
+        if secret:
+            text = text.replace(secret, "********")
+    return _re.sub(r"\d{8,}", "********", text)
+
+
+async def _kis_daily_get(sess, base: str, token: str, symbol: str, start: str, end: str) -> dict:
+    """일봉 API 1회 호출. 동시 호출은 _KIS_QUOTE_SEM으로 제한하고,
+    msg1에 '초당'이 있으면 0.7초 뒤 최대 2회 재시도 (대기 중에는 세마포어를 반납)"""
+    data = {}
+    for attempt in range(_KIS_RATE_LIMIT_RETRIES + 1):
+        async with _KIS_QUOTE_SEM:
+            r = await sess.get(
+                f"{base}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                         "appsecret": config.kis_app_secret,
+                         "tr_id": "FHKST03010100", "custtype": "P"},
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
+                        "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
+                        "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
+                timeout=_aiohttp.ClientTimeout(total=8))
+            data = await r.json()
+        if not isinstance(data, dict):
+            data = {}
+        if "초당" not in str(data.get("msg1", "")):
+            break
+        if attempt < _KIS_RATE_LIMIT_RETRIES:
+            logger.info(f"일봉 호출 제한 재시도 [{symbol}] {attempt + 1}/{_KIS_RATE_LIMIT_RETRIES}")
+            await asyncio.sleep(_KIS_RATE_LIMIT_DELAY)
+    return data
+
+
+async def _fetch_daily_ohlcv_ex(symbol: str, days: int = 40) -> tuple:
+    """KIS 일봉 조회 → ([{date,open,high,low,close,vol}] 오래된→최신, 실패사유)
+    데이터가 있으면 사유는 빈 문자열. 사유에는 계좌번호·키를 마스킹한 KIS 응답 msg가 들어간다.
     모의투자 서버는 중소형주 일봉이 비어있는 경우가 있어 실전 시세 도메인도 폴백 시도(시세 조회는 주문이 아니라 안전)"""
     try:
         token = await get_kis_token()
         if not token:
-            return []
+            logger.warning(f"일봉 조회 불가 [{symbol}] KIS 토큰 없음")
+            return [], "KIS 토큰 없음"
         import ssl as _ssl
         _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
         from datetime import timedelta as _td
         end = datetime.now(KST).strftime("%Y%m%d")
         start = (datetime.now(KST) - _td(days=days * 2)).strftime("%Y%m%d")
         bases = [config.kis_base_url]
-        if config.KIS_IS_PAPER and "openapi.koreainvestment.com:9443" not in bases:
-            bases.append("https://openapi.koreainvestment.com:9443")
+        if config.KIS_IS_PAPER and _KIS_REAL_BASE not in bases:
+            bases.append(_KIS_REAL_BASE)
         rows = []
-        data = {}
+        results = []  # 서버별 응답 (첫 항목이 기본 서버)
         async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
             for base in bases:
-                r = await sess.get(
-                    f"{base}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-                    headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
-                             "appsecret": config.kis_app_secret,
-                             "tr_id": "FHKST03010100", "custtype": "P"},
-                    params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol,
-                            "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end,
-                            "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "1"},
-                    timeout=_aiohttp.ClientTimeout(total=8))
-                data = await r.json()
+                data = await _kis_daily_get(sess, base, token, symbol, start, end)
+                results.append((base, data))
                 rows = data.get("output2", []) or []
                 if rows:
                     break
+        err = ""
         if not rows:
-            logger.warning(f"일봉 빈응답 [{symbol}] rt_cd={data.get('rt_cd')} msg={data.get('msg1','')[:60]}")
+            for base, data in results:
+                logger.warning(
+                    f"일봉 빈응답 [{symbol}] server={'paper/기본' if base == bases[0] else '실전폴백'} "
+                    f"rt_cd={data.get('rt_cd')} msg_cd={data.get('msg_cd')} "
+                    f"msg={_scrub_kis_msg(data.get('msg1'))[:80]}")
+            primary = results[0][1]  # 사유는 기본 서버 응답 기준 (폴백은 부가 시도)
+            msg = _scrub_kis_msg(primary.get("msg1"))
+            if primary.get("rt_cd") == "0":
+                err = f"일봉 데이터 없음 (KIS 응답: {msg})" if msg else "일봉 데이터 없음"
+            else:
+                err = msg or f"KIS 일봉 조회 실패 (rt_cd={primary.get('rt_cd')})"
         out = []
         for it in rows:
             try:
@@ -302,10 +352,19 @@ async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
         for o in out:
             _dd[o["date"]] = o
         out = sorted(_dd.values(), key=lambda x: x["date"])
-        return out[-days:]
+        if rows and not out:
+            err = "일봉 응답에 유효한 종가 데이터 없음"
+        return out[-days:], err
     except Exception as e:
-        logger.debug(f"일봉 조회 실패 [{symbol}]: {e}")
-        return []
+        err = f"일봉 조회 예외: {type(e).__name__}: {_scrub_kis_msg(e)}"[:200]
+        logger.warning(f"일봉 조회 실패 [{symbol}]: {err}")
+        return [], err
+
+
+async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
+    """KIS 일봉 조회 → [{date,open,high,low,close,vol}] 오래된→최신 (실패 시 빈 목록; 사유가 필요하면 _fetch_daily_ohlcv_ex)"""
+    rows, _ = await _fetch_daily_ohlcv_ex(symbol, days)
+    return rows
 
 
 def _candle_pattern(rows: list) -> str:
@@ -5478,7 +5537,10 @@ async def _get_chart_data_raw(symbol: str, days: int = 30, period: str = "D"):
                 {"d": r["date"], "t": r["time"], "o": r["open"], "h": r["high"],
                  "l": r["low"], "c": r["close"], "v": r["vol"]} for r in rows]}
         fetch_days = days if period == "D" else min(600, days * (7 if period == "W" else 30))
-        rows = await _fetch_daily_ohlcv(symbol, min(600, fetch_days))
+        rows, err = await _fetch_daily_ohlcv_ex(symbol, min(600, fetch_days))
+        if not rows:
+            # 빈 목록을 조용히 성공으로 돌려주면 화면이 "차트데이터 없음"만 표시 → 사유 전달 (캐시되지 않음)
+            return {"success": False, "error": err or "일봉 데이터 없음", "data": []}
         rows = _resample_ohlcv(rows, period.upper())
         return {"success": True, "data": [
             {"d": r["date"], "o": r["open"], "h": r["high"],

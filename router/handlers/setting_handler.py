@@ -15,8 +15,35 @@ from typing import Any, Optional, Tuple
 logger = logging.getLogger("router.handlers.setting")
 
 
+MAX_POSITIONS_MIN = 1
+MAX_POSITIONS_MAX = 100
+MAX_POSITIONS_ERROR = f"최대 보유 종목수는 {MAX_POSITIONS_MIN}~{MAX_POSITIONS_MAX} 사이의 정수여야 합니다"
+
+
+def validate_max_positions(v) -> Tuple[bool, Any]:
+    """(ok, int 값 or 오류메시지). 1~100 정수만 허용 (bool·소수·문자 거부)."""
+    if isinstance(v, bool):
+        return False, MAX_POSITIONS_ERROR
+    if isinstance(v, str):
+        v = v.strip()
+        if not re.fullmatch(r"\d+", v):
+            return False, MAX_POSITIONS_ERROR
+        v = int(v)
+    elif isinstance(v, float):
+        if not v.is_integer():
+            return False, MAX_POSITIONS_ERROR
+        v = int(v)
+    elif not isinstance(v, int):
+        return False, MAX_POSITIONS_ERROR
+    if not (MAX_POSITIONS_MIN <= v <= MAX_POSITIONS_MAX):
+        return False, MAX_POSITIONS_ERROR
+    return True, v
+
+
 def validate_setting(k: str, v) -> Tuple[bool, Any]:
     """(ok, normalized_value or 오류메시지)"""
+    if k == "max_positions":
+        return validate_max_positions(v)
     try:
         v = float(v)
     except Exception:

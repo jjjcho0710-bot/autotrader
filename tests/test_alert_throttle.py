@@ -240,6 +240,52 @@ class TestCauseFailThrottle(unittest.IsolatedAsyncioTestCase):
         self.assertIn("외", disp_summary)
         self.assertIn("총", disp_summary)
 
+    async def test_scenario_identical_cause_10_calls_triggers_1_alert(self):
+        """시나리오 1: 동일 원인 10건 연속 발생 시 1건(원인 개수 1건)만 발송"""
+        sent_count = 0
+        for i in range(10):
+            send, _ = await check_cause_fail_throttle(
+                action_kr="매수", symbol=f"0000{i:02d}", name=f"종목{i}",
+                err="모의투자 주문이 불가한 계좌입니다",
+                min_interval_sec=3600, redis_client=self.redis, now_ts=1000.0 + i
+            )
+            if send:
+                sent_count += 1
+        self.assertEqual(sent_count, 1)
+
+    async def test_scenario_alternating_causes_10_calls_triggers_2_alerts(self):
+        """시나리오 2: 원인 2개가 번갈아 10건 발생해도 원인별 독립 키로 2건(원인 개수 2건)만 발송"""
+        sent_count = 0
+        causes = [
+            "모의투자 주문이 불가한 계좌입니다",
+            "주문가능금액(예수금)이 부족합니다",
+        ]
+        for i in range(10):
+            err = causes[i % 2]
+            send, _ = await check_cause_fail_throttle(
+                action_kr="매수", symbol=f"0000{i:02d}", name=f"종목{i}",
+                err=err,
+                min_interval_sec=3600, redis_client=self.redis, now_ts=1000.0 + i
+            )
+            if send:
+                sent_count += 1
+        self.assertEqual(sent_count, 2)
+
+    async def test_scenario_mixed_amounts_10_calls_triggers_1_alert(self):
+        """시나리오 3: 에러 문구에 서로 다른 금액/숫자가 섞여 있어도 정규화되어 1건(원인 개수 1건)만 발송"""
+        sent_count = 0
+        for i in range(10):
+            amount = (i + 1) * 10000
+            err = f"주문가능금액 {amount:,}원이 필요하지만 잔액이 부족합니다"
+            send, _ = await check_cause_fail_throttle(
+                action_kr="매수", symbol=f"0000{i:02d}", name=f"종목{i}",
+                err=err,
+                min_interval_sec=3600, redis_client=self.redis, now_ts=1000.0 + i
+            )
+            if send:
+                sent_count += 1
+        self.assertEqual(sent_count, 1)
+
 
 class TestRegressionNoSuppression(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

@@ -198,12 +198,17 @@ class TestSyncStockUniverse(unittest.TestCase):
         async def _fake_pykrx():
             return {"신규종목": "999999"}
 
-        orig_pykrx = sync_batch._fetch_from_pykrx
+        async def _fake_kis():
+            return {}
+
+        orig_pykrx, orig_kis = sync_batch._fetch_from_pykrx, sync_batch._fetch_from_kis_master
         sync_batch._fetch_from_pykrx = _fake_pykrx
+        sync_batch._fetch_from_kis_master = _fake_kis
         try:
             count = asyncio.run(sync_stock_universe(pool, universe, force=True))
         finally:
             sync_batch._fetch_from_pykrx = orig_pykrx
+            sync_batch._fetch_from_kis_master = orig_kis
 
         # force=True면 신선한 DB라도 네트워크 갱신 결과(1개)로 캐시가 교체돼야 함
         self.assertEqual(count, 1)

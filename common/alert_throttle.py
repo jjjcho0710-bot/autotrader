@@ -5,14 +5,17 @@ common/alert_throttle.py - 텔레그램 알림 스팸 방지 및 상태/원인 �
 1. 동일 종목·동일 종류 알림은 상태가 바뀔 때만 1회 즉시 발송
 2. 동일 상태가 계속 유지·반복될 때는 최소 1시간(3600초) 간격으로만 발송
 3. 정상 상태(NORMAL)로 복귀 시에는 알림을 발송하지 않고 상태만 갱신(다음 악화 시 즉시 1회 발송 보장)
-4. 매수·매도 실패 알림은 원인(에러 메시지) 기준 스로틀:
-   - 종목이 달라도 같은 원인이면 1시간에 1건으로 묶고 "N종목" 요약
-   - 원인이 바뀌면 즉시 발송
+4. 매수·매도 실패 알림은 원인(에러 메시지) 기준 정규화 및 원인별 개별 키 스로틀:
+   - 에러 문구에서 숫자와 종목명·종목코드를 제거해 정규화한 값을 원인 키로 사용
+   - 원인별 개별 키로 저장: alert:cause:{액션}:{정규화원인}
+   - 각 원인이 독립적으로 1시간 1건 발송
+   - 새 원인은 즉시 발송하고, 이후 동일 원인은 1시간 동안 묶음 ("N종목" 요약)
 5. 체결 알림 및 상태 전이 알림은 절대 억제하지 않음
 6. Redis를 우선 사용하며, Redis 장애 시 인메모리 딕셔너리로 자동 폴백
 """
 import json
 import logging
+import re
 import time
 from typing import Any, List, Optional, Tuple
 
@@ -27,8 +30,22 @@ def _make_key(symbol: str, alert_type: str) -> str:
     return f"alert:throttle:{symbol}:{alert_type}"
 
 
-def _make_cause_key(action_kr: str) -> str:
-    return f"alert:cause_throttle:{action_kr}"
+def normalize_cause(err: str, name: str = "", symbol: str = "") -> str:
+    """에러 문구에서 숫자와 종목명·종목코드를 제거하여 정규화된 원인 키를 반환"""
+    text = str(err or "").strip()
+    if name:
+        text = text.replace(name, "")
+    if symbol:
+        text = text.replace(symbol, "")
+    # 숫자 및 콤마 제거 (금액, 수량, 코드 등 가변 숫자 정규화)
+    text = re.sub(r"[\d,]+", "", text)
+    # 연속 공백 정리
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or "기타오류"
+
+
+def _make_cause_key(action_kr: str, norm_cause: str) -> str:
+    return f"alert:cause:{action_kr}:{norm_cause}"
 
 
 async def should_send_symbol_alert(
@@ -74,31 +91,26 @@ async def should_send_symbol_alert(
             last_ts = float(entry.get("ts", 0.0))
 
     # 2. 상태 판단
-    # 정상 복귀 (NORMAL)인 경우: 상태만 기록하고 알림은 보내지 않음
     if new_state == "NORMAL":
         await _save_throttle(key, "NORMAL", now_ts, redis_client)
         return False
 
-    # 상태가 변경된 경우 (상태 전이): 즉시 1회 발송 허용 (절대 억제 안 함)
     if prev_state != new_state:
         await _save_throttle(key, new_state, now_ts, redis_client)
         logger.info(f"🔔 [{symbol}:{alert_type}] 상태 전이 감지: '{prev_state}' -> '{new_state}' (즉시 발송 허용)")
         return True
 
-    # 동일 상태인 경우: 1시간 간격 체크
     elapsed = now_ts - last_ts
     if elapsed >= min_interval_sec:
         await _save_throttle(key, new_state, now_ts, redis_client)
         logger.info(f"⏳ [{symbol}:{alert_type}] 동일 상태 '{new_state}' {elapsed:.0f}초 경과 -> 주기 발송 허용")
         return True
 
-    # 1시간 미경과 동일 상태: 억제
     logger.debug(f"⏸️ [{symbol}:{alert_type}] 동일 상태 '{new_state}' 스로틀 억제 (경과: {elapsed:.0f}s < {min_interval_sec}s)")
     return False
 
 
 async def _save_throttle(key: str, state: str, ts: float, redis_client: Optional[Any] = None):
-    """상태 및 타임스탬프 저장 (TTL: 24시간)"""
     data = {"state": state, "ts": ts}
     _MEMORY_CACHE[key] = data
 
@@ -141,61 +153,51 @@ async def check_cause_fail_throttle(
     now_ts: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """매수·매도 실패 알림 원인(에러 메시지) 기준 스로틀:
-    - 종목이 달라도 같은 원인이면 1시간에 1건으로 묶고 "N종목" 요약
-    - 원인 바뀌면 즉시 발송
+    - (1) 에러 문구에서 숫자와 종목명을 제거해 정규화한 값을 원인 키로 사용
+    - (2) 원인별 개별 키로 저장: alert:cause:{액션}:{정규화원인}
+    - (3) 각 원인이 독립적으로 1시간 1건 스로틀
+    - (4) 새 원인은 즉시 발송하고 이후 동일 원인은 묶음 ("N종목" 요약)
 
     반환: (should_send: bool, summary_disp: str)
-      - should_send: True이면 알림 발송, False이면 스로틀 억제
-      - summary_disp: 알림에 표시할 종목명 또는 요약 문구 (예: "서전기전" 또는 "서전기전 외 2종목 (총 3종목)")
     """
     if now_ts is None:
         now_ts = time.time()
 
-    key = _make_cause_key(action_kr)
     clean_err = str(err or "").strip()
+    norm_cause = normalize_cause(clean_err, name, symbol)
+    key = _make_cause_key(action_kr, norm_cause)
 
-    prev_cause = None
-    symbols: List[str] = []
-    last_sent_ts = 0.0
-
-    # 1. 이전 기록 조회
-    loaded = False
+    data = None
     if redis_client is not None:
         try:
             raw = await redis_client.get(key)
             if raw:
                 data = json.loads(raw)
-                prev_cause = data.get("cause")
-                symbols = data.get("symbols", [])
-                last_sent_ts = float(data.get("last_sent_ts", 0.0))
-                loaded = True
         except Exception as e:
             logger.debug(f"Redis cause throttle get 실패: {e}")
 
-    if not loaded:
-        entry = _MEMORY_CAUSE_CACHE.get(key)
-        if entry:
-            prev_cause = entry.get("cause")
-            symbols = list(entry.get("symbols", []))
-            last_sent_ts = float(entry.get("last_sent_ts", 0.0))
+    if data is None:
+        data = _MEMORY_CAUSE_CACHE.get(key)
 
-    # 2. 원인 변경 시: 즉시 1회 발송 및 초기화
-    if prev_cause != clean_err:
+    # 1. 새 원인인 경우: 즉시 발송
+    if not data:
         new_symbols = [name]
-        await _save_cause_throttle(key, clean_err, new_symbols, now_ts, redis_client)
-        logger.info(f"🔔 [{action_kr} 실패] 원인 변경 감지: '{prev_cause}' -> '{clean_err}' (종목: {name}) -> 즉시 발송")
+        await _save_cause_throttle(key, norm_cause, clean_err, new_symbols, now_ts, redis_client)
+        logger.info(f"🔔 [{action_kr} 실패] 새 원인 감지: '{norm_cause}' (종목: {name}) -> 즉시 발송")
         return True, name
 
-    # 3. 동일 원인 지속 시: 종목 목록에 추가 (중복 방지)
+    # 2. 기존 원인인 경우: 종목 누적 및 1시간 간격 체크
+    symbols = list(data.get("symbols", []))
+    last_sent_ts = float(data.get("last_sent_ts", 0.0))
     if name not in symbols:
         symbols.append(name)
 
     elapsed = now_ts - last_sent_ts
 
-    # 1시간 미경과: 1시간에 1건으로 묶어 발송 억제
+    # 1시간 미경과: 동일 원인 묶음으로 발송 억제
     if elapsed < min_interval_sec:
-        await _save_cause_throttle(key, clean_err, symbols, last_sent_ts, redis_client)
-        logger.info(f"⏸️ [{action_kr} 실패] 동일 원인 스로틀 억제: '{clean_err}' ({len(symbols)}종목 누적: {symbols})")
+        await _save_cause_throttle(key, norm_cause, clean_err, symbols, last_sent_ts, redis_client)
+        logger.info(f"⏸️ [{action_kr} 실패] 동일 원인 스로틀 억제: '{norm_cause}' ({len(symbols)}종목 누적: {symbols})")
         return False, ""
 
     # 1시간 경과: N종목 요약 문구 생성 후 주기적 1회 발송
@@ -206,15 +208,15 @@ async def check_cause_fail_throttle(
         summary_disp = symbols[0] if symbols else name
 
     # 발송 후 현재 종목 기준으로 새 윈도우 시작
-    await _save_cause_throttle(key, clean_err, [name], now_ts, redis_client)
+    await _save_cause_throttle(key, norm_cause, clean_err, [name], now_ts, redis_client)
     logger.info(f"⏳ [{action_kr} 실패] 동일 원인 1시간 경과 -> 요약 발송: {summary_disp}")
     return True, summary_disp
 
 
 async def _save_cause_throttle(
-    key: str, cause: str, symbols: List[str], last_sent_ts: float, redis_client: Optional[Any] = None
+    key: str, norm_cause: str, raw_err: str, symbols: List[str], last_sent_ts: float, redis_client: Optional[Any] = None
 ):
-    data = {"cause": cause, "symbols": symbols, "last_sent_ts": last_sent_ts}
+    data = {"norm_cause": norm_cause, "raw_err": raw_err, "symbols": symbols, "last_sent_ts": last_sent_ts}
     _MEMORY_CAUSE_CACHE[key] = data
 
     if redis_client is not None:
@@ -228,6 +230,9 @@ async def _save_cause_throttle(
 def reset_cause_fail_throttle(action_kr: Optional[str] = None):
     """원인별 실패 스로틀 초기화 (테스트용)"""
     if action_kr:
-        _MEMORY_CAUSE_CACHE.pop(_make_cause_key(action_kr), None)
+        prefix = f"alert:cause:{action_kr}:"
+        to_del = [k for k in _MEMORY_CAUSE_CACHE if k.startswith(prefix)]
+        for k in to_del:
+            _MEMORY_CAUSE_CACHE.pop(k, None)
     else:
         _MEMORY_CAUSE_CACHE.clear()

@@ -4399,12 +4399,6 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None, repl
                           store: bool = True, broadcast: bool = False):
     """텔레그램 메시지 전송 (내부용) + 시스템 알림센터 저장
     broadcast=True로 명시한 호출만 채널(TELEGRAM_CHANNEL_ID)에도 복제된다 (opt-in, 기본은 개인 채팅에만)"""
-    # SKIP 및 손절 대기 알림 차단 (텔레그램으로 발송하지 않고 stark_decisions/시스템 기록만 유지)
-    _suppress_keywords = ("Jarvis 판단: SKIP", "매수 신호 건너뜀", "손절 재시도 대기", "손절 대기")
-    if any(kw in (text or "") for kw in _suppress_keywords):
-        logger.info(f"🚫 텔레그램 발송 억제(SKIP/손절대기): {text[:60]}")
-        return
-
     # 주말 매매 신호 알림 차단 (일일보고·복기·코인은 허용)
     try:
         from datetime import datetime as _dt

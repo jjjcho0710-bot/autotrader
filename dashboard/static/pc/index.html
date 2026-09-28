@@ -34,27 +34,36 @@ body{height:100vh;display:flex;overflow:hidden;}
 #page{min-height:100%;}
 .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
          color:var(--dim);background:var(--bg);}
-@media(max-width:900px){
-  body::before{content:"PC 전용 화면입니다. 모바일은 홈으로 이동해주세요.";
-    position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;
-    align-items:center;justify-content:center;padding:30px;text-align:center;color:var(--gd);font-weight:700;}
+/* 좁은 창: 700px 이하에서 사이드바를 아이콘만 남기고 접는다 (화면을 막지 않음) */
+@media(max-width:700px){
+  .side{width:64px;min-width:64px;padding:14px 8px;align-items:center;}
+  .logo{font-size:0;padding:0 0 14px;}
+  .logo::before{content:"AT";font-size:15px;font-weight:800;color:var(--br);}
+  .jbtn{padding:8px;justify-content:center;gap:0;}
+  .jbtn>div:last-child{display:none;}
+  .navlbl{display:none;}
+  .nav-item{font-size:0;gap:0;justify-content:center;padding:11px 0;width:100%;}
+  .nav-item .ic{font-size:18px;}
+  .side-foot{padding:10px 0;font-size:0;text-align:center;align-self:stretch;}
+  .side-foot a{font-size:10px;display:block;word-break:keep-all;}
+  .main{padding-left:12px;}
 }
 </style>
 </head>
 <body>
 <aside class="side">
   <div class="logo">Auto<span>Trader</span></div>
-  <div class="jbtn" id="nav-jarvis" onclick="go('jarvis')">
+  <div class="jbtn" id="nav-jarvis" title="한강뷰매니저" onclick="go('jarvis')">
     <div class="jav">🤖</div>
     <div><div class="jname">한강뷰매니저</div><div class="jst" id="jstatus">● 온라인</div></div>
   </div>
   <div class="navlbl">메뉴</div>
-  <div class="nav-item on" id="nav-home" onclick="go('home')"><span class="ic">⊞</span>홈</div>
-  <div class="nav-item" id="nav-stock" onclick="go('stock')"><span class="ic">📈</span>포트폴리오</div>
-  <div class="nav-item" id="nav-stark" onclick="go('stark')"><span class="ic">🧠</span>판단 로그</div>
-  <div class="nav-item" id="nav-strategy" onclick="go('strategy')"><span class="ic">⚙️</span>전략/설정</div>
-  <div class="nav-item" id="nav-training" onclick="go('training')"><span class="ic">🎓</span>학습 자료</div>
-  <div class="nav-item" id="nav-logs" onclick="go('logs')"><span class="ic">📋</span>시스템 로그</div>
+  <div class="nav-item on" id="nav-home" title="홈" onclick="go('home')"><span class="ic">⊞</span>홈</div>
+  <div class="nav-item" id="nav-stock" title="포트폴리오" onclick="go('stock')"><span class="ic">📈</span>포트폴리오</div>
+  <div class="nav-item" id="nav-stark" title="판단 로그" onclick="go('stark')"><span class="ic">🧠</span>판단 로그</div>
+  <div class="nav-item" id="nav-strategy" title="전략/설정" onclick="go('strategy')"><span class="ic">⚙️</span>전략/설정</div>
+  <div class="nav-item" id="nav-training" title="학습 자료" onclick="go('training')"><span class="ic">🎓</span>학습 자료</div>
+  <div class="nav-item" id="nav-logs" title="시스템 로그" onclick="go('logs')"><span class="ic">📋</span>시스템 로그</div>
   <div class="side-foot">v1.0 · <a href="/">모바일 버전</a></div>
 </aside>
 <main class="main"><div id="page"><div class="loading">불러오는 중...</div></div></main>

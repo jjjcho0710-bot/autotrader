@@ -4615,133 +4615,174 @@ async def debug_stock_account():
 
 # ── 보유 포지션 API ──────────────────────────────────────
 
+_stock_positions_lock: Optional[asyncio.Lock] = None
+_stock_positions_cache: Optional[dict] = None
+_stock_positions_cache_ts: float = 0.0
+_STOCK_POSITIONS_CACHE_TTL: float = 10.0
+
+
 @app.get("/api/positions/stock")
 async def get_stock_positions():
     return await _rcache("cache:positions:stock", 20, lambda: _get_stock_positions_raw())
 
 
 async def _get_stock_positions_raw():
-    """KIS API - 주식 보유 포지션 실시간 조회"""
-    try:
-        import aiohttp as http
-        base = config.kis_base_url
-        token = await get_kis_token()
-        if not token:
-            raise RuntimeError("KIS 토큰 발급 실패")
+    """KIS API - 주식 보유 포지션 실시간 조회 (동시 호출 직렬화 + 10초 캐시 + 10초 타임아웃)"""
+    global _stock_positions_lock, _stock_positions_cache, _stock_positions_cache_ts
+    import time
 
-        import ssl as _ssl
-        _ssl_ctx = _ssl.create_default_context()
-        _ssl_ctx.check_hostname = False
-        _ssl_ctx.verify_mode = _ssl.CERT_NONE
-        _connector = http.TCPConnector(ssl=_ssl_ctx)
+    now_ts = time.time()
+    if _stock_positions_cache is not None and (now_ts - _stock_positions_cache_ts) < _STOCK_POSITIONS_CACHE_TTL:
+        return dict(_stock_positions_cache)
 
-        async with http.ClientSession(connector=_connector) as session:
-            headers = {
-                "authorization": f"Bearer {token}",
-                "appkey": config.kis_app_key,
-                "appsecret": config.kis_app_secret,
-                "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
-                "custtype": "P",
-            }
-            acct = config.kis_account_no.replace("-", "")
-            params = {
-                "CANO": acct[:8],
-                "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
-                "AFHR_FLPR_YN": "N", "OFL_YN": "",
-                "INQR_DVSN": "02", "UNPR_DVSN": "01",
-                "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
-                "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
-            }
-            res = await session.get(
-                f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
-                headers=headers, params=params,
-                timeout=http.ClientTimeout(total=10),
-            )
-            data = await res.json()
-            if res.status != 200 or data.get("rt_cd") != "0":
-                err_msg = data.get("msg1") or data.get("msg_cd") or f"KIS 잔고 조회 실패 (HTTP {res.status})"
-                logger.warning(f"⚠️ KIS 잔고 조회 실패: {err_msg}")
+    if _stock_positions_lock is None:
+        _stock_positions_lock = asyncio.Lock()
+
+    async with _stock_positions_lock:
+        now_ts = time.time()
+        if _stock_positions_cache is not None and (now_ts - _stock_positions_cache_ts) < _STOCK_POSITIONS_CACHE_TTL:
+            return dict(_stock_positions_cache)
+
+        try:
+            import aiohttp as http
+            base = config.kis_base_url
+            token = await get_kis_token()
+            if not token:
+                raise RuntimeError("KIS 토큰 발급 실패")
+
+            import ssl as _ssl
+            _ssl_ctx = _ssl.create_default_context()
+            _ssl_ctx.check_hostname = False
+            _ssl_ctx.verify_mode = _ssl.CERT_NONE
+            _connector = http.TCPConnector(ssl=_ssl_ctx)
+
+            async with http.ClientSession(connector=_connector) as session:
+                headers = {
+                    "authorization": f"Bearer {token}",
+                    "appkey": config.kis_app_key,
+                    "appsecret": config.kis_app_secret,
+                    "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
+                    "custtype": "P",
+                }
+                acct = config.kis_account_no.replace("-", "")
+                params = {
+                    "CANO": acct[:8],
+                    "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
+                    "AFHR_FLPR_YN": "N", "OFL_YN": "",
+                    "INQR_DVSN": "02", "UNPR_DVSN": "01",
+                    "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+                    "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+                }
+                timeout = http.ClientTimeout(total=10)
                 try:
-                    snap = await redis_client.get("positions:last_ok")
-                    if snap:
-                        d = json.loads(snap if isinstance(snap, str) else snap.decode())
-                        if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
-                            d["stale"] = True
-                            d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
-                            return d
+                    res = await session.get(
+                        f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
+                        headers=headers, params=params,
+                        timeout=timeout,
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.error("❌ KIS 보유 포지션 조회 타임아웃 (10초 초과)")
+                    raise
+
+                data = await res.json()
+                if res.status != 200 or data.get("rt_cd") != "0":
+                    rt_cd = data.get("rt_cd", "None")
+                    msg_cd = data.get("msg_cd", "None")
+                    msg1 = data.get("msg1", "")
+                    if acct:
+                        msg1 = msg1.replace(acct, "********")
+                    err_msg = msg1 or msg_cd or f"KIS 잔고 조회 실패 (HTTP {res.status})"
+                    logger.error(
+                        f"❌ KIS 잔고 조회 실패: HTTP {res.status} | rt_cd={rt_cd} | msg_cd={msg_cd} | msg1={msg1}"
+                    )
+                    try:
+                        snap = await redis_client.get("positions:last_ok")
+                        if snap:
+                            d = json.loads(snap if isinstance(snap, str) else snap.decode())
+                            if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
+                                d["stale"] = True
+                                d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
+                                return d
+                    except Exception:
+                        pass
+                    return {"success": False, "error": err_msg, "data": []}
+
+                positions = []
+                for row in data.get("output1", []):
+                    qty = int(row.get("hldg_qty", 0))
+                    if qty <= 0:
+                        continue
+                    try:
+                        sellable = int(row.get("ord_psbl_qty", qty) or qty)
+                    except Exception:
+                        sellable = qty
+                    positions.append({
+                        "symbol":    row.get("pdno"),
+                        "name":      row.get("prdt_name"),
+                        "qty":       qty,
+                        "sellable_qty": sellable,
+                        "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
+                        "cur_price": int(row.get("prpr", 0)),
+                        "pnl":       int(row.get("evlu_pfls_amt", 0)),
+                        "pnl_rate":  float(row.get("evlu_pfls_rt", 0) or 0),
+                    })
+                # output2: 계좌 총평가 요약
+                out2 = data.get("output2", [{}])
+                summary = out2[0] if out2 else {}
+                if not summary:
+                    err_msg = data.get("msg1") or "KIS 잔고 응답(output2) 비어있음"
+                    logger.warning(f"⚠️ KIS 잔고 응답 이상: {err_msg}")
+                    return {"success": False, "error": err_msg, "data": []}
+
+                total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
+                stock_eval = int(summary.get("evlu_amt_smtl_amt", 0) or 0)  # 평가금액합계
+                # 예수금: D+2 정산 예수금(실제 가용) 우선 — 매수해도 dnca_tot_amt는
+                # D+2 결제 전까지 안 줄어 혼동 유발
+                cash_val = int(summary.get("prvs_rcdl_excc_amt", 0) or 0)   # D+2 예수금
+                if cash_val == 0:
+                    cash_val = int(summary.get("nxdy_excc_amt", 0) or 0)    # D+1 예수금
+                if cash_val == 0:
+                    cash_val = int(summary.get("dnca_tot_amt", 0) or 0)     # 예수금총액
+                if cash_val == 0:
+                    cash_val = total_eval - stock_eval
+
+                account = {
+                    "total_eval":   total_eval,
+                    "stock_eval":   stock_eval,
+                    "cash":         cash_val,
+                    "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),
+                    "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),
+                    "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0) or 0),
+                    "_raw_keys":    list(summary.keys()),  # 디버그용
+                }
+                result = {"success": True, "data": positions, "account": account}
+                # 마지막 성공 스냅샷 보관 (주말 KIS 점검 등 실패 시 폴백용, 7일)
+                try:
+                    await redis_client.setex("positions:last_ok", 86400 * 7,
+                                              json.dumps({**result, "snapshot_at": datetime.now(KST).isoformat()}, default=str))
                 except Exception:
                     pass
-                return {"success": False, "error": err_msg, "data": []}
 
-            positions = []
-            for row in data.get("output1", []):
-                qty = int(row.get("hldg_qty", 0))
-                if qty <= 0:
-                    continue
-                try:
-                    sellable = int(row.get("ord_psbl_qty", qty) or qty)
-                except Exception:
-                    sellable = qty
-                positions.append({
-                    "symbol":    row.get("pdno"),
-                    "name":      row.get("prdt_name"),
-                    "qty":       qty,
-                    "sellable_qty": sellable,
-                    "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
-                    "cur_price": int(row.get("prpr", 0)),
-                    "pnl":       int(row.get("evlu_pfls_amt", 0)),
-                    "pnl_rate":  float(row.get("evlu_pfls_rt", 0) or 0),
-                })
-            # output2: 계좌 총평가 요약
-            out2 = data.get("output2", [{}])
-            summary = out2[0] if out2 else {}
-            if not summary:
-                err_msg = data.get("msg1") or "KIS 잔고 응답(output2) 비어있음"
-                logger.warning(f"⚠️ KIS 잔고 응답 이상: {err_msg}")
-                return {"success": False, "error": err_msg, "data": []}
-
-            total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
-            stock_eval = int(summary.get("evlu_amt_smtl_amt", 0) or 0)  # 평가금액합계
-            # 예수금: D+2 정산 예수금(실제 가용) 우선 — 매수해도 dnca_tot_amt는
-            # D+2 결제 전까지 안 줄어 혼동 유발
-            cash_val = int(summary.get("prvs_rcdl_excc_amt", 0) or 0)   # D+2 예수금
-            if cash_val == 0:
-                cash_val = int(summary.get("nxdy_excc_amt", 0) or 0)    # D+1 예수금
-            if cash_val == 0:
-                cash_val = int(summary.get("dnca_tot_amt", 0) or 0)     # 예수금총액
-            if cash_val == 0:
-                cash_val = total_eval - stock_eval
-
-            account = {
-                "total_eval":   total_eval,
-                "stock_eval":   stock_eval,
-                "cash":         cash_val,
-                "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),
-                "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),
-                "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0) or 0),
-                "_raw_keys":    list(summary.keys()),  # 디버그용
-            }
-            result = {"success": True, "data": positions, "account": account}
-            # 마지막 성공 스냅샷 보관 (주말 KIS 점검 등 실패 시 폴백용, 7일)
+                _stock_positions_cache = result
+                _stock_positions_cache_ts = time.time()
+                return result
+        except Exception as e:
+            if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+                logger.error("❌ KIS 보유 포지션 조회 타임아웃 (10초 초과)")
+            else:
+                logger.error(f"❌ KIS 보유 포지션 조회 예외: {type(e).__name__}: {e}")
+            # 실패 시 마지막 성공 스냅샷으로 폴백 (유효한 데이터가 있을 때만)
             try:
-                await redis_client.setex("positions:last_ok", 86400 * 7,
-                                          json.dumps({**result, "snapshot_at": datetime.now(KST).isoformat()}, default=str))
+                snap = await redis_client.get("positions:last_ok")
+                if snap:
+                    d = json.loads(snap if isinstance(snap, str) else snap.decode())
+                    if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
+                        d["stale"] = True
+                        d["error"] = f"KIS 조회 실패({str(e)[:40]}) — 마지막 확인 데이터 표시"
+                        return d
             except Exception:
                 pass
-            return result
-    except Exception as e:
-        # 실패 시 마지막 성공 스냅샷으로 폴백 (유효한 데이터가 있을 때만)
-        try:
-            snap = await redis_client.get("positions:last_ok")
-            if snap:
-                d = json.loads(snap if isinstance(snap, str) else snap.decode())
-                if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
-                    d["stale"] = True
-                    d["error"] = f"KIS 조회 실패({str(e)[:40]}) — 마지막 확인 데이터 표시"
-                    return d
-        except Exception:
-            pass
-        return {"success": False, "error": str(e), "data": []}
+            return {"success": False, "error": str(e), "data": []}
 
 
 

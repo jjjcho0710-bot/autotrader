@@ -165,25 +165,36 @@ function toTime(r, isMin){
 async function fetchChart(sym, period){
   const isMin=period.endsWith('m');
   const days=period==='D'?90:period==='W'?300:600;
+  // 반환: {rows, error}. success=false / 빈 결과는 error 사유를 담아 호출측이 캐시하지 않게 한다.
   try{const r=await fetch(`/api/chart/${sym}?period=${period}&days=${days}`);
-    const j=await r.json();return j.data||[];}catch(e){return [];}
+    const j=await r.json();const rows=j.data||[];
+    if(j.success===false)return {rows,error:j.error||'차트 조회 실패'};
+    return {rows,error:rows.length?'':'차트 데이터 없음'};
+  }catch(e){return {rows:[],error:'차트 조회 실패: '+(e&&e.message||e)};}
+}
+function showChartEmpty(el,error){
+  el.innerHTML='';
+  const d=document.createElement('div');d.className='empty';
+  d.textContent=error&&error!=='차트 데이터 없음'?`차트 데이터 없음 (${error})`:'차트 데이터 없음';
+  el.appendChild(d);
 }
 async function drawBigFor(sym, avg){
   loadLW2(async()=>{
     const isMin=mainPeriod.endsWith('m');
     const ck=`${sym}:${mainPeriod}`;
     // 분봉은 캐시 안함(실시간), 일/주/월만 캐시
+    // 실패/빈 결과는 캐시하지 않아 다음 그리기 때 재조회한다
+    let rows, err='';
     if(isMin || !chartCache[ck]){
       const d=await fetchChart(sym, mainPeriod);
-      if(!isMin) chartCache[ck]=d;
-      else chartCache[ck]=d;
-    }
-    const rows=chartCache[ck];
+      rows=d.rows; err=d.error;
+      if(!isMin && rows.length && !err) chartCache[ck]=rows;
+    }else rows=chartCache[ck];
     if(mChart){mChart.remove();mChart=null;}
     if(mVol){mVol.remove();mVol=null;}
     const el=document.getElementById('mainChart');
     if(!el)return;
-    if(!rows.length){el.innerHTML='<div class="empty">차트 데이터 없음</div>';return;}
+    if(!rows.length){showChartEmpty(el,err);return;}
     el.innerHTML='';
     const _m=new Map(); rows.forEach(r=>_m.set(String(toTime(r,isMin)),r));
     const rowsU=[..._m.values()];
@@ -216,8 +227,8 @@ async function drawBigFor(sym, avg){
     if(window._liveT)clearInterval(window._liveT);
     window._liveT=setInterval(async()=>{
       if(document.hidden)return;
-      const fresh=await fetchChart(sym, mainPeriod);
-      if(!fresh.length||!mChart)return;
+      const {rows:fresh,error:ferr}=await fetchChart(sym, mainPeriod);
+      if(ferr||!fresh.length||!mChart)return;
       chartCache[ck]=fresh;
       const last=fresh[fresh.length-1];
       try{
@@ -355,12 +366,16 @@ function ma(data,n){
 }
 async function drawCm(){
   const days=cmPeriod==='D'?120:cmPeriod==='W'?350:600;
-  let rows=[];
+  let rows=[], err='';
   try{const r=await fetch(`/api/chart/${cmSym}?period=${cmPeriod}&days=${days}`);
-    const j=await r.json();rows=j.data||[];}catch(e){}
+    const j=await r.json();rows=j.data||[];
+    if(j.success===false)err=j.error||'차트 조회 실패';
+  }catch(e){err='차트 조회 실패: '+(e&&e.message||e);}
   if(chart){chart.remove();chart=null;}
   if(volChart){volChart.remove();volChart=null;}
-  if(!rows.length)return;
+  const cel=document.getElementById('cmChart');
+  if(!rows.length){showChartEmpty(cel,err);return;}
+  cel.innerHTML='';
   const isMinM=cmPeriod.endsWith('m');
   const tt=r=>isMinM
     ? Date.UTC(+r.d.slice(0,4),+r.d.slice(4,6)-1,+r.d.slice(6,8),+(r.t||'0000').slice(0,2),+(r.t||'0000').slice(2,4))/1000

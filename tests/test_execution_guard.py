@@ -79,6 +79,10 @@ class FakeRedis:
         self.deleted.append(key)
         self.store.pop(key, None)
 
+    async def keys(self, pattern="*"):
+        import fnmatch
+        return [k for k in self.store.keys() if fnmatch.fnmatch(k, pattern)]
+
 
 class TestPrecheck(unittest.IsolatedAsyncioTestCase):
     async def test_passes_when_nothing_blocks(self):
@@ -445,6 +449,173 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
         for d in pool._conn.decisions:
             self.assertEqual(d[2], "SKIP")
             self.assertIn("한도 초과", d[4])
+
+    async def test_concurrent_10_buy_signals_delayed_balance_reflection_under_limit(self):
+        """상황 1: 체결 반영이 조회 3번 뒤에 지연되어도 in-flight 추적으로 주문 5건 이하(최대 5건) 유지."""
+        execution_guard.reset_buy_lock()
+        pool = FakePool()
+        redis = FakeRedis()
+        sent, orders = [], []
+        confirmed_positions = []
+        pending_queue = []
+
+        async def get_positions():
+            await asyncio.sleep(0.005)
+            # 주문 후 3회 호출 뒤에야 confirmed_positions로 이전됨 (지연 반영)
+            if pending_queue:
+                for item in pending_queue:
+                    item["delay"] -= 1
+                    if item["delay"] <= 0 and item["pos"] not in confirmed_positions:
+                        confirmed_positions.append(item["pos"])
+            return {"success": True, "data": list(confirmed_positions)}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            await asyncio.sleep(0.005)
+            orders.append((symbol, price, qty, is_buy))
+            # 3회 조회 지연 후 반영되도록 큐에 삽입
+            pending_queue.append({"delay": 3, "pos": {"symbol": symbol, "name": f"종목_{symbol}", "qty": qty}})
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return f"종목_{symbol}"
+
+        async def run_one(i):
+            sym = f"{200000 + i:06d}"
+            sig = make_signal(symbol=sym, name=f"종목_{sym}", action="buy")
+            dec = make_decision()
+            return await execution_guard.execute(
+                sig, dec, pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, save_trade_memory_fn=None,
+                code_to_name_fn=code_to_name,
+                get_positions_fn=get_positions,
+                max_positions=5,
+            )
+
+        results = await asyncio.gather(*(run_one(i) for i in range(10)))
+
+        # 기대값: 주문 5건 이하 (정확히 5건)
+        self.assertLessEqual(len(orders), 5)
+        self.assertEqual(len(orders), 5)
+        self.assertEqual(len(sent), 5)
+        executed_count = len([r for r in results if r.get("executed")])
+        self.assertEqual(executed_count, 5)
+
+    async def test_concurrent_10_buy_signals_fail_closed_on_check_failure_response(self):
+        """상황 2: 보유 조회가 실패(success False 또는 stale)하면 주문 0건 (fail-closed)."""
+        execution_guard.reset_buy_lock()
+        pool = FakePool()
+        redis = FakeRedis()
+        sent, orders, journaled = [], [], []
+
+        async def get_positions():
+            await asyncio.sleep(0.005)
+            return {"success": False, "error": "KIS API 500", "data": []}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            journaled.append(args)
+
+        async def code_to_name(symbol):
+            return f"종목_{symbol}"
+
+        async def run_one(i):
+            sym = f"{300000 + i:06d}"
+            sig = make_signal(symbol=sym, name=f"종목_{sym}", action="buy")
+            dec = make_decision()
+            return await execution_guard.execute(
+                sig, dec, pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, save_trade_memory_fn=None,
+                code_to_name_fn=code_to_name,
+                get_positions_fn=get_positions,
+                max_positions=5,
+            )
+
+        results = await asyncio.gather(*(run_one(i) for i in range(10)))
+
+        # 기대값: 주문 0건, 텔레그램 알림 0건
+        self.assertEqual(len(orders), 0)
+        self.assertEqual(len(sent), 0)
+
+        # 10건 모두 SKIP 처리 및 stark_decisions에 "보유 종목수 확인 불가" 기록
+        self.assertEqual(len(results), 10)
+        for r in results:
+            self.assertTrue(r.get("skipped"))
+            self.assertFalse(r.get("executed"))
+            self.assertEqual(r.get("reason"), "보유 종목수 확인 불가")
+
+        self.assertEqual(len(pool._conn.decisions), 10)
+        for d in pool._conn.decisions:
+            self.assertEqual(d[2], "SKIP")
+            self.assertEqual(d[4], "보유 종목수 확인 불가")
+
+    async def test_concurrent_10_buy_signals_fail_closed_on_check_exception(self):
+        """상황 3: 보유 조회가 예외를 던지면 주문 0건 (fail-closed)."""
+        execution_guard.reset_buy_lock()
+        pool = FakePool()
+        redis = FakeRedis()
+        sent, orders, journaled = [], [], []
+
+        async def get_positions():
+            await asyncio.sleep(0.005)
+            raise RuntimeError("KIS network timeout")
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            journaled.append(args)
+
+        async def code_to_name(symbol):
+            return f"종목_{symbol}"
+
+        async def run_one(i):
+            sym = f"{400000 + i:06d}"
+            sig = make_signal(symbol=sym, name=f"종목_{sym}", action="buy")
+            dec = make_decision()
+            return await execution_guard.execute(
+                sig, dec, pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, save_trade_memory_fn=None,
+                code_to_name_fn=code_to_name,
+                get_positions_fn=get_positions,
+                max_positions=5,
+            )
+
+        results = await asyncio.gather(*(run_one(i) for i in range(10)))
+
+        # 기대값: 주문 0건, 텔레그램 알림 0건
+        self.assertEqual(len(orders), 0)
+        self.assertEqual(len(sent), 0)
+
+        # 10건 모두 SKIP 처리 및 stark_decisions에 "보유 종목수 확인 불가" 기록
+        self.assertEqual(len(results), 10)
+        for r in results:
+            self.assertTrue(r.get("skipped"))
+            self.assertFalse(r.get("executed"))
+            self.assertEqual(r.get("reason"), "보유 종목수 확인 불가")
+
+        self.assertEqual(len(pool._conn.decisions), 10)
+        for d in pool._conn.decisions:
+            self.assertEqual(d[2], "SKIP")
+            self.assertEqual(d[4], "보유 종목수 확인 불가")
 
 
 if __name__ == "__main__":

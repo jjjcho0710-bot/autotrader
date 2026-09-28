@@ -13,6 +13,7 @@ from datetime import datetime, time, timezone, timedelta
 from common.config import config
 from common.database import db, cache
 from kis_trader import KISTrader
+from ml_report import build_ml_report_text
 from strategy.ma_cross import MACrossStrategy, MACrossConfig
 from strategy.rsi import RSIStrategy, RSIConfig
 from strategy.bollinger import BollingerStrategy, BollingerConfig
@@ -34,6 +35,7 @@ logger = logging.getLogger("stock-trader")
 MARKET_OPEN   = time(9, 0)
 MARKET_CLOSE  = time(15, 30)
 ML_TRAIN_TIME = time(15, 40)
+ML_TRAINED_KEY_TTL_SEC = 3 * 86400  # ml:trained:{KST날짜} 키 만료 (3일)
 
 KST = timezone(timedelta(hours=9))
 
@@ -190,8 +192,12 @@ class StockTrader:
             if (cur_time >= ML_TRAIN_TIME
                     and self.ml_trained_date != today
                     and now.weekday() < 5):
-                logger.info("🎓 장 마감 후 ML 자동 학습 시작...")
-                await self._run_ml_training()
+                if await self._ml_already_trained(today):
+                    logger.info("🎓 오늘 ML 학습 이미 완료 — 스킵")
+                else:
+                    logger.info("🎓 장 마감 후 ML 자동 학습 시작...")
+                    if await self._run_ml_training():
+                        await self._mark_ml_trained(today)
                 self.ml_trained_date = today
 
             if not (MARKET_OPEN <= cur_time <= MARKET_CLOSE):
@@ -250,8 +256,24 @@ class StockTrader:
             await asyncio.sleep(config.COLLECT_INTERVAL_SEC)
 
     # ── ML 자동 학습 ──────────────────────────────────────
-    async def _run_ml_training(self):
-        """장 마감 후 감시 종목 전체 자동 학습"""
+    async def _ml_already_trained(self, today) -> bool:
+        """오늘 학습 여부 — 메모리 값과 Redis 키(재시작 후에도 유지) 둘 다 확인. Redis 실패 시 메모리 값만 사용"""
+        if self.ml_trained_date == today:
+            return True
+        try:
+            return bool(await cache.client.exists(f"ml:trained:{today.isoformat()}"))
+        except Exception as e:
+            logger.warning(f"ML 학습 여부 Redis 확인 실패 — 메모리 값만 사용: {type(e).__name__}")
+            return False
+
+    async def _mark_ml_trained(self, today):
+        try:
+            await cache.client.set(f"ml:trained:{today.isoformat()}", "1", ex=ML_TRAINED_KEY_TTL_SEC)
+        except Exception as e:
+            logger.warning(f"ML 학습 완료 Redis 기록 실패 — 재시작 시 재학습될 수 있음: {type(e).__name__}")
+
+    async def _run_ml_training(self) -> bool:
+        """장 마감 후 감시 종목 전체 자동 학습. 학습 절차가 예외 없이 끝나면 True"""
         try:
             from ml.model import MLModelManager
             ml = MLModelManager(db_pool=db.pool)
@@ -263,32 +285,52 @@ class StockTrader:
             symbols_to_train = watchlist_symbols if watchlist_symbols else config.STOCK_SYMBOLS
             logger.info(f"🎓 ML 학습 대상: {len(symbols_to_train)}종목")
 
-            results = []
+            results = []          # _save_ml_memory 용 기존 형식 ("✅ 종목: 정확도%")
+            trained = []          # 보고서용 성공 종목 {symbol, accuracy, samples}
+            insufficient = other = 0
             for symbol in symbols_to_train:
                 try:
                     ohlcv = await db.get_recent_ohlcv(symbol, limit=1500, asset="stock", daily=True)
                     if len(ohlcv) < 60:
                         logger.warning(f"[{symbol}] OHLCV 부족 ({len(ohlcv)}개) → 스킵")
+                        insufficient += 1
                         continue
                     result = await ml.train(symbol, ohlcv)
                     if result["success"]:
                         logger.info(f"✅ [{symbol}] 학습 완료 — 정확도: {result['accuracy']}%")
                         results.append(f"✅ {symbol}: {result['accuracy']}%")
+                        trained.append({"symbol": symbol, "accuracy": result["accuracy"],
+                                        "samples": result.get("samples", 0)})
                     else:
                         results.append(f"⚠️ {symbol}: {result['error']}")
+                        if "데이터 부족" in str(result.get("error", "")):
+                            insufficient += 1
+                        else:
+                            other += 1
                 except Exception as e:
                     logger.error(f"❌ [{symbol}] 학습 오류: {e}")
+                    other += 1
 
+            if symbols_to_train:
+                sem = asyncio.Semaphore(10)
+
+                async def _name(r):
+                    async with sem:
+                        r["name"] = await _resolve_stock_name(r["symbol"])
+
+                await asyncio.gather(*(_name(r) for r in trained))
+                meta = {"total": len(symbols_to_train), "insufficient": insufficient, "other": other}
+                msg = build_ml_report_text(trained, meta, datetime.now(KST))
+                from common.telegram import send_report
+                await send_report(msg)
             if results:
-                now_kst = datetime.now(KST).strftime("%m/%d %H:%M")
-                msg = f"🎓 ML 자동 학습 완료 ({now_kst})\n" + "\n".join(results[:15])
-                from common.telegram import send_stock
-                await send_stock(msg)
                 await self._save_ml_memory(results, symbols_to_train)
+            return True
 
         except Exception as e:
             logger.error(f"❌ ML 학습 오류: {e}")
             await self._notify_error(f"ML 자동 학습 실패: {e}")
+            return False
 
     async def _save_ml_memory(self, results: list, symbols: list):
         try:

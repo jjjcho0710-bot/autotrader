@@ -5,6 +5,7 @@
 - 코인봇: crypto-trader 매매 알림
 """
 import logging
+import os
 import aiohttp
 from common.config import config
 
@@ -43,6 +44,77 @@ async def send_stock(text: str):
     token   = config.STARK_BOT_TOKEN or config.STOCK_BOT_TOKEN or config.TELEGRAM_TOKEN
     chat_id = config.STOCK_CHAT_ID or config.TELEGRAM_CHAT_ID
     await _send(token, chat_id, text)
+
+
+# ── 보고서 전송 (채널 우선, 없으면 주식 알림방 폴백) ──
+REPORT_CHUNK_LIMIT = 4000
+
+
+def split_text(text: str, limit: int = REPORT_CHUNK_LIMIT) -> list:
+    """텔레그램 글자 수 한도에 맞춰 줄 단위로 분할 (한 줄이 limit 를 넘으면 강제 분할)"""
+    if len(text) <= limit:
+        return [text]
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{cur}\n{line}" if cur else line
+        if len(candidate) > limit:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur = candidate
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+async def _post_channel(token: str, channel_id: str, text: str) -> bool:
+    """채널 전송. 실패해도 예외를 던지지 않고 warning 만 남긴다 (토큰/채널 ID 는 로그에 남기지 않음)"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            resp = await session.post(
+                f"{TG_API}{token}/sendMessage",
+                json={"chat_id": channel_id, "text": text, "parse_mode": "HTML"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            status = getattr(resp, "status", 200)
+            if status != 200:
+                logger.warning(f"텔레그램 채널 전송 실패: HTTP {status}")
+                return False
+        return True
+    except Exception as e:
+        detail = str(e)
+        for secret in (token, channel_id):
+            if secret:
+                detail = detail.replace(secret, "***")
+        logger.warning(f"텔레그램 채널 전송 실패: {type(e).__name__}: {detail}")
+        return False
+
+
+async def send_report(text: str):
+    """보고서 전송. TELEGRAM_CHANNEL_ID 가 있으면 채널로(STARK_BOT_TOKEN 우선, 없으면 TELEGRAM_TOKEN),
+    비어 있으면 send_stock 으로 폴백. 4000자 초과 시 여러 메시지로 분할. 어떤 실패도 예외로 번지지 않는다."""
+    try:
+        chunks = split_text(text)
+        channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+        if not channel_id:
+            for chunk in chunks:
+                await send_stock(chunk)
+            return
+        token = config.STARK_BOT_TOKEN or config.TELEGRAM_TOKEN
+        if not token:
+            logger.warning("텔레그램 채널 전송 스킵: 봇 토큰 없음")
+            return
+        for chunk in chunks:
+            if not await _post_channel(token, channel_id, chunk):
+                return  # 실패 시 나머지 조각은 보내지 않는다
+    except Exception as e:
+        logger.warning(f"보고서 전송 실패: {type(e).__name__}")
 
 
 # ── Jarvis/한강뷰매니저 전송 (STARK_BOT_TOKEN 최우선) ──

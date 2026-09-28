@@ -2,8 +2,11 @@
 KIS API — 주문 실행 모듈
 매수 / 매도 / 잔고조회 / 보유종목 조회
 """
+import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
+from typing import Optional
 
 import aiohttp
 
@@ -22,6 +25,15 @@ class KISTrader:
         self.access_token: str = ""
         self._last_cash: int = 0
         self.session: aiohttp.ClientSession = None
+        self._balance_lock: Optional[asyncio.Lock] = None
+        self._balance_cache: Optional[dict] = None
+        self._balance_cache_ts: float = 0.0
+        self._balance_cache_ttl: float = 20.0
+
+    def invalidate_balance_cache(self):
+        """잔고 캐시 즉시 무효화 (주문 체결 시 호출)"""
+        self._balance_cache = None
+        self._balance_cache_ts = 0.0
 
     async def start(self):
         # 키 설정 진단
@@ -147,34 +159,80 @@ class KISTrader:
 
     # ── 잔고 조회 ───────────────────────────────────────
     async def get_balance(self) -> dict:
-        """예수금 + 총평가금액 조회"""
-        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
-        params = {
-            "CANO": self._cano,
-            "ACNT_PRDT_CD": self._acnt_prdt_cd,
-            "PDNO": "005930",
-            "ORD_UNPR": "0",
-            "ORD_DVSN": "01",
-            "CMA_EVLU_AMT_ICLD_YN": "Y",
-            "OVRS_ICLD_YN": "N",
-        }
-        tr_id = "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R"
-        async with self._new_session() as sess:
-          async with sess.get(
-            url, headers=self._headers(tr_id), params=params
-          ) as resp:
-            data = await resp.json()
-            output = data.get("output", {})
-            cash = (int(output.get("ord_psbl_cash", 0)) or
-                    int(output.get("dnca_tot_amt", 0)) or
-                    int(output.get("nass_amt", 0)) or
-                    self._last_cash)  # get_positions에서 읽은 잔고 fallback
-            if cash > 0:
-                self._last_cash = cash
-            return {
-                "cash":  cash,
-                "total": int(output.get("tot_evlu_amt", 0)),
+        """예수금 + 총평가금액 조회 (동시 호출 직렬화 + 20초 캐시 + 10초 타임아웃)"""
+        now = time.time()
+        if self._balance_cache is not None and (now - self._balance_cache_ts) < self._balance_cache_ttl:
+            return dict(self._balance_cache)
+
+        if self._balance_lock is None:
+            self._balance_lock = asyncio.Lock()
+
+        async with self._balance_lock:
+            now = time.time()
+            if self._balance_cache is not None and (now - self._balance_cache_ts) < self._balance_cache_ttl:
+                return dict(self._balance_cache)
+
+            url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+            params = {
+                "CANO": self._cano,
+                "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                "PDNO": "005930",
+                "ORD_UNPR": "0",
+                "ORD_DVSN": "01",
+                "CMA_EVLU_AMT_ICLD_YN": "Y",
+                "OVRS_ICLD_YN": "N",
             }
+            tr_id = "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R"
+            timeout = aiohttp.ClientTimeout(total=10)
+
+            try:
+                async with self._new_session() as sess:
+                    async with sess.get(
+                        url, headers=self._headers(tr_id), params=params, timeout=timeout
+                    ) as resp:
+                        status = resp.status
+                        data = await resp.json()
+
+                        if status != 200 or data.get("rt_cd") != "0":
+                            rt_cd = data.get("rt_cd", "None")
+                            msg_cd = data.get("msg_cd", "None")
+                            msg1 = data.get("msg1", "")
+                            if self._cano:
+                                msg1 = msg1.replace(self._cano, "********")
+                            logger.error(
+                                f"❌ KIS 잔고 조회 실패: HTTP {status} | rt_cd={rt_cd} | msg_cd={msg_cd} | msg1={msg1}"
+                            )
+                            return {
+                                "cash": self._last_cash,
+                                "total": 0,
+                                "error": msg1,
+                                "status": status,
+                                "rt_cd": rt_cd,
+                                "msg_cd": msg_cd,
+                            }
+
+                        output = data.get("output", {})
+                        cash = (int(output.get("ord_psbl_cash", 0)) or
+                                int(output.get("dnca_tot_amt", 0)) or
+                                int(output.get("nass_amt", 0)) or
+                                self._last_cash)  # get_positions에서 읽은 잔고 fallback
+                        if cash > 0:
+                            self._last_cash = cash
+                        total = int(output.get("tot_evlu_amt", 0) or 0)
+                        res = {
+                            "cash": cash,
+                            "total": total,
+                        }
+                        self._balance_cache = dict(res)
+                        self._balance_cache_ts = time.time()
+                        return res
+
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.error("❌ KIS 잔고 조회 타임아웃 (10초 초과)")
+                return {"cash": self._last_cash, "total": 0, "error": "타임아웃(10초)"}
+            except Exception as e:
+                logger.error(f"❌ KIS 잔고 조회 예외 발생: {type(e).__name__}: {e}")
+                return {"cash": self._last_cash, "total": 0, "error": str(e)}
 
     # ── 보유 종목 조회 ──────────────────────────────────
     async def get_positions(self) -> list:
@@ -288,14 +346,17 @@ class KISTrader:
             filled_qty = await self._get_filled_qty(order_no, symbol, side="02")
             if filled_qty is None:
                 # 체결 조회 자체가 실패하면 판정 불가 — 접수는 됐으니 보수적으로 성공 처리하되 표시
+                self.invalidate_balance_cache()
                 logger.warning(f"⚠️ 체결 확인 API 실패 [{symbol}] — 접수 결과만으로 판정")
                 return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
             if filled_qty <= 0:
                 logger.error(f"❌ 매수 미체결: {symbol} 주문 {qty}주 접수됐으나 체결 0주")
                 return {"success": False, "error": f"주문 접수됐으나 미체결(체결수량 0)"}
             if filled_qty < qty:
+                self.invalidate_balance_cache()
                 logger.warning(f"⚠️ 매수 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
                 return {"success": True, "order_no": order_no, "filled_qty": filled_qty, "partial": True}
+            self.invalidate_balance_cache()
             logger.info(f"✅ 매수 체결 확인: {symbol} {price:,}원 × {filled_qty}주")
             return {"success": True, "order_no": order_no, "filled_qty": filled_qty}
         return {"success": False, "error": "매수 실패"}
@@ -335,14 +396,17 @@ class KISTrader:
         filled_qty = await self._get_filled_qty(order_no, symbol)
         if filled_qty is None:
             # 체결 조회 자체가 실패하면 판정 불가 — 접수는 됐으니 보수적으로 성공 처리하되 표시
+            self.invalidate_balance_cache()
             logger.warning(f"⚠️ 체결 확인 API 실패 [{symbol}] — 접수 결과만으로 판정")
             return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
         if filled_qty <= 0:
             logger.error(f"❌ 매도 미체결: {symbol} 주문 {qty}주 접수됐으나 체결 0주")
             return {"success": False, "error": f"주문 접수됐으나 미체결(체결수량 0)"}
         if filled_qty < qty:
+            self.invalidate_balance_cache()
             logger.warning(f"⚠️ 매도 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
             return {"success": True, "order_no": order_no, "filled_qty": filled_qty, "partial": True}
+        self.invalidate_balance_cache()
         logger.info(f"✅ 매도 체결 확인: {symbol} {price:,}원 × {filled_qty}주")
         return {"success": True, "order_no": order_no, "filled_qty": filled_qty}
 

@@ -29,10 +29,12 @@ async def ask_openwebui(
     fallback_fn=None,
     pool=None,
     redis=None,
+    trade_memory_since=None,
 ) -> str:
     """
     Open-WebUI 모델 호출 (순수 LLM 인터페이스).
     내부에서 대화 저장을 자동으로 수행하지 않음.
+    trade_memory_since: 주어지면 히스토리에서 이 시각 이전의 '[매매기록 ...]' 행을 뺀다 (채팅 경로 전용).
     """
     openwebui_url = os.getenv("OPENWEBUI_URL", "https://open-webui-production-5843.up.railway.app")
     openwebui_token = os.getenv("OPENWEBUI_API_TOKEN", "")
@@ -51,7 +53,8 @@ async def ask_openwebui(
 
     try:
         # 이전 대화 히스토리 로드 (순수 대화 세션)
-        history = await get_chat_history(session_id, max_turns=8, pool=pool, redis=redis)
+        history_kwargs = {"trade_memory_since": trade_memory_since} if trade_memory_since is not None else {}
+        history = await get_chat_history(session_id, max_turns=8, pool=pool, redis=redis, **history_kwargs)
 
         # 현재 메시지 추가
         messages = history + [{"role": "user", "content": message}]

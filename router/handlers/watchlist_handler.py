@@ -148,7 +148,20 @@ async def handle_command(msg: str, pool: Any, universe: Any, stock_name_map: dic
 
 
 async def handle_quick_add(user_msg: str, pool: Any, universe: Any, web_research_fn) -> Optional[str]:
-    """확정 명령 "(종목) 감시/관심 추가": Open-WebUI를 거치지 않고 즉시 watchlist에 반영"""
+    """확정 명령 "(종목) 감시/관심 추가": Open-WebUI를 거치지 않고 즉시 watchlist에 반영
+    접두형 "감시 추가 (종목)"(채팅이 감시 대상이 아닌 종목에 제안하는 문구)도 받는다 —
+    이 형식은 종목이 확인될 때만 처리하고, 아니면 None(AI 대화로 넘김)."""
+    if "http" not in user_msg:
+        pm = re.match(r"\s*(감시|관심)\s*(종목)?\s*(추가|등록)\s+(\S.*?)\s*$", user_msg)
+        if pm:
+            symbol, name = await universe.resolve_symbol(pm.group(4))
+            if not symbol:
+                return None
+            try:
+                await add_symbol(pool, symbol, name)
+                return f"👁️ {name}({symbol}) 감시종목에 추가했어요. 다음 스캔부터 신호 감시합니다."
+            except Exception as e:
+                return f"❌ 감시 추가 실패: {str(e)[:80]}"
     m = re.search(r"(.+?)\s*(감시|관심)\s*(종목)?\s*(추가|등록|넣어)", user_msg)
     if not m or "http" in user_msg:
         return None

@@ -161,6 +161,43 @@ class TestHandleQuickAdd(unittest.IsolatedAsyncioTestCase):
             "https://x.com 감시 추가해줘", FakePool([]), Universe(None), None)
         self.assertIsNone(reply)
 
+    async def test_prefix_form_adds_when_symbol_resolves(self):
+        """채팅이 감시 대상이 아닌 종목에 제안하는 문구: "감시 추가 종목명" """
+        pool = FakePool([])
+        universe = Universe(None)
+        universe.replace_cache({"흥구석유": "024060"})
+
+        async def web_research(q, name=""):
+            raise AssertionError("접두형은 웹 조사를 하지 않는다")
+
+        reply = await watchlist_handler.handle_quick_add("감시 추가 흥구석유", pool, universe, web_research)
+        self.assertIn("흥구석유(024060) 감시종목에 추가했어요", reply)
+        self.assertEqual(pool._conn.rows[0]["symbol"], "024060")
+
+    async def test_prefix_form_unresolved_falls_through_without_web_research(self):
+        pool = FakePool([])
+
+        async def web_research(q, name=""):
+            raise AssertionError("종목 미확인 접두형은 AI 대화로 넘긴다(웹 조사 X)")
+
+        for msg in ("감시 추가 없는종목", "감시 종목 추가 해줘", "감시 추가"):
+            reply = await watchlist_handler.handle_quick_add(msg, pool, Universe(None), web_research)
+            self.assertIsNone(reply, msg)
+        self.assertEqual(pool._conn.rows, [])
+
+    async def test_prefix_form_reaches_handler_through_route_early(self):
+        from router import intent_router
+        pool = FakePool([])
+        universe = Universe(None)
+        universe.replace_cache({"흥구석유": "024060"})
+        ctx = intent_router.RouterContext(
+            pool=pool, redis=None, universe=universe, config=None, stock_name_map={}, session_id="advice",
+            send_telegram=None, get_kis_token=None, kis_order=None, analyze_chart=None,
+            get_stock_positions=None, log_journal=None, web_research=None, jarvis_chat=None, channel="web")
+        reply = await intent_router.route_early("감시 추가 흥구석유", ctx)
+        self.assertIn("감시종목에 추가했어요", reply)
+        self.assertEqual(pool._conn.rows[0]["symbol"], "024060")
+
 
 class TestAddSymbol(unittest.IsolatedAsyncioTestCase):
     async def test_priority_flag_sets_priority_column(self):

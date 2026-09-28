@@ -890,20 +890,9 @@ class StockTrader:
 
             # ML 예측 결과 (Jarvis에게 참고 정보로 전달)
             ml_result = await self._get_ml_result(symbol, rows)
-            buy_prob = ml_result.get("buy_prob", 0.65)
 
-            # ML 확률 기반 매수 금액 산정
-            if buy_prob >= 0.90:
-                ratio, strength = 0.30, "강함"
-            elif buy_prob >= 0.80:
-                ratio, strength = 0.20, "보통"
-            elif buy_prob >= 0.70:
-                ratio, strength = 0.15, "약함"
-            else:
-                ratio, strength = 0.10, "최소"
-
-            buy_amount = min(int(cash * ratio), cash)
-            buy_amount = max(buy_amount, 100000)
+            # ML 확률 기반 매수 금액 산정 (ML 실패 시 확률 없이 최소 비율 고정)
+            buy_amount, ml_text = self._ml_buy_plan(ml_result, cash)
             qty = max(1, buy_amount // cur_price)
 
             # 수급 정보 수집
@@ -967,7 +956,7 @@ class StockTrader:
             # ── Jarvis 최종 판단 (매수/매도 결정 + 실행 + 텔레그램 알림 모두 dashboard가 처리) ──
             buy_amount_krw = cur_price * qty
             reason = (
-                f"전략:{triggered_strategy} | ML매수확률:{buy_prob:.0%}({strength}) "
+                f"전략:{triggered_strategy} | {ml_text} "
                 f"| 수급:{supply_reason} | 뉴스:{news_reason} "
                 f"| 예수금:{cash:,.0f}원 | 매수예정:{buy_amount_krw:,.0f}원"
             )
@@ -1025,6 +1014,8 @@ class StockTrader:
 
     # ── ML 예측 (Jarvis 참고용) ──────────────────────────
     async def _get_ml_result(self, symbol: str, ohlcv_rows: list) -> dict:
+        """ML 예측 결과. 성공 시 predict() 결과(success=True, buy_prob 포함) 그대로,
+        실패 시 확률을 만들어 내지 않고 {"success": False, "reason": 짧은 사유}만 반환한다."""
         try:
             from ml.model import MLModelManager
             ml = MLModelManager(db_pool=db.pool)
@@ -1033,9 +1024,44 @@ class StockTrader:
                       "low": float(r.get("low",0)), "close": float(r.get("close",0)),
                       "volume": float(r.get("volume",0))} for r in ohlcv_rows]
             result = await ml.predict(symbol, ohlcv)
-            return result if result.get("success") else {"buy_prob": 0.65}
-        except:
-            return {"buy_prob": 0.65}
+        except Exception as e:  # CancelledError/KeyboardInterrupt 는 BaseException 이라 삼키지 않는다
+            logger.warning(f"⚠️ [{symbol}] ML 예측 예외: {type(e).__name__}: {str(e)[:200]}")
+            return {"success": False, "reason": f"예외:{type(e).__name__}"}
+
+        if not isinstance(result, dict) or not result.get("success"):
+            err = (result.get("error") if isinstance(result, dict) else None) or ""
+            reason = "모델 없음" if "모델 없음" in err else (err[:40] or "예측 없음")
+            logger.info(f"ℹ️ [{symbol}] ML 예측 없음: {reason}")
+            return {"success": False, "reason": reason}
+        if not isinstance(result.get("buy_prob"), (int, float)):
+            logger.warning(f"⚠️ [{symbol}] ML 예측 결과에 buy_prob 없음")
+            return {"success": False, "reason": "예측 없음"}
+        return result
+
+    @staticmethod
+    def _ml_buy_plan(ml_result: dict, cash: float) -> tuple:
+        """ML 결과 → (매수 금액, reason 에 넣을 ML 문구).
+        성공: 확률 구간별 비율(강함 30%/보통 20%/약함 15%/최소 10%) + "ML매수확률:NN%(강도)".
+        실패: 확률을 쓰지 않고 최소 비율(10%) 고정 + "ML예측 없음(사유)".
+        (stark/decision_engine.py 의 AI 폴백은 "ML매수확률:NN%" 만 읽으므로 실패 문구는 확률 0 으로 처리된다.)"""
+        if ml_result.get("success") and isinstance(ml_result.get("buy_prob"), (int, float)):
+            buy_prob = ml_result["buy_prob"]
+            if buy_prob >= 0.90:
+                ratio, strength = 0.30, "강함"
+            elif buy_prob >= 0.80:
+                ratio, strength = 0.20, "보통"
+            elif buy_prob >= 0.70:
+                ratio, strength = 0.15, "약함"
+            else:
+                ratio, strength = 0.10, "최소"
+            ml_text = f"ML매수확률:{buy_prob:.0%}({strength})"
+        else:
+            ratio = 0.10
+            ml_text = f"ML예측 없음({ml_result.get('reason') or '사유 미상'})"
+
+        buy_amount = min(int(cash * ratio), cash)
+        buy_amount = max(buy_amount, 100000)
+        return buy_amount, ml_text
 
     # ── 즉시 텔레그램 알림 (손절/익절용) ─────────────────
     async def _notify_trade(self, action: str, symbol: str, name: str,

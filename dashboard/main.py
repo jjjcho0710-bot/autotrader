@@ -29,8 +29,11 @@ from chat.memory import (
     save_chat_history as _mem_save_chat_history,
     get_chat_history as _mem_get_chat_history,
     summarize_old_chats as _mem_summarize_old_chats,
+    get_reliable_baseline as _mem_get_reliable_baseline,
+    is_summary_before_baseline as _mem_is_summary_before_baseline,
 )
 from chat.llm import ask_openwebui as _llm_ask_openwebui
+from chat import stock_snapshot as _snap
 from learning.collector import (
     extract_youtube_id as _collector_extract_youtube_id,
     fetch_learning_text as _collector_fetch_learning_text,
@@ -376,6 +379,76 @@ async def _fetch_daily_ohlcv(symbol: str, days: int = 40) -> list:
     """KIS 일봉 조회 → [{date,open,high,low,close,vol}] 오래된→최신 (실패 시 빈 목록; 사유가 필요하면 _fetch_daily_ohlcv_ex)"""
     rows, _ = await _fetch_daily_ohlcv_ex(symbol, days)
     return rows
+
+
+_SNAPSHOT_CACHE_TTL = 30  # 채팅 종목 스냅샷 Redis 캐시(초) — 성공 결과만 캐시
+
+
+async def _fetch_kis_inquire_price(symbol: str) -> Optional[dict]:
+    """KIS 현재가(inquire-price) output 1회 조회 — 기존 _kis_quote_get(_KIS_QUOTE_SEM·재시도)을 재사용.
+    실패/빈 응답이면 None (호출부가 일봉만으로 폴백)"""
+    try:
+        token = await get_kis_token()
+        if not token:
+            return None
+        import ssl as _ssl
+        _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+            data = await _kis_quote_get(
+                sess, config.kis_base_url, token,
+                "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
+                {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}, symbol, "현재가")
+        out = data.get("output") or {}
+        return out if int(out.get("stck_prpr", 0) or 0) > 0 else None
+    except Exception as e:
+        logger.debug(f"현재가 조회 실패 [{symbol}]: {_scrub_kis_msg(e)[:80]}")
+        return None
+
+
+async def _last_known_daily_date(symbol: str) -> str:
+    """KIS 조회가 모두 실패했을 때 안내용: DB(stock_daily_ohlcv)에 있는 마지막 일봉 날짜(YYYYMMDD, 없으면 빈 문자열)"""
+    try:
+        async with db_pool.acquire() as conn:
+            d = await conn.fetchval("SELECT MAX(ts) FROM stock_daily_ohlcv WHERE symbol=$1", symbol)
+        return d.strftime("%Y%m%d") if d else ""
+    except Exception:
+        return ""
+
+
+async def _build_stock_snapshot(symbol: str, name: str, now: Optional[datetime] = None) -> dict:
+    """채팅용 종목 스냅샷 (감시/보유 여부와 무관). 일봉(_fetch_daily_ohlcv_ex)과 장중 현재가(inquire-price)를
+    기존 조회 함수로 가져와 chat.stock_snapshot.build_snapshot으로 계산한다. 새 외부 호출 종류는 없다.
+    성공(ok=True)만 Redis에 30초 캐시. 실패 시 {'ok': False, 'error', 'last_daily_date'} — 숫자 없음."""
+    cache_key = f"chat:stock_snapshot:{symbol}"
+    try:
+        cached = await redis_client.get(cache_key) if redis_client else None
+        if cached:
+            snap = json.loads(cached if isinstance(cached, str) else cached.decode())
+            if isinstance(snap, dict) and snap.get("ok"):
+                return snap
+    except Exception:
+        pass
+    now = now or datetime.now(KST)
+    try:
+        want_quote = _snap.is_market_hours(now)
+        rows_res, quote = await asyncio.gather(
+            _fetch_daily_ohlcv_ex(symbol, 250),
+            _fetch_kis_inquire_price(symbol) if want_quote else asyncio.sleep(0),
+            return_exceptions=True)
+        rows, err = ([], f"일봉 조회 예외: {type(rows_res).__name__}") if isinstance(rows_res, BaseException) else rows_res
+        quote = quote if isinstance(quote, dict) else None
+        if not rows:
+            return _snap.build_failure(symbol, name, err, await _last_known_daily_date(symbol))
+        snap = _snap.build_snapshot(symbol, name, rows, quote=quote, now=now)
+    except Exception as e:
+        logger.warning(f"종목 스냅샷 실패 [{symbol}]: {_scrub_kis_msg(e)[:120]}")
+        return _snap.build_failure(symbol, name, f"스냅샷 계산 오류: {type(e).__name__}", "")
+    if snap.get("ok") and redis_client:
+        try:
+            await redis_client.setex(cache_key, _SNAPSHOT_CACHE_TTL, json.dumps(snap, ensure_ascii=False))
+        except Exception:
+            pass
+    return snap
 
 
 def _candle_pattern(rows: list) -> str:
@@ -975,13 +1048,21 @@ _extract_youtube_id = _collector_extract_youtube_id
 _fetch_learning_text = _collector_fetch_learning_text
 
 
-async def _web_research_stock(query: str, symbol: str = "", name: str = "") -> str:
-    """시스템 미등록 종목/기업 질문 → Gemini + Google 검색으로 웹 조사 후 요약 답변"""
+async def _web_research_stock(query: str, symbol: str = "", name: str = "", aux: bool = False) -> str:
+    """시스템 미등록 종목/기업 질문 → Gemini + Google 검색으로 웹 조사 후 요약 답변
+    aux=True(채팅 보조용): '날짜 | 출처 | 내용' 줄만 골라 "ℹ️ 웹 정보(검증 안 됨)" 소제목 아래에 돌려준다.
+    조건에 맞는 줄이 없거나 실패하면 빈 문자열(실패 문구도 답변에 섞지 않는다)."""
     key = os.getenv("GEMINI_API_KEY", "") or config.GEMINI_API_KEY
     if not key:
-        return "❌ 웹 검색 기능을 쓰려면 GEMINI_API_KEY 설정이 필요해요."
+        return "" if aux else "❌ 웹 검색 기능을 쓰려면 GEMINI_API_KEY 설정이 필요해요."
     subject = name or query
-    prompt = f"""'{subject}' 이 한국 상장(또는 예정) 기업/종목에 대해 최신 정보를 검색해서 알려줘.
+    if aux:
+        prompt = f"""'{subject}' 한국 상장 종목의 최근 뉴스·공시를 검색해라.
+각 항목은 반드시 한 줄에 정확히 이 형식으로만 쓴다: YYYY-MM-DD | 출처명 | 내용 한 문장
+- 날짜와 출처를 확인할 수 없는 내용은 쓰지 마라. 주가·등락률·거래량 같은 시세 숫자는 쓰지 마라.
+- 최대 5줄. 다른 문장·머리말·맺음말은 쓰지 마라. 확인되는 항목이 없으면 아무것도 쓰지 마라."""
+    else:
+        prompt = f"""'{subject}' 이 한국 상장(또는 예정) 기업/종목에 대해 최신 정보를 검색해서 알려줘.
 포함할 내용: 어떤 회사인지(사업), 최근 주요 뉴스나 공시(있으면 날짜 포함), 최근 주가 동향(알 수 있으면).
 모르는 내용은 추측하지 말고 "확인 안 됨"이라고 써라. 5~8문장, 한국어 존댓말로 자연스럽게 작성."""
     body = {"contents": [{"parts": [{"text": prompt}]}],
@@ -993,8 +1074,13 @@ async def _web_research_stock(query: str, symbol: str = "", name: str = "") -> s
                 params={"key": key}, json=body, timeout=_aiohttp.ClientTimeout(total=30))
             data = await r.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
+        if aux:
+            return _snap.format_web_info(_snap.filter_web_items(text))
         return f"🔎 웹 조사: {subject}\n\n{text}\n\n(참고: 실시간 시세·매매 판단용이 아닌 일반 정보입니다)"
     except Exception as e:
+        if aux:
+            logger.debug(f"보조 웹 조사 실패(생략): {e}")
+            return ""
         return f"❌ 웹 조사 실패: {str(e)[:120]}"
 
 
@@ -3552,8 +3638,10 @@ async def _get_market_index_ctx() -> str:
         return ""
 
 
-async def get_portfolio_context() -> str:
-    """현재 포트폴리오 데이터를 Gemini 컨텍스트로 변환"""
+async def get_portfolio_context(trades_since: Optional[datetime] = None) -> str:
+    """현재 포트폴리오 데이터를 Gemini 컨텍스트로 변환
+    trades_since(기준선)가 주어지면 [최근 매매]에서 그 이전 거래(옛 계좌 기록)를 뺀다 — 채팅 경로 전용.
+    STARK 판단 등 다른 호출부는 인자 없이 호출하므로 동작이 그대로다."""
     ctx_parts = []
     try:
         _mi = await _get_market_index_ctx()
@@ -3667,7 +3755,20 @@ async def get_portfolio_context() -> str:
 
     try:
         # 최근 매매 이력
-        trades_res = await get_trades(limit=5)
+        trades_res = await get_trades(limit=5 if trades_since is None else 50)
+        if trades_since is not None and trades_res.get("success"):
+            _kept = []
+            for _t in trades_res.get("data") or []:
+                try:
+                    if _t["ts"] and datetime.fromisoformat(_t["ts"]) >= trades_since:
+                        _kept.append(_t)
+                except Exception:
+                    pass  # 시각을 못 읽는 거래는 기준선 이후임을 확인할 수 없으므로 제외
+            trades_res = {"success": True, "data": _kept[:5]}
+            if not _kept:
+                ctx_parts.append(
+                    f"\n[최근 매매: 기준선({_snap.format_baseline_kst(trades_since)} KST) 이후 매매 없음 — "
+                    f"그 이전 기록은 옛 계좌 데이터라 제외함]")
         if trades_res.get("success") and trades_res.get("data"):
             trades = trades_res["data"]
             ctx_parts.append(f"\n[최근 매매 {len(trades)}건]")
@@ -4040,8 +4141,9 @@ def _validate_setting(k: str, v) -> tuple:
     return setting_handler.validate_setting(k, v)
 
 
-async def _search_past_chats(query: str, limit: int = 5) -> str:
-    """과거 대화 키워드 검색 → 관련 대화 발췌 ('그때 그거' 기억)"""
+async def _search_past_chats(query: str, limit: int = 5, since: Optional[datetime] = None) -> str:
+    """과거 대화 키워드 검색 → 관련 대화 발췌 ('그때 그거' 기억)
+    since(기준선)가 주어지면 그 이전의 '[매매기록 ...]' 행(옛 계좌 매매 기억)은 발췌에서 뺀다."""
     try:
         import re as _re
         words = [w for w in _re.findall(r"[가-힣A-Za-z0-9]{2,}", query)
@@ -4049,12 +4151,17 @@ async def _search_past_chats(query: str, limit: int = 5) -> str:
         if not words:
             return ""
         conds = " OR ".join(f"content ILIKE ${i+1}" for i in range(len(words)))
+        params = [f"%{w}%" for w in words]
+        baseline_cond = ""
+        if since is not None:
+            params.append(since)
+            baseline_cond = f" AND NOT (content LIKE '[매매기록 %' AND created_at < ${len(params)})"
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(f"""
                 SELECT role, content, created_at FROM jarvis_memory
-                WHERE ({conds}) AND created_at < NOW() - INTERVAL '10 minutes'
+                WHERE ({conds}) AND created_at < NOW() - INTERVAL '10 minutes'{baseline_cond}
                 ORDER BY created_at DESC LIMIT {int(limit)}
-            """, *[f"%{w}%" for w in words])
+            """, *params)
         if not rows:
             return ""
         lines = []
@@ -4066,14 +4173,19 @@ async def _search_past_chats(query: str, limit: int = 5) -> str:
         return ""
 
 
-async def _get_chat_summaries(limit: int = 3) -> str:
-    """장기 기억: 과거 대화 요약본"""
+async def _get_chat_summaries(limit: int = 3, since: Optional[datetime] = None) -> str:
+    """장기 기억: 과거 대화 요약본
+    since(기준선)가 주어지면 기준선 당일 이전 하루치 요약('[YYYY-MM-DD] ...')은 뺀다."""
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT content FROM jarvis_notes
-                WHERE category='chat_summary' ORDER BY created_at DESC LIMIT $1""", limit)
-        return "\n".join(r["content"] for r in rows) if rows else ""
+                WHERE category='chat_summary' ORDER BY created_at DESC LIMIT $1""",
+                limit if since is None else limit * 5)
+        contents = [r["content"] for r in rows]
+        if since is not None:
+            contents = [c for c in contents if not _mem_is_summary_before_baseline(c, since)][:limit]
+        return "\n".join(contents)
     except Exception:
         return ""
 
@@ -4166,12 +4278,18 @@ async def _jarvis_chat_impl(body: dict):
             asyncio.create_task(_manual_collect())
             return {"success": True, "reply": "📰 데이터 수집 시작했어요! 1~2분 후 `/api/data/sentiment` 에서 결과 확인하세요.", "context_used": False}
 
-        # 포트폴리오 컨텍스트 추가
-        portfolio_ctx = await get_portfolio_context()
+        # 데이터 기준선(data_baseline.reliable_trading_data_from) — 이전 매매 기억(옛 계좌·버그 구간)은
+        # 사용자가 과거를 직접 묻지 않는 한 프롬프트에 넣지 않는다 (아래 4개 경로에 같은 기준으로 적용)
+        _baseline = await _mem_get_reliable_baseline(db_pool)
+        _past_asked = _snap.wants_past_records(user_msg)
+        _since = None if _past_asked else _baseline
+
+        # 포트폴리오 컨텍스트 추가 ([최근 매매] 경로)
+        portfolio_ctx = await get_portfolio_context(trades_since=_since)
 
         # 기억 주입: 관련 과거 대화 + 장기 기억 요약 + 활성 지시
-        past_ctx = await _search_past_chats(user_msg)
-        summaries = await _get_chat_summaries()
+        past_ctx = await _search_past_chats(user_msg, since=_since)  # jarvis_memory 검색 경로
+        summaries = await _get_chat_summaries(since=_since)  # jarvis_notes 대화 요약 경로
         directives_now = await _get_active_directives()
         memory_block = ""
         if summaries:
@@ -4181,31 +4299,47 @@ async def _jarvis_chat_impl(body: dict):
         if directives_now:
             memory_block += f"\n[현재 활성 지시사항]\n{directives_now}\n"
 
-        # 종목 정보 첨부: 시스템이 아는 종목이면 조용히 데이터만 붙여준다 (정규식으로 "질문 의도" 판단 안 함)
+        # 종목 정보 첨부: 시스템이 아는 종목이면 (감시/보유 여부와 무관하게) 실제 시세·일봉 스냅샷을 붙인다.
         # 판단(포트폴리오 질문인지/종목 질문인지/잡담인지)은 AI에게 맡기고,
         # AI가 모르는 종목이라 판단하면 [[NEED_SEARCH: 종목명]] 태그를 응답에 붙이도록 프롬프트로 지시한다.
         stock_ctx = ""
+        _resolved = None   # (symbol, name) — 사용자 메시지에서 인식된 종목
+        _snap_ok = False   # 스냅샷 조회 성공 여부
+        _tracked = None    # True=보유/감시 대상, False=아님, None=판별 실패(감시 추가 제안을 붙이지 않음)
         try:
             _sym, _nm = await universe.resolve_symbol(user_msg)
             if _sym:
-                _rows = await _fetch_daily_ohlcv(_sym, 5)
-                _cur = _rows[-1]["close"] if _rows else 0
-                _chg = ""
-                if len(_rows) >= 2 and _rows[-2]["close"]:
-                    _chg = f" ({(_rows[-1]['close'] / _rows[-2]['close'] - 1) * 100:+.2f}%)"
-                _ana = await _analyze_chart(_sym, _nm)
-                _held = ""
+                _resolved = (_sym, _nm)
+                _snapshot = await _build_stock_snapshot(_sym, _nm)
+                _snap_ok = bool(_snapshot.get("ok"))
+                _held, _is_held, _pos_known = "", False, False
                 try:
-                    _pos = (await get_stock_positions()).get("data") or []
-                    _pp = next((x for x in _pos if x["symbol"] == _sym), None)
-                    if _pp:
-                        _held = f"\n보유: {_pp['qty']}주, 평단 {_pp['avg_price']:,}원, 손익 {_pp.get('pnl_rate',0):+.1f}%"
+                    _pos_res = await get_stock_positions()
+                    if _pos_res.get("success"):
+                        _pos_known = True
+                        _pos = _pos_res.get("data") or []
+                        _pp = next((x for x in _pos if x["symbol"] == _sym), None)
+                        if _pp:
+                            _is_held = True
+                            _held = f"\n보유: {_pp['qty']}주, 평단 {_pp['avg_price']:,}원, 손익 {_pp.get('pnl_rate',0):+.1f}%"
                 except Exception:
                     pass
+                _watched = None
+                try:
+                    async with db_pool.acquire() as conn:
+                        _watched = bool(await conn.fetchval(
+                            "SELECT 1 FROM watchlist WHERE symbol=$1 AND is_active=TRUE", _sym))
+                except Exception:
+                    pass
+                _tracked = True if (_is_held or _watched) else (False if (_pos_known and _watched is False) else None)
                 stock_ctx = (f"\n[시스템이 인식한 종목: {_nm}({_sym}) — 질문과 관련 있다면 아래 데이터로 답하라]\n"
-                             f"현재가 {_cur:,}원{_chg}{_held}\n{_ana or '(차트 데이터 부족)'}\n")
+                             f"{_snap.format_snapshot(_snapshot)}{_held}\n")
         except Exception as _e:
             logger.debug(f"종목 자동 리서치 스킵: {_e}")
+
+        _answer_rules = _snap.build_answer_rules(
+            has_snapshot=bool(_resolved), baseline=_baseline, past_asked=_past_asked,
+            news_asked=_snap.asks_news(user_msg))
 
         full_msg = (f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}{stock_ctx}\n{memory_block}\n"
                     "[시스템 주의] 너는 이 대화에서 직접 주문을 실행할 수 없다. "
@@ -4238,7 +4372,9 @@ async def _jarvis_chat_impl(body: dict):
                     "특정 키워드가 있어야만 반응하지 말고, '이 종목을 더 챙겨봐달라는 취지구나'라고 읽히면 "
                     "watch_interest를 채워라. "
                     "해당 없으면 [[ACTION]] 줄을 출력하지 마라. 일회성 질문·잡담엔 절대 출력 금지.\n"
-                    "[응답 형식 — 반드시 준수] 최종 결론만 출력하라. 최대 4문장. "
+                    f"{_answer_rules}\n"
+                    "[응답 형식 — 반드시 준수] 최종 결론만 출력하라. "
+                    + ("종목 스냅샷이 있는 질문은 [종목 답변 규칙] 형식으로 최대 12줄. " if _resolved else "최대 4문장. ") +
                     "사고 과정, 규칙/지시 인용, 검토 중얼거림, '~라고 답변해야 한다' 류 초안, 같은 내용 반복을 절대 출력하지 마라. "
                     "근거는 핵심 1~2개만 짧게.")
 
@@ -4246,20 +4382,27 @@ async def _jarvis_chat_impl(body: dict):
         await _save_chat_history(session_id, "user", user_msg, channel=channel, is_pure_user=True)
 
         # Open-WebUI 통해서 호출 (순수 LLM 호출, 내부 저장 없음)
-        reply = await _ask_openwebui(full_msg, session_id=session_id)
+        reply = await _ask_openwebui(full_msg, session_id=session_id, trade_memory_since=_since)
 
-        # NEED_SEARCH 태그 감지: AI가 스스로 "이 종목은 모르겠다" 판단했을 때만 웹조사 1회 수행
+        # NEED_SEARCH 태그 감지: AI가 스스로 "이 종목은 모르겠다" 판단했을 때만 웹조사 1회 수행.
+        # 웹 조사는 보조 — 스냅샷이 있고 사용자가 뉴스/이슈를 묻지 않았으면 생략하고,
+        # 수행하면 출처·날짜가 있는 줄만 "ℹ️ 웹 정보(검증 안 됨)" 아래에 붙인다.
         try:
             _ns = _re_mod.search(r"\[\[NEED_SEARCH:\s*([^\]]+)\]\]", reply)
             if _ns:
                 _target = _ns.group(1).strip()[:20]
                 reply = reply[:_ns.start()].rstrip()
-                _web_reply = await _web_research_stock(_target, name=_target)
-                reply = (reply + "\n\n" + _web_reply).strip() if reply else _web_reply
+                if not (_snap_ok and not _snap.asks_news(user_msg)):
+                    _web_reply = await _web_research_stock(_target, name=_target, aux=True)
+                    if _web_reply:
+                        reply = (reply + "\n\n" + _web_reply).strip()
+                if not reply.strip():
+                    reply = "이 종목은 시스템에서 시세를 확인하지 못했고, 출처·날짜가 확인되는 웹 정보도 찾지 못했어요."
         except Exception as _nse:
             logger.debug(f"NEED_SEARCH 처리 스킵: {_nse}")
 
         # 액션 프로토콜 파싱: 자연어 지시/설정을 자동 저장·적용
+        _added_syms = set()  # 이번 답변에서 감시/관심 등록된 종목 (감시 추가 제안 중복 방지)
         try:
             import re as _re
             m = _re.search(r"\[\[ACTION\]\]\s*(\{.*\})", reply, _re.DOTALL)
@@ -4278,6 +4421,7 @@ async def _jarvis_chat_impl(body: dict):
                         _ws, _wn = await universe.resolve_symbol(wa)
                         if _ws:
                             await watchlist_handler.add_symbol(db_pool, _ws, _wn)
+                            _added_syms.add(_ws)
                             notes.append(f"👁️ 감시종목 추가: {_wn}({_ws})")
                         else:
                             notes.append(f"⚠️ 감시 추가 실패: '{wa}' 종목을 찾지 못함")
@@ -4290,6 +4434,7 @@ async def _jarvis_chat_impl(body: dict):
                         _is, _in = await universe.resolve_symbol(wi)
                         if _is:
                             await watchlist_handler.add_symbol(db_pool, _is, _in, priority=True)
+                            _added_syms.add(_is)
                             notes.append(f"⭐ 관심종목 등록: {_in}({_is}) — 더 자주 확인합니다")
                         else:
                             notes.append(f"⚠️ 관심종목 등록 실패: '{wi}' 종목을 찾지 못함")
@@ -4320,6 +4465,11 @@ async def _jarvis_chat_impl(body: dict):
                     reply = reply + "\n\n" + "\n".join(notes)
         except Exception as ae:
             logger.warning(f"액션 파싱 오류(무시): {ae}")
+
+        # 감시/보유 대상이 아닌 종목이면 마지막 줄에 추가 제안 (자동 추가는 하지 않는다)
+        if _snap.should_suggest_watch(resolved=bool(_resolved), tracked=_tracked, reply=reply,
+                                      already_added=bool(_resolved and _resolved[0] in _added_syms)):
+            reply = reply.rstrip() + "\n\n" + _snap.watch_suggestion(_resolved[1])
 
         # 순수 어시스턴트 답변 저장
         await _save_chat_history(session_id, "assistant", reply, channel=channel, is_pure_user=True)
@@ -4584,15 +4734,22 @@ async def _save_trade_memory(symbol: str, action: str, price: float,
     logger.info(f"🧠 Jarvis 메모리 저장: {memory_content}")
 
 
-async def _ask_openwebui(message: str, session_id: str = "telegram", model: str = None) -> str:
-    """Open-WebUI 모델 호출 (순수 LLM 인터페이스, 내부 대화저장 제거, chat.llm 이관)"""
-    return await _llm_ask_openwebui(message, session_id=session_id, model=model, fallback_fn=_ask_gemini_direct, pool=db_pool, redis=redis_client)
+async def _ask_openwebui(message: str, session_id: str = "telegram", model: str = None,
+                         trade_memory_since: Optional[datetime] = None) -> str:
+    """Open-WebUI 모델 호출 (순수 LLM 인터페이스, 내부 대화저장 제거, chat.llm 이관)
+    trade_memory_since: 채팅 경로 전용 — 히스토리와 Gemini 폴백 컨텍스트에서 기준선 이전 매매 기억을 뺀다"""
+    fallback_fn = _ask_gemini_direct
+    if trade_memory_since is not None:
+        async def fallback_fn(msg, _since=trade_memory_since):
+            return await _ask_gemini_direct(msg, trades_since=_since)
+    return await _llm_ask_openwebui(message, session_id=session_id, model=model, fallback_fn=fallback_fn,
+                                    pool=db_pool, redis=redis_client, trade_memory_since=trade_memory_since)
 
 
-async def _ask_gemini_direct(message: str) -> str:
+async def _ask_gemini_direct(message: str, trades_since: Optional[datetime] = None) -> str:
     """Gemini 직접 호출 (Open-WebUI fallback) — 시세 조회 포함"""
     try:
-        portfolio_ctx = await get_portfolio_context()
+        portfolio_ctx = await get_portfolio_context(trades_since=trades_since)
 
         # 시세 관련 키워드 감지 → KIS API 직접 조회
         # market/universe.py의 resolve_symbol로 감시종목 여부와 무관하게 전종목(2,500+) 동적 조회

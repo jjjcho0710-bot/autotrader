@@ -12,9 +12,64 @@ chat/memory.py - STARK v2 대화 메모리 관리 모듈
 """
 import json
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("chat.memory")
+
+_KST = timezone(timedelta(hours=9))
+
+# 신뢰 가능한 매매 데이터 기준선 (data_baseline 테이블 'reliable_trading_data_from' 행, V009).
+# 테이블이 없거나 조회에 실패하면 V009가 넣는 값과 같은 이 상수로 폴백한다.
+RELIABLE_BASELINE_KEY = "reliable_trading_data_from"
+RELIABLE_BASELINE_FALLBACK = datetime(2026, 9, 28, 11, 0, 0, tzinfo=_KST)
+
+# _save_trade_memory(dashboard/main.py)가 jarvis_memory에 남기는 행: "[매매기록 2026-09-10 13:05] ..."
+_TRADE_MEMORY_RE = re.compile(r"^\s*\[매매기록 (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]")
+# 대화 요약(jarvis_notes chat_summary)의 접두어: "[2026-09-10] ..."
+_SUMMARY_DAY_RE = re.compile(r"^\s*\[(\d{4}-\d{2}-\d{2})\]")
+
+
+async def get_reliable_baseline(pool=None) -> datetime:
+    """data_baseline.reliable_trading_data_from 의 effective_at. 조회 실패/행 없음이면 상수 폴백."""
+    if pool:
+        try:
+            async with pool.acquire() as conn:
+                val = await conn.fetchval(
+                    "SELECT effective_at FROM data_baseline WHERE key = $1", RELIABLE_BASELINE_KEY)
+            if isinstance(val, datetime):
+                return val if val.tzinfo else val.replace(tzinfo=_KST)
+        except Exception as e:
+            logger.debug(f"data_baseline 조회 실패 — 폴백 사용: {e}")
+    return RELIABLE_BASELINE_FALLBACK
+
+
+def is_pre_baseline_trade_memory(content, since: datetime) -> bool:
+    """'[매매기록 ...]' 행이고 기록 시각이 기준선 이전이면 True (시각을 못 읽으면 보수적으로 True)"""
+    m = _TRADE_MEMORY_RE.match(content or "")
+    if not m:
+        return False
+    try:
+        ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=_KST)
+    except ValueError:
+        return True
+    return ts < since
+
+
+def filter_trade_memory(items: list, since) -> list:
+    """대화 히스토리에서 기준선 이전 매매기록 행 제거 (since=None이면 그대로)"""
+    if since is None:
+        return items
+    return [it for it in items if not is_pre_baseline_trade_memory(it.get("content"), since)]
+
+
+def is_summary_before_baseline(content, since: datetime) -> bool:
+    """대화 요약이 기준선 당일 이전 하루치면 True. 기준선 당일 요약도 기준선 이전 시간대가 섞여 제외한다.
+    날짜 접두어를 못 읽으면 보수적으로 True."""
+    m = _SUMMARY_DAY_RE.match(content or "")
+    if not m:
+        return True
+    return m.group(1) <= since.astimezone(_KST).strftime("%Y-%m-%d")
 
 # V006 마이그레이션 완료 시점 (과거 행은 is_pure_user=TRUE로 채워졌으나 오염 데이터임)
 # 이 시점 이후 생성된 행만 is_pure_user=TRUE 플래그를 신뢰한다.
@@ -76,6 +131,7 @@ async def get_chat_history(
     only_pure_user: bool = False,
     pool=None,
     redis=None,
+    trade_memory_since=None,
 ) -> list:
     """
     대화 히스토리 로드 — 순수 사용자 발화 격리 및 Redis/DB 조회
@@ -85,8 +141,14 @@ async def get_chat_history(
     :param only_pure_user: True일 경우 V006 마이그레이션 이후 생성된 신규 순수 발화만 반환
     :param pool: DB 커넥션 풀
     :param redis: Redis 클라이언트
+    :param trade_memory_since: 주어지면 이 시각 이전의 '[매매기록 ...]' 행을 결과에서 제외
     :return: [{"role": ..., "content": ...}, ...]
     """
+    if trade_memory_since is not None:
+        history = await get_chat_history(
+            chat_id, max_turns=max_turns, only_pure_user=only_pure_user, pool=pool, redis=redis)
+        return filter_trade_memory(history, trade_memory_since)
+
     limit_count = max_turns * 2
 
     # 순수 발화 필터링이 필요한 경우: 과거 오염 데이터 배제하고 마이그레이션 이후 신규 행만 신뢰

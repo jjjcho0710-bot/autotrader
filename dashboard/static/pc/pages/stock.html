@@ -1,4 +1,192 @@
 <style>
-.stock-frame{width:100%;height:calc(100vh - 60px);border:none;display:block;}
+.sp{padding:26px 34px 40px;}
+.sp-title{font-size:19px;color:var(--br);font-weight:800;margin-bottom:4px;}
+.sp-sub{font-size:12px;color:var(--dim);margin-bottom:22px;display:flex;justify-content:space-between;align-items:center;}
+.sp-mkt{display:flex;gap:28px;background:var(--p);border:1px solid var(--bd);border-radius:14px;padding:12px 18px;margin-bottom:16px;}
+.sp-mkt .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;}
+.sp-mkt .v{font-size:14px;font-weight:700;color:var(--br);margin-top:2px;}
+.sp-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px;}
+.sp-kpi{background:linear-gradient(145deg,var(--p),var(--p2));border:1px solid var(--bd);border-radius:16px;padding:17px;}
+.sp-kpi .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;}
+.sp-kpi .v{font-size:19px;font-weight:800;color:var(--br);margin-top:6px;}
+.sp-kpi .s{font-size:11px;margin-top:4px;color:var(--dim);}
+.sp-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+.sp-tab{padding:8px 14px;border-radius:14px;background:var(--bd);font-size:11px;cursor:pointer;color:var(--tx);border:none;}
+.sp-tab.on{background:var(--gd);color:#000;font-weight:700;}
+.sp-pane{display:none;}
+.sp-pane.on{display:block;}
+.sp-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}
+.sp-card{background:var(--p);border:1px solid var(--bd);border-radius:14px;padding:14px;}
+.sp-row{display:flex;justify-content:space-between;align-items:center;}
+.sp-name{font-size:14px;font-weight:700;color:var(--br);}
+.sp-code{font-size:11px;color:var(--dim);}
+.sp-rate{font-size:16px;font-weight:800;}
+.sp-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
+.sp-grid .l{display:block;font-size:10px;color:var(--dim);}
+.sp-grid .v{font-size:13px;font-weight:600;}
+.sp-list{background:var(--p);border:1px solid var(--bd);border-radius:14px;overflow:hidden;}
+.sp-wh,.sp-wr{display:grid;grid-template-columns:1fr 110px 80px 80px 80px;padding:11px 16px;align-items:center;}
+.sp-wh{font-size:11px;color:var(--dim);border-bottom:1px solid var(--bd);}
+.sp-wr{border-bottom:1px solid var(--bd);}
+.sp-wr:last-child{border:none;}
+.sp-wh span:not(:first-child),.sp-wr>div:not(:first-child){text-align:right;}
+.sp-badge{font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;}
+.sp-buy{background:rgba(239,68,68,.15);color:#F87171;}
+.sp-sell{background:rgba(59,130,246,.15);color:#60A5FA;}
+.sp-hold{background:rgba(245,158,11,.15);color:#F59E0B;}
+.sp-skip{background:rgba(148,163,184,.15);color:#94A3B8;}
+.sp-item{background:var(--p);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;}
 </style>
-<iframe class="stock-frame" src="/stock" frameborder="0"></iframe>
+<div class="sp">
+  <div class="sp-title">포트폴리오</div>
+  <div class="sp-sub"><span>stock-trader · KIS API</span><span id="sp-updated">-</span></div>
+
+  <div class="sp-mkt">
+    <div><div class="l">코스피</div><div class="v"><span id="sp-kospi">-</span> <span id="sp-kospi-chg" style="font-size:12px"></span></div></div>
+    <div><div class="l">코스닥</div><div class="v"><span id="sp-kosdaq">-</span> <span id="sp-kosdaq-chg" style="font-size:12px"></span></div></div>
+    <div style="margin-left:auto;text-align:right"><div class="l">업데이트</div><div class="v" id="sp-mkt-time" style="font-size:12px">-</div></div>
+  </div>
+
+  <div class="sp-kpis">
+    <div class="sp-kpi"><div class="l">총 평가금액</div><div class="v mono" id="sp-total-eval">-</div><div class="s mono" id="sp-stock-eval">-</div></div>
+    <div class="sp-kpi"><div class="l">당일 평가손익률</div><div class="v mono" id="sp-pnl-rate">-</div><div class="s mono" id="sp-total-pnl">-</div></div>
+    <div class="sp-kpi"><div class="l">실현손익</div><div class="v mono" id="sp-realized">-</div><div class="s">최근 100건 매도 기준</div></div>
+    <div class="sp-kpi"><div class="l">예수금</div><div class="v mono" id="sp-deposit">-</div></div>
+  </div>
+
+  <div class="sp-tabs" id="sp-tabs">
+    <button class="sp-tab on" data-tab="position">보유자산</button>
+    <button class="sp-tab" data-tab="watchlist">감시 종목</button>
+    <button class="sp-tab" data-tab="signal">한강뷰매니저 신호</button>
+    <button class="sp-tab" data-tab="supply">수급/공시</button>
+    <button class="sp-tab" data-tab="trades">거래내역</button>
+  </div>
+
+  <div class="sp-pane on" id="sp-pane-position"><div class="sp-cards" id="sp-pos-list"><div class="empty" style="grid-column:1/-1">보유 종목 없음</div></div></div>
+  <div class="sp-pane" id="sp-pane-watchlist">
+    <div class="sp-list">
+      <div class="sp-wh"><span>종목</span><span>현재가</span><span>등락률</span><span>STARK</span><span>상태</span></div>
+      <div id="sp-watch-list"></div>
+    </div>
+  </div>
+  <div class="sp-pane" id="sp-pane-signal"><div class="sp-cards" id="sp-signal-list"><div class="empty" style="grid-column:1/-1">신호 없음</div></div></div>
+  <div class="sp-pane" id="sp-pane-supply"><div id="sp-supply-list"><div class="empty">수급 데이터 없음<br><small style="color:var(--dim)">16:00 이후 수집됩니다</small></div></div></div>
+  <div class="sp-pane" id="sp-pane-trades"><div id="sp-trade-list"><div class="empty">거래 내역 없음</div></div></div>
+</div>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const fmt=n=>Number(n||0).toLocaleString();
+  const fmtR=r=>(r>=0?'+':'')+parseFloat(r||0).toFixed(2)+'%';
+  const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const getJ=async u=>(await fetch(u)).json();
+
+  document.querySelectorAll('#sp-tabs .sp-tab').forEach(b=>b.addEventListener('click',()=>{
+    document.querySelectorAll('#sp-tabs .sp-tab').forEach(x=>x.classList.toggle('on',x===b));
+    document.querySelectorAll('.sp-pane').forEach(p=>p.classList.toggle('on',p.id==='sp-pane-'+b.dataset.tab));
+  }));
+
+  const clock=()=>{const e=$('sp-updated');if(e)e.textContent='업데이트: '+new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});};
+  clock(); window.regInterval(clock,1000);
+
+  const badgeCls=d=>d==='BUY'?'sp-buy':d==='SELL'?'sp-sell':d==='HOLD'?'sp-hold':'sp-skip';
+
+  async function positions(){
+    try{
+      const d=await getJ('/api/positions/stock'), a=d.account||{};
+      const pnl=a.pnl||0, pr=a.pnl_rate||0;
+      $('sp-total-eval').textContent=fmt(a.total_eval)+'원';
+      $('sp-stock-eval').textContent='주식평가 '+fmt(a.stock_eval)+'원';
+      const tp=$('sp-total-pnl'); tp.textContent=(pnl>=0?'+':'')+fmt(Math.round(pnl))+'원'; tp.className='s mono '+(pnl>=0?'up':'dn');
+      $('sp-deposit').textContent=fmt(a.cash)+'원';
+      const pe=$('sp-pnl-rate'); pe.textContent=fmtR(pr); pe.className='v mono '+(pr>=0?'up':'dn');
+      const list=d.data||[], box=$('sp-pos-list');
+      if(!list.length){box.innerHTML='<div class="empty" style="grid-column:1/-1">보유 종목 없음</div>';return;}
+      box.innerHTML=list.map(p=>{
+        const r=parseFloat(p.pnl_rate||0), c=r>=0?'up':'dn';
+        return `<div class="sp-card">
+          <div class="sp-row"><div><div class="sp-name">${esc(p.name||p.symbol)}</div><div class="sp-code">${esc(p.symbol)}</div></div><div class="sp-rate ${c}">${fmtR(r)}</div></div>
+          <div class="sp-grid">
+            <div><span class="l">보유수량</span><span class="v">${fmt(p.qty)}주</span></div>
+            <div><span class="l">평균단가</span><span class="v">${fmt(p.avg_price)}</span></div>
+            <div><span class="l">현재가</span><span class="v ${c}">${fmt(p.cur_price)}</span></div>
+            <div><span class="l">평가손익</span><span class="v ${c}">${r>=0?'+':''}${fmt(Math.round(p.pnl||0))}원</span></div>
+          </div></div>`;
+      }).join('');
+    }catch(e){}
+  }
+
+  async function watchlist(){
+    try{
+      const d=await getJ('/api/prices/stock'), entries=Object.values(d.data||{}), box=$('sp-watch-list');
+      if(!entries.length){box.innerHTML='<div class="empty">감시 종목 없음</div>';return;}
+      const sm={};
+      await Promise.all(entries.map(async p=>{
+        try{const s=await getJ(`/api/stark/decisions/${encodeURIComponent(p.symbol)}?limit=1`);
+          if(s.success&&s.data&&s.data.length)sm[p.symbol]=s.data[0];}catch(e){}
+      }));
+      box.innerHTML=entries.map(p=>{
+        const r=parseFloat(p.change_rate||0), c=r>=0?'up':'dn', dec=sm[p.symbol];
+        const conf=dec&&dec.confidence!=null?Math.round(Number(dec.confidence)*100)+'%':'-';
+        const badge=dec?`<span class="sp-badge ${badgeCls(dec.decision)}">${esc(dec.decision)}</span>`:'<span class="sp-badge sp-skip">-</span>';
+        return `<div class="sp-wr">
+          <div><div class="sp-name" style="font-size:13px">${esc(p.name||p.symbol)}</div><div class="sp-code">${esc(p.symbol)}</div></div>
+          <div class="${c} mono" style="font-weight:700">${fmt(p.price)}</div>
+          <div class="${c}" style="font-weight:700">${fmtR(r)}</div>
+          <div style="color:var(--gd);font-weight:700">${conf}</div>
+          <div>${badge}</div></div>`;
+      }).join('');
+    }catch(e){}
+  }
+
+  async function realized(){
+    try{
+      const d=await getJ('/api/trades?bot=stock_trader&limit=100');
+      const total=(d.data||[]).filter(t=>t.side==='SELL').reduce((s,t)=>s+(parseFloat(t.pnl)||0),0);
+      const el=$('sp-realized'); el.textContent=(total>=0?'+':'')+fmt(Math.round(total))+'원'; el.className='v mono '+(total>=0?'up':'dn');
+    }catch(e){}
+  }
+
+  async function ml(){
+    try{
+      const d=await getJ('/api/ml/predictions'), data=d.data||[], box=$('sp-signal-list');
+      if(!data.length){box.innerHTML='<div class="empty" style="grid-column:1/-1">신호 없음</div>';return;}
+      box.innerHTML=data.map(p=>`<div class="sp-card"><div class="sp-row">
+        <div><div class="sp-name">${esc(p.name||p.symbol)}</div><div class="sp-code">${esc(p.symbol)} · ML ${((p.buy_prob||0)*100).toFixed(0)}%</div></div>
+        <span class="sp-badge ${badgeCls(p.signal)}" style="font-size:13px;padding:5px 14px;border-radius:20px">${esc(p.signal)}</span></div></div>`).join('');
+    }catch(e){}
+  }
+
+  async function trades(){
+    try{
+      const d=await getJ('/api/trades?bot=stock_trader&limit=30'), data=d.data||[], box=$('sp-trade-list');
+      if(!data.length){box.innerHTML='<div class="empty">거래 내역 없음</div>';return;}
+      box.innerHTML=data.map(t=>{
+        const buy=t.side==='BUY', pnl=parseFloat(t.pnl||0);
+        const tm=new Date(t.ts||t.created_at).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+        return `<div class="sp-item">
+          <div><div class="sp-name">${esc(t.name||t.symbol)} <span class="sp-badge ${buy?'sp-buy':'sp-sell'}">${esc(t.side)}</span></div><div class="sp-code">${tm} · ${esc(t.strategy||'')}</div></div>
+          <div style="text-align:right"><div class="sp-name">${fmt(Math.round(t.amount||0))}원</div>${pnl?`<div class="${pnl>=0?'up':'dn'}" style="font-size:12px">${pnl>=0?'+':''}${fmt(Math.round(pnl))}원</div>`:''}</div></div>`;
+      }).join('');
+    }catch(e){}
+  }
+
+  async function market(){
+    try{
+      const d=await getJ('/api/market/index');
+      if(!(d.success&&d.data))return;
+      [['KOSPI','sp-kospi'],['KOSDAQ','sp-kosdaq']].forEach(([k,id])=>{
+        const m=d.data[k]; if(!m)return;
+        $(id).textContent=Number(m.price).toLocaleString();
+        const c=$(id+'-chg'); c.textContent=fmtR(m.change_rate); c.className=m.change_rate>=0?'up':'dn';
+      });
+      $('sp-mkt-time').textContent=new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+    }catch(e){}
+  }
+
+  const all=()=>Promise.all([positions(),watchlist(),ml(),trades(),market(),realized()]);
+  all();
+  window.regInterval(all,30000);
+  window.regInterval(market,60000);
+})();
+</script>

@@ -1138,7 +1138,7 @@ class StockTrader:
             await asyncio.sleep((next_run - now).total_seconds())
 
             try:
-                from common.telegram import send_stock
+                from common.telegram import send_report, send_stock
                 async with db.pool.acquire() as conn:
                     trades = await conn.fetch("""
                         SELECT side, symbol, amount, pnl, strategy, created_at
@@ -1177,6 +1177,7 @@ class StockTrader:
                             report += f" ({pnl:+,.0f}원)"
 
                 await send_stock(report)
+                await send_report(report)  # TELEGRAM_CHANNEL_ID 채널로도 전송 (개인방 전송은 유지)
                 logger.info("📨 6시간 주식 리포트 전송")
             except Exception as e:
                 logger.error(f"주식 리포트 실패: {e}")

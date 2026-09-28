@@ -78,7 +78,10 @@ document.getElementById('hdate').textContent =
   new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
 
 let positions=[], activeSym=null;
-const chartCache={};
+const chartCache={};      // 성공한(데이터 있는) 결과만 저장
+const chartFail={};       // ck -> {error, retried}: 실패 상태 표시용 (데이터 캐시 아님). 폴링이 실패 종목을 매번 재조회하지 않게 함
+const chartInflight={};   // url -> Promise: 같은 요청의 동시 중복 방지
+const CHART_RETRY_MS=15000;
 
 async function loadKpi(){
   try{const r=await fetch('/api/account/stock');const j=await r.json();const a=j.data||{};
@@ -102,7 +105,7 @@ async function loadKpi(){
   }catch(e){}
 }
 
-async function loadPos(){
+async function loadPos(mode){
   try{const r=await fetch('/api/positions/stock');const j=await r.json();
     positions=j.data||[];
     posCnt.textContent=positions.length+'종목';
@@ -123,10 +126,10 @@ async function loadPos(){
       <span style="color:var(--dim)">손절 -7% 상의 · 익절 +5% 트레일링</span>
       <button onclick="openChart('${p.symbol}','${(p.name||p.symbol).replace(/'/g,"")}',${p.avg_price||0})"
         style="background:var(--bd);border:1px solid var(--bd);color:var(--gd);border-radius:8px;padding:5px 12px;font-size:11px;">📈 차트 크게</button>`;
-    await drawBigFor(activeSym, p.avg_price);
+    await drawBigFor(activeSym, p.avg_price, mode);
   }catch(e){}
 }
-window.selPos=async s=>{activeSym=s;await loadPos();};
+window.selPos=async s=>{activeSym=s;await loadPos('select');};
 
 let mainPeriod='D', mChart=null, mVol=null;
 function renderMainPeriods(){
@@ -138,7 +141,7 @@ function renderMainPeriods(){
 }
 window.setMainPeriod=function(pd){mainPeriod=pd;renderMainPeriods();
   const p=positions.find(x=>x.symbol===activeSym);
-  if(p)drawBigFor(activeSym,p.avg_price);};
+  if(p)drawBigFor(activeSym,p.avg_price,'select');};
 
 function loadLW2(cb){
   if(window.LightweightCharts){cb();return;}
@@ -162,28 +165,76 @@ function toTime(r, isMin){
   }
   return `${r.d.slice(0,4)}-${r.d.slice(4,6)}-${r.d.slice(6,8)}`;
 }
-async function fetchChart(sym, period){
-  const isMin=period.endsWith('m');
-  const days=period==='D'?90:period==='W'?300:600;
-  try{const r=await fetch(`/api/chart/${sym}?period=${period}&days=${days}`);
-    const j=await r.json();return j.data||[];}catch(e){return [];}
+// 반환: {ok, data, error}. ok 는 success===true 이고 data 가 비어 있지 않을 때만 true
+function fetchChart(sym, period, days){
+  days=days||(period==='D'?90:period==='W'?300:600);
+  const url=`/api/chart/${sym}?period=${period}&days=${days}`;
+  if(chartInflight[url])return chartInflight[url];
+  const p=(async()=>{
+    try{
+      const r=await fetch(url);
+      let j=null;try{j=await r.json();}catch(e){}
+      const data=j&&Array.isArray(j.data)?j.data:[];
+      if(j&&j.success===true&&data.length)return {ok:true,data,error:null};
+      const error=j&&j.success===true?'데이터가 비어 있음'
+        :String((j&&j.error)||(!r.ok?`HTTP ${r.status}`:'알 수 없는 오류'));
+      return {ok:false,data:[],error};
+    }catch(e){return {ok:false,data:[],error:'네트워크 오류: '+((e&&e.message)||e)};}
+  })().finally(()=>{delete chartInflight[url];});
+  chartInflight[url]=p;
+  return p;
 }
-async function drawBigFor(sym, avg){
+function showChartError(el, error, retry){
+  el.innerHTML='';
+  const box=document.createElement('div');box.className='empty';
+  const msg=document.createElement('div');
+  msg.textContent=`차트를 불러오지 못했어요 (사유: ${error})`;
+  const btn=document.createElement('button');btn.textContent='다시 시도';
+  btn.style.cssText='margin-top:10px;background:var(--bd);border:1px solid var(--bd);color:var(--gd);border-radius:8px;padding:5px 14px;font-size:11px;cursor:pointer;';
+  btn.onclick=()=>{btn.disabled=true;btn.textContent='조회 중...';retry();};
+  box.append(msg,btn);el.appendChild(box);
+}
+window.dashChart={fetch:fetchChart,showError:showChartError,retryMs:CHART_RETRY_MS};
+// mode: undefined=폴링 · 'select'=종목/주기 클릭(실패 상태 해제) · 'retry'=[다시 시도] · 'auto'=15초 후 1회 자동 재시도
+async function drawBigFor(sym, avg, mode){
   loadLW2(async()=>{
     const isMin=mainPeriod.endsWith('m');
-    const ck=`${sym}:${mainPeriod}`;
-    // 분봉은 캐시 안함(실시간), 일/주/월만 캐시
-    if(isMin || !chartCache[ck]){
-      const d=await fetchChart(sym, mainPeriod);
-      if(!isMin) chartCache[ck]=d;
-      else chartCache[ck]=d;
+    const period=mainPeriod;
+    const ck=`${sym}:${period}`;
+    let rows=chartCache[ck];
+    let fail=chartFail[ck];
+    const retried=mode==='auto'?true:mode?false:(fail?fail.retried:false);
+    if(mode)fail=null;
+    // 분봉은 캐시 안함(실시간), 일/주/월만 캐시. 실패 상태에서는 폴링이 재조회하지 않음
+    if(!fail&&(mode==='retry'||mode==='auto'||isMin||!rows)){
+      delete chartFail[ck];
+      const res=await fetchChart(sym, period);
+      if(ck!==`${activeSym}:${mainPeriod}`)return; // 응답 대기 중 종목/주기가 바뀜 → 오래된 응답 폐기
+      if(res.ok){
+        rows=res.data;
+        if(!isMin)chartCache[ck]=rows;
+      }else{
+        rows=null;
+        fail=chartFail[ck]={error:res.error,retried};
+        if(!retried){
+          fail.retried=true; // 자동 재시도는 실패 1건당 한 번만
+          timers.push(setTimeout(()=>{
+            if(chartFail[ck]!==fail||ck!==`${activeSym}:${mainPeriod}`)return;
+            const pp=positions.find(x=>x.symbol===sym);
+            drawBigFor(sym,pp?pp.avg_price:avg,'auto');
+          },CHART_RETRY_MS));
+        }
+      }
     }
-    const rows=chartCache[ck];
     if(mChart){mChart.remove();mChart=null;}
     if(mVol){mVol.remove();mVol=null;}
     const el=document.getElementById('mainChart');
     if(!el)return;
-    if(!rows.length){el.innerHTML='<div class="empty">차트 데이터 없음</div>';return;}
+    if(fail||!rows||!rows.length){
+      if(window._liveT)clearInterval(window._liveT);
+      showChartError(el,fail?fail.error:'데이터가 비어 있음',()=>drawBigFor(sym,avg,'retry'));
+      return;
+    }
     el.innerHTML='';
     const _m=new Map(); rows.forEach(r=>_m.set(String(toTime(r,isMin)),r));
     const rowsU=[..._m.values()];
@@ -216,10 +267,10 @@ async function drawBigFor(sym, avg){
     if(window._liveT)clearInterval(window._liveT);
     window._liveT=setInterval(async()=>{
       if(document.hidden)return;
-      const fresh=await fetchChart(sym, mainPeriod);
-      if(!fresh.length||!mChart)return;
-      chartCache[ck]=fresh;
-      const last=fresh[fresh.length-1];
+      const fresh=await fetchChart(sym, period);
+      if(!fresh.ok||!mChart)return;
+      chartCache[ck]=fresh.data;
+      const last=fresh.data[fresh.data.length-1];
       try{
         cs.update({time:toTime(last,isMin),open:last.o,high:last.h,low:last.l,close:last.c});
       }catch(e){}
@@ -317,6 +368,7 @@ window.regInterval(all, 20000);
 <script>
 (function(){
 let lwLoaded=false, cmSym=null, cmName='', cmAvg=0, cmPeriod='D', chart=null, volChart=null;
+let cmSeq=0, cmRetryT=null;
 function loadLW(cb){
   if(window.LightweightCharts){lwLoaded=true;cb();return;}
   const s=document.createElement('script');
@@ -335,6 +387,7 @@ window.openChart=function(sym,name,avg){
   }).catch(()=>{});
 };
 window.closeChart=function(){
+  cmSeq++;clearTimeout(cmRetryT);
   document.getElementById('cm').style.display='none';
   if(chart){chart.remove();chart=null;}
   if(volChart){volChart.remove();volChart=null;}
@@ -353,14 +406,27 @@ function ma(data,n){
     out.push({time:data[i].time,value:s/n});}
   return out;
 }
-async function drawCm(){
-  const days=cmPeriod==='D'?120:cmPeriod==='W'?350:600;
-  let rows=[];
-  try{const r=await fetch(`/api/chart/${cmSym}?period=${cmPeriod}&days=${days}`);
-    const j=await r.json();rows=j.data||[];}catch(e){}
+// auto=true: 15초 뒤 1회 자동 재시도로 호출된 경우(다시 예약하지 않음)
+async function drawCm(auto){
+  const seq=++cmSeq, sym=cmSym, per=cmPeriod;
+  clearTimeout(cmRetryT);
+  const days=per==='D'?120:per==='W'?350:600;
+  const res=await window.dashChart.fetch(sym, per, days);
+  if(seq!==cmSeq)return; // 그 사이 다른 종목/주기 선택 또는 닫힘 → 오래된 응답 폐기
   if(chart){chart.remove();chart=null;}
   if(volChart){volChart.remove();volChart=null;}
-  if(!rows.length)return;
+  const cmEl=document.getElementById('cmChart');
+  document.getElementById('cmVol').innerHTML='';
+  if(!res.ok){
+    window.dashChart.showError(cmEl,res.error,()=>drawCm());
+    if(!auto){
+      cmRetryT=setTimeout(()=>drawCm(true),window.dashChart.retryMs);
+      timers.push(cmRetryT);
+    }
+    return;
+  }
+  cmEl.innerHTML='';
+  const rows=res.data;
   const isMinM=cmPeriod.endsWith('m');
   const tt=r=>isMinM
     ? Date.UTC(+r.d.slice(0,4),+r.d.slice(4,6)-1,+r.d.slice(6,8),+(r.t||'0000').slice(0,2),+(r.t||'0000').slice(2,4))/1000

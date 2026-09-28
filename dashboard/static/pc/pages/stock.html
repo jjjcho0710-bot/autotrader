@@ -36,6 +36,19 @@
 .sp-hold{background:rgba(245,158,11,.15);color:#F59E0B;}
 .sp-skip{background:rgba(148,163,184,.15);color:#94A3B8;}
 .sp-item{background:var(--p);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;}
+/* 반응형: 1200px 이상은 위 규칙 그대로. 보유 카드 열 수는 .sp-cards 의 auto-fill 이 창 너비에 맞춰 줄인다 */
+@media(max-width:1199px){
+  .sp{padding:22px 24px 32px;}
+  .sp-kpis{grid-template-columns:repeat(2,1fr);}
+  .sp-mkt{flex-wrap:wrap;gap:12px 28px;}
+}
+@media(max-width:700px){
+  .sp{padding:16px 14px 28px;}
+  .sp-kpis{gap:10px;}
+  .sp-kpi{padding:14px;}
+  .sp-kpi .v{font-size:17px;}
+  .sp-wh,.sp-wr{grid-template-columns:1fr 84px 64px 56px 56px;padding:10px 12px;}
+}
 </style>
 <div class="sp">
   <div class="sp-title">포트폴리오</div>

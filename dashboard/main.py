@@ -2668,13 +2668,15 @@ async def get_single_price(symbol: str):
 
 
 
-_WARM_CHART_GAP = 0.3   # 워머 차트 종목 사이 간격(초) — KIS 초당 제한이 사용자 클릭 조회를 밀어내지 않게
+_WARM_CHART_GAP = 0.3        # 워머 차트 종목 사이 간격(초) — KIS 초당 제한이 사용자 클릭 조회를 밀어내지 않게
+_WARM_CHART_INTERVAL = 240   # 마지막 선적재 후 이 시간(초, monotonic)이 지나면 다시 선적재 (차트 캐시 TTL 300초보다 짧게)
+_WARM_CHART_MAX = 12         # 선적재 최대 종목수 (전체 보유종목 대상, 순차 호출)
 
 
 async def _warm_position_charts(positions: list) -> None:
-    """보유종목(최대 6개) 일봉 차트를 순차로 캐시에 선적재하고 결과를 info 로그로 남긴다.
+    """보유종목 전체(최대 _WARM_CHART_MAX개) 일봉 차트를 순차로 캐시에 선적재하고 결과를 info 로그로 남긴다.
     순차 호출이라 KIS 동시 호출 슬롯(_KIS_QUOTE_SEM, 2개)을 한 번에 1개만, 호출 1건 동안만 잡는다."""
-    targets = [p_.get("symbol") for p_ in (positions or [])[:6] if isinstance(p_, dict) and p_.get("symbol")]
+    targets = [p_["symbol"] for p_ in (positions or []) if isinstance(p_, dict) and p_.get("symbol")][:_WARM_CHART_MAX]
     if not targets:
         return
     t0 = _time.monotonic()
@@ -2700,7 +2702,7 @@ async def _cache_warmer():
     """백그라운드 캐시 워머: 첫 진입도 캐시 히트되도록 핵심 데이터 선적재
     (KIS 요청 제한을 stock_trader 봇과 공유하므로 호출 최소화)"""
     await asyncio.sleep(5)
-    chart_tick = 0
+    last_warm = None  # 마지막 차트 선적재 시작 시각 (time.monotonic 기준, None이면 아직 안 함)
     while True:
         hot = False  # 시간 계산 전에 예외가 나도 아래 sleep에서 참조 가능하도록 안전한 기본값
         try:
@@ -2709,10 +2711,9 @@ async def _cache_warmer():
             await get_market_index()
             pos = await get_stock_positions()
             await get_stock_prices()
-            # 차트는 캐시 TTL(300초)에 맞춰 5분에 한 번만 선적재 (KIS 경합 완화)
-            chart_tick += 1
-            if chart_tick >= (50 if hot else 7):  # hot:6s*50≈5분 / cold:45s*7≈5분
-                chart_tick = 0
+            # 차트는 경과 시간 기준(장중/장외 동일)으로 선적재: TTL(300초)이 끝나기 전에 갱신
+            if last_warm is None or _time.monotonic() - last_warm >= _WARM_CHART_INTERVAL:
+                last_warm = _time.monotonic()
                 await _warm_position_charts(pos.get("data") or [])
         except Exception as e:
             # 한 번의 예외가 워머 루프를 죽이지 않게 하고 사유를 남긴다 (계좌번호·키 마스킹)

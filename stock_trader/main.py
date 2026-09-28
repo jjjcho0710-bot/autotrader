@@ -351,56 +351,77 @@ class StockTrader:
 
                         pnl_rate = (cur_price - avg_price) / avg_price * 100
                         now_ts = datetime.now().timestamp()
-                        last_alert = alert_cooldown.get(symbol, 0)
-                        if now_ts - last_alert < 300:  # 5분 쿨다운
-                            continue
 
-                        if pnl_rate <= -3.0 or pnl_rate >= 7.0:
-                            alert_cooldown[symbol] = now_ts
-                            direction = "급락" if pnl_rate < 0 else "급등"
-                            if pnl_rate <= -3.0:
-                                # 손실 매도 알림: -7% 도달 시 즉시 자동 손절 집행 예정 안내
-                                try:
-                                    from common.telegram import send_stock
-                                    nm = pos.get("name", symbol)
-                                    if pnl_rate <= -7.0:
-                                        suppress_key = f"sell_fail_suppress:{symbol}"
-                                        suppress_raw = None
+                        if pnl_rate <= -3.0:
+                            # 손실 매도 알림: 상태 기반 스로틀링 (상태 변경 시 1회, 동일 상태 최소 1시간)
+                            try:
+                                nm = pos.get("name", symbol)
+                                if pnl_rate <= -7.0:
+                                    suppress_key = f"sell_fail_suppress:{symbol}"
+                                    suppress_raw = None
+                                    try:
+                                        suppress_raw = await cache.client.get(suppress_key)
+                                    except Exception:
+                                        pass
+
+                                    if suppress_raw:
+                                        # 손절 재시도 대기: 텔레그램 발송하지 않고 로그만 기록 (알림 폭탄 방지)
+                                        suppress_reason = "손절 매도 실패 재시도 억제 중"
                                         try:
-                                            suppress_raw = await cache.client.get(suppress_key)
+                                            parsed = json.loads(suppress_raw)
+                                            if isinstance(parsed, dict) and "reason" in parsed:
+                                                suppress_reason = parsed["reason"]
                                         except Exception:
-                                            pass
-
-                                        if suppress_raw:
-                                            suppress_reason = "손절 매도 실패 재시도 억제 중"
-                                            try:
-                                                parsed = json.loads(suppress_raw)
-                                                if isinstance(parsed, dict) and "reason" in parsed:
-                                                    suppress_reason = parsed["reason"]
-                                            except Exception:
-                                                if isinstance(suppress_raw, str) and ":" in suppress_raw:
-                                                    suppress_reason = suppress_raw.split(":", 1)[1]
-
-                                            msg = (
-                                                f"⏳ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
-                                                f"손절 재시도 대기 중 (원인: {suppress_reason})\n"
-                                                f"※ 30분 쿨다운 동안 재시도가 억제됩니다."
-                                            )
-                                        else:
-                                            msg = (
-                                                f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
-                                                f"시스템이 즉시 자동 손절 매도 처리 중입니다."
-                                            )
-                                    else:
-                                        msg = (
-                                            f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
-                                            f"-7% 도달 시 즉시 자동 손절 집행 예정(현재 손절선 근접 감시 중)\n"
-                                            f"즉시 매도를 원하시면 '{nm} 전량 매도' 지시해주세요."
+                                            if isinstance(suppress_raw, str) and ":" in suppress_raw:
+                                                suppress_reason = suppress_raw.split(":", 1)[1]
+                                        logger.info(
+                                            f"⏳ [{symbol}] {nm} 손절 재시도 대기 중 ({pnl_rate:+.1f}%, 사유: {suppress_reason}) — 텔레그램 알림 생략"
                                         )
+                                        continue
+                                    else:
+                                        new_state = "STOP_LOSS"
+                                        msg = (
+                                            f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
+                                            f"시스템이 즉시 자동 손절 매도 처리 중입니다."
+                                        )
+                                else:
+                                    new_state = "DROP"
+                                    msg = (
+                                        f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
+                                        f"-7% 도달 시 즉시 자동 손절 집행 예정(현재 손절선 근접 감시 중)\n"
+                                        f"즉시 매도를 원하시면 '{nm} 전량 매도' 지시해주세요."
+                                    )
+
+                                from common.alert_throttle import should_send_symbol_alert
+                                should_send = await should_send_symbol_alert(
+                                    symbol, "price_monitor", new_state,
+                                    min_interval_sec=3600, redis_client=cache.client,
+                                    now_ts=now_ts
+                                )
+                                if should_send:
+                                    from common.telegram import send_stock
                                     await send_stock(msg)
-                                except Exception:
-                                    pass
+                            except Exception as se:
+                                logger.warning(f"가격 모니터 알림 발송 실패 [{symbol}]: {se}")
+                            continue
+                        else:
+                            # 정상 범위(>-3%) 복귀 시 상태 갱신 (다음 급락 시 즉시 1회 알림 보장)
+                            try:
+                                from common.alert_throttle import should_send_symbol_alert
+                                await should_send_symbol_alert(
+                                    symbol, "price_monitor", "NORMAL",
+                                    min_interval_sec=3600, redis_client=cache.client,
+                                    now_ts=now_ts
+                                )
+                            except Exception:
+                                pass
+
+                        if pnl_rate >= 7.0:
+                            last_alert = alert_cooldown.get(symbol, 0)
+                            if now_ts - last_alert < 300:  # 급등 판단 5분 쿨다운
                                 continue
+                            alert_cooldown[symbol] = now_ts
+                            direction = "급등"
                             if await self._recently_sold(symbol):
                                 logger.info(f"⏭️ [{symbol}] 최근 10분 내 매도 기록 있음 — KIS 잔고 반영 지연으로 판단, 재시도 스킵")
                                 self.positions.pop(symbol, None)
@@ -615,6 +636,11 @@ class StockTrader:
                         )
                         logger.info(f"🔴 손절 자동매도 체결 [{symbol}] {pnl_rate:+.1f}%")
                         self.positions.pop(symbol, None)
+                        try:
+                            from common.alert_throttle import reset_symbol_alert
+                            await reset_symbol_alert(symbol, redis_client=cache.client)
+                        except Exception:
+                            pass
                     else:
                         err_msg = str(result.get('error', '알 수 없음'))
                         try:
@@ -622,11 +648,20 @@ class StockTrader:
                             await cache.client.setex(suppress_key, 1800, suppress_val)
                         except Exception:
                             pass
-                        from common.telegram import send_stock
-                        await send_stock(
-                            f"⚠️ <b>{nm}({symbol}) 손절 매도 실패</b> {pnl_rate:+.1f}%\n"
-                            f"사유: {err_msg} — 30분간 재시도 억제"
-                        )
+                        try:
+                            from common.alert_throttle import should_send_symbol_alert
+                            should_send = await should_send_symbol_alert(
+                                symbol, "sell_fail", err_msg,
+                                min_interval_sec=3600, redis_client=cache.client
+                            )
+                            if should_send:
+                                from common.telegram import send_stock
+                                await send_stock(
+                                    f"⚠️ <b>{nm}({symbol}) 손절 매도 실패</b> {pnl_rate:+.1f}%\n"
+                                    f"사유: {err_msg} — 30분간 재시도 억제"
+                                )
+                        except Exception:
+                            pass
                         logger.warning(f"손절 매도 실패 [{symbol}]: {err_msg}")
                 except Exception as e:
                     logger.warning(f"손절 자동매도 오류 [{symbol}]: {e}")
@@ -732,6 +767,11 @@ class StockTrader:
                                 else:
                                     self.positions.pop(symbol, None)
                                     try:
+                                        from common.alert_throttle import reset_symbol_alert
+                                        await reset_symbol_alert(symbol, redis_client=cache.client)
+                                    except Exception:
+                                        pass
+                                    try:
                                         from datetime import datetime as _dt
                                         _now = _dt.now()
                                         _eod = _now.replace(hour=23, minute=59, second=0)
@@ -753,11 +793,17 @@ class StockTrader:
                                     strategy=f"{strat_name}_AI익절{decision}_실패:{_err[:40]}", pnl=0,
                                 )
                                 try:
-                                    from common.telegram import send_stock
-                                    await send_stock(
-                                        f"⚠️ <b>{pos.get('name', symbol)} AI 익절 매도 실패</b>\n"
-                                        f"판단: {decision} {sell_qty}주 시도\n사유: {_err}\n"
-                                        f"6시간 동안 이 종목 재시도를 중단합니다.")
+                                    from common.alert_throttle import should_send_symbol_alert
+                                    should_send = await should_send_symbol_alert(
+                                        symbol, "exit_ai_fail", _err,
+                                        min_interval_sec=3600, redis_client=cache.client
+                                    )
+                                    if should_send:
+                                        from common.telegram import send_stock
+                                        await send_stock(
+                                            f"⚠️ <b>{pos.get('name', symbol)} AI 익절 매도 실패</b>\n"
+                                            f"판단: {decision} {sell_qty}주 시도\n사유: {_err}\n"
+                                            f"6시간 동안 이 종목 재시도를 중단합니다.")
                                 except Exception:
                                     pass
                                 continue

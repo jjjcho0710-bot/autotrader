@@ -18,6 +18,11 @@ async def _send(token: str, chat_id: str, text: str):
     if not token or not chat_id:
         logger.warning("텔레그램 토큰/채팅ID 없음 — 스킵")
         return
+    # SKIP 및 손절 대기 알림 차단 (텔레그램으로 발송하지 않고 stark_decisions/시스템 기록만 유지)
+    _suppress_keywords = ("Jarvis 판단: SKIP", "매수 신호 건너뜀", "손절 재시도 대기", "손절 대기")
+    if any(kw in (text or "") for kw in _suppress_keywords):
+        logger.info(f"🚫 텔레그램 발송 억제(SKIP/손절대기): {text[:60]}")
+        return
     if len(text) > 4096:
         text = text[:4000] + "\n...(생략)"
     try:

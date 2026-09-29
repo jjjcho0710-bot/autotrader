@@ -1038,6 +1038,16 @@ class StockTrader:
             if cur_price <= 0:
                 continue
 
+            # 투자경고/VI 상태 체크 (신규·추가매수만 차단, 보유종목 강제매도는 하지 않음)
+            warning = await self.trader.get_market_warning(symbol)
+            if warning is None:
+                logger.warning(f"⚠️ [{symbol}] 종목상태 확인 불가 → 안전을 위해 매수 스킵")
+                continue
+            warn_code = warning.get("mrkt_warn_cls_code", "")
+            if warn_code != "00":
+                logger.info(f"⚠️ [{symbol}] 투자경고 종목(mrkt_warn_cls_code={warn_code}) — 매수 스킵")
+                continue
+
             # 재매수 금지 체크 (손절 쿨다운)
             allowed, cd_reason = await self._check_rebuy_cooldown(symbol, cur_price)
             if not allowed:

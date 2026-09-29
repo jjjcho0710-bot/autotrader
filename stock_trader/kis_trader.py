@@ -29,6 +29,8 @@ class KISTrader:
         self._balance_cache: Optional[dict] = None
         self._balance_cache_ts: float = 0.0
         self._balance_cache_ttl: float = 20.0
+        self._market_warning_lock: Optional[asyncio.Lock] = None
+        self._last_market_warning_call_ts: float = 0.0
 
     def invalidate_balance_cache(self):
         """잔고 캐시 즉시 무효화 (주문 체결 시 호출)"""
@@ -156,6 +158,57 @@ class KISTrader:
           ) as resp:
             data = await resp.json()
             return int(data.get("output", {}).get("stck_prpr", 0))
+
+    # ── 종목 상태(투자경고/VI) 조회 ──────────────────────
+    MARKET_WARNING_MIN_INTERVAL_SEC = 0.5
+
+    async def get_market_warning(self, symbol: str) -> Optional[dict]:
+        """투자경고/VI 상태 조회 (FHKST01010100).
+
+        get_current_price()와 달리 rt_cd/output 실패를 삼키지 않고, 실패 시 None을
+        반환한다 — 호출부는 None을 "상태 확인 불가"로 취급해 안전하게(매수 보류)
+        처리해야 한다. 같은 시세 API를 반복 호출하므로 최소 호출 간격을 둔다.
+        """
+        if self._market_warning_lock is None:
+            self._market_warning_lock = asyncio.Lock()
+
+        async with self._market_warning_lock:
+            elapsed = time.time() - self._last_market_warning_call_ts
+            wait = self.MARKET_WARNING_MIN_INTERVAL_SEC - elapsed
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+            url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
+            params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+            try:
+                async with self._new_session() as sess:
+                    async with sess.get(
+                        url, headers=self._headers("FHKST01010100"), params=params
+                    ) as resp:
+                        status = resp.status
+                        data = await resp.json()
+            except Exception as e:
+                logger.warning(f"⚠️ [{symbol}] 종목상태 조회 예외: {type(e).__name__}: {e}")
+                return None
+            finally:
+                self._last_market_warning_call_ts = time.time()
+
+            if status != 200 or data.get("rt_cd") != "0":
+                logger.warning(
+                    f"⚠️ [{symbol}] 종목상태 조회 실패: HTTP {status} | "
+                    f"rt_cd={data.get('rt_cd')} | msg_cd={data.get('msg_cd')} | msg1={data.get('msg1')}"
+                )
+                return None
+
+            output = data.get("output") or {}
+            if not output:
+                logger.warning(f"⚠️ [{symbol}] 종목상태 조회 응답 output 비어있음")
+                return None
+
+            return {
+                "mrkt_warn_cls_code": output.get("mrkt_warn_cls_code", ""),
+                "vi_cls_code": output.get("vi_cls_code", ""),
+            }
 
     # ── 잔고 조회 ───────────────────────────────────────
     async def get_balance(self) -> dict:

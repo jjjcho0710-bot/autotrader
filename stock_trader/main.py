@@ -1250,6 +1250,7 @@ class StockTrader:
             # 잔고 조회 (실패 시 매수 스킵 — 가짜 잔고로 판단 금지)
             available_cash = await self.trader.get_balance()
             cash = available_cash.get("cash", 0)
+            cash_stale = bool(available_cash.get("stale"))
             if cash <= 0:
                 try:
                     cached = await cache.client.get("stock:balance")
@@ -1333,12 +1334,13 @@ class StockTrader:
 
             # ── Jarvis 최종 판단 (매수/매도 결정 + 실행 + 텔레그램 알림 모두 dashboard가 처리) ──
             buy_amount_krw = cur_price * qty
+            cash_note = " ⚠️(마지막 확인: 지연됨)" if cash_stale else ""
             reason = (
                 f"전략:{triggered_strategy} | {ml_text} "
                 f"| 수급:{supply_reason} | 뉴스:{news_reason} "
-                f"| 예수금:{cash:,.0f}원 | 매수예정:{buy_amount_krw:,.0f}원"
+                f"| 예수금:{cash:,.0f}원{cash_note} | 매수예정:{buy_amount_krw:,.0f}원"
             )
-            logger.info(f"🤖 [{symbol}] Jarvis 판단 요청 — 예수금 {cash:,.0f}원 / 매수 {buy_amount_krw:,.0f}원 ({qty}주×{cur_price:,}원)")
+            logger.info(f"🤖 [{symbol}] Jarvis 판단 요청 — 예수금 {cash:,.0f}원{cash_note} / 매수 {buy_amount_krw:,.0f}원 ({qty}주×{cur_price:,}원)")
 
             import aiohttp as http
             try:
@@ -1496,13 +1498,14 @@ class StockTrader:
                 acct = await self.trader.get_balance()
                 cash = acct.get('cash', 0)
                 total_eval = acct.get('total', 0)
+                cash_label = f"{cash:,.0f}원" + (" ⚠️(마지막 확인: 지연됨)" if acct.get('stale') else "")
 
                 report = (
                     f"📊 주식 6시간 리포트 ({now.strftime('%m/%d %H:%M')})\n\n"
                     f"매수 {len(buys)}건 / 매도 {len(sells)}건\n"
                     f"손익: {total_pnl:+,.0f}원\n\n"
                     f"보유: {', '.join(pos_list) if pos_list else '없음'}\n"
-                    f"예수금: {cash:,.0f}원"
+                    f"예수금: {cash_label}"
                 )
                 if total_eval > 0:
                     cum_pnl, cum_pnl_rate = compute_total_pnl(total_eval)

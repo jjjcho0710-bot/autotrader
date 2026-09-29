@@ -149,6 +149,7 @@ class TestKISTraderBalanceRateLimitAndCache(unittest.IsolatedAsyncioTestCase):
         for r in results:
             self.assertEqual(r["cash"], 1500000)
             self.assertEqual(r["total"], 3500000)
+            self.assertFalse(r.get("stale", False))  # 정상 조회 시 stale 없음/False
 
     async def test_cache_invalidation_on_order_fill(self):
         """주문 체결 성공 시 잔고 캐시가 무효화되어 다음 get_balance 시 KIS를 재호출해야 함"""
@@ -197,11 +198,14 @@ class TestKISTraderBalanceRateLimitAndCache(unittest.IsolatedAsyncioTestCase):
             }, status=429)
 
         self.trader._new_session = lambda: FakeSession(fake_fail_get)
+        self.trader._last_cash = 700000
 
         with self.assertLogs("stock_trader.kis_trader", level="ERROR") as cm:
             res = await self.trader.get_balance()
 
         self.assertIn("error", res)
+        self.assertTrue(res.get("stale"))  # 실패 시 stale=True
+        self.assertEqual(res["cash"], 700000)  # 캐시된 옛 예수금 반환
         # 로그 검증
         log_output = "\n".join(cm.output)
         self.assertIn("HTTP 429", log_output)
@@ -227,8 +231,25 @@ class TestKISTraderBalanceRateLimitAndCache(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(res["cash"], 500000)
         self.assertIn("타임아웃", res["error"])
+        self.assertTrue(res.get("stale"))  # 실패 시 stale=True
         log_output = "\n".join(cm.output)
         self.assertIn("타임아웃", log_output)
+
+    async def test_generic_exception_returns_stale_fallback(self):
+        """타임아웃이 아닌 일반 예외(예: 연결 오류) 발생 시에도 stale=True와 캐시된 예수금을 반환해야 함"""
+        def fake_error_get(url, *args, **kwargs):
+            return FakeResponse({}, error=ConnectionError("연결 거부"))
+
+        self.trader._new_session = lambda: FakeSession(fake_error_get)
+        self.trader._last_cash = 300000
+
+        with self.assertLogs("stock_trader.kis_trader", level="ERROR") as cm:
+            res = await self.trader.get_balance()
+
+        self.assertEqual(res["cash"], 300000)
+        self.assertTrue(res.get("stale"))
+        log_output = "\n".join(cm.output)
+        self.assertIn("예외 발생", log_output)
 
 
 class TestDashboardPositionsRateLimitAndCache(unittest.IsolatedAsyncioTestCase):

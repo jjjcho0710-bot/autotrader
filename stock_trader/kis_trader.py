@@ -262,6 +262,7 @@ class KISTrader:
                                 "status": status,
                                 "rt_cd": rt_cd,
                                 "msg_cd": msg_cd,
+                                "stale": True,
                             }
 
                         output = data.get("output", {})
@@ -282,10 +283,10 @@ class KISTrader:
 
             except (asyncio.TimeoutError, TimeoutError):
                 logger.error("❌ KIS 잔고 조회 타임아웃 (10초 초과)")
-                return {"cash": self._last_cash, "total": 0, "error": "타임아웃(10초)"}
+                return {"cash": self._last_cash, "total": 0, "error": "타임아웃(10초)", "stale": True}
             except Exception as e:
                 logger.error(f"❌ KIS 잔고 조회 예외 발생: {type(e).__name__}: {e}")
-                return {"cash": self._last_cash, "total": 0, "error": str(e)}
+                return {"cash": self._last_cash, "total": 0, "error": str(e), "stale": True}
 
     # ── 보유 종목 조회 ──────────────────────────────────
     async def get_positions(self) -> list:

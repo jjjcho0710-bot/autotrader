@@ -76,15 +76,17 @@ class _FakePool:
         return _Acquire(self._conn)
 
 
-def _run_one_report(trades, send_stock, send_report):
+def _run_one_report(trades, send_stock, send_report, balance=None):
     """_six_hour_report 루프를 한 번만 돌린다(sleep 즉시 반환, 첫 sleep 이후 running=False)."""
     trader = StockTrader.__new__(StockTrader)
     trader.running = True
     trader.positions = {"005930": {"name": "삼성전자", "pnl_rate": 1.5}}
 
+    balance_result = balance if balance is not None else {"cash": 1_000_000}
+
     class _Broker:
         async def get_balance(self):
-            return {"cash": 1_000_000}
+            return balance_result
 
     trader.trader = _Broker()
 
@@ -141,6 +143,50 @@ class TestSixHourReportChannel(unittest.TestCase):
 
         _run_one_report(self._trades(), _send_stock, _send_report)
         self.assertEqual(order, ["stock", "report"])
+
+
+class TestSixHourReportStaleCashIndicator(unittest.TestCase):
+    """get_balance()가 stale=True(KIS 조회 실패 → 캐시된 옛 예수금)를 반환할 때
+    리포트의 예수금 표기에 지연 표시가 붙어야 하고, 정상 조회 시에는 붙지 않아야 한다."""
+
+    def _trades(self):
+        return [{"side": "BUY", "symbol": "005930", "amount": 500000, "pnl": 0,
+                 "strategy": "MA크로스", "created_at": None}]
+
+    def test_stale_balance_shows_delay_indicator(self):
+        report_calls = []
+
+        async def _send_stock(text):
+            pass
+
+        async def _send_report(text):
+            report_calls.append(text)
+
+        _run_one_report(
+            self._trades(), _send_stock, _send_report,
+            balance={"cash": 1_000_000, "total": 0, "stale": True},
+        )
+
+        self.assertEqual(len(report_calls), 1)
+        self.assertIn("예수금: 1,000,000원 ⚠️(마지막 확인: 지연됨)", report_calls[0])
+
+    def test_fresh_balance_has_no_delay_indicator(self):
+        report_calls = []
+
+        async def _send_stock(text):
+            pass
+
+        async def _send_report(text):
+            report_calls.append(text)
+
+        _run_one_report(
+            self._trades(), _send_stock, _send_report,
+            balance={"cash": 1_000_000, "total": 5_000_000},
+        )
+
+        self.assertEqual(len(report_calls), 1)
+        self.assertIn("예수금: 1,000,000원", report_calls[0])
+        self.assertNotIn("지연됨", report_calls[0])
 
 
 if __name__ == "__main__":

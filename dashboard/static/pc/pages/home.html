@@ -8,11 +8,13 @@
 .mkt-name{color:var(--dim);font-size:11px;}
 .mkt-val{font-weight:700;color:var(--br);}
 .mkt-chg{font-size:11px;}
-.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:22px;}
-@media(max-width:1000px){
-  .kpis{grid-template-columns:repeat(2,1fr);}
+.mkt-sys{gap:5px;}
+.sys-dot{font-size:9px;line-height:1;}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:22px;}
+@media(max-width:1350px){
+  .kpis{grid-template-columns:repeat(3,1fr);}
 }
-@media(max-width:800px){
+@media(max-width:1000px){
   .kpis{grid-template-columns:repeat(1,1fr);}
 }
 .kpi{background:linear-gradient(145deg,var(--p),var(--p2));border:1px solid var(--bd);border-radius:16px;padding:17px;min-width:0;}
@@ -45,6 +47,7 @@ td{padding:9px 6px;border-bottom:1px solid var(--bd);}
     <div class="mkt-banner" id="mktBanner">
       <span class="mkt-item"><span class="mkt-name">코스피</span><span class="mkt-val mono" id="bKospi">-</span><span class="mkt-chg mono" id="bKospiS"></span></span>
       <span class="mkt-item"><span class="mkt-name">코스닥</span><span class="mkt-val mono" id="bKosdaq">-</span><span class="mkt-chg mono" id="bKosdaqS"></span></span>
+      <span class="mkt-item mkt-sys"><span class="sys-dot" id="sysDot">●</span><span class="mkt-val" id="sysTxt">-</span></span>
     </div>
   </div>
   <div class="kpis">
@@ -53,7 +56,6 @@ td{padding:9px 6px;border-bottom:1px solid var(--bd);}
     <div class="kpi"><div class="kl">누적 손익(원금대비)</div><div class="kv mono" id="kTotalPnl">-</div><div class="ks" id="kTotalPnlS"></div></div>
     <div class="kpi"><div class="kl">예수금 D+2</div><div class="kv mono" id="kCash">-</div><div class="ks">출금 가능</div></div>
     <div class="kpi"><div class="kl">오늘 판단</div><div class="kv mono" id="kJdg">-</div><div class="ks" id="kJdgS"></div></div>
-    <div class="kpi"><div class="kl">시스템</div><div class="kv" id="kSys">-</div><div class="ks" id="kSysS"></div></div>
   </div>
   <div class="hgrid">
     <div>
@@ -124,9 +126,8 @@ async function loadKpi(){
   try{const r=await fetch('/api/status');const j=await r.json();const s=j.data||j;
     const cnt=['stock_trader','crypto_trader','data_collector'].filter(k=>{
       try{const b=typeof s[k]==='string'?JSON.parse(s[k]):s[k];return b&&b.status==='running';}catch(e){return false;}}).length;
-    kSys.textContent=cnt===3?'정상':cnt+'/3';
-    kSys.style.color=cnt===3?'var(--gr)':'var(--gd)';
-    kSysS.textContent=`봇 ${cnt}/3 가동`;
+    sysDot.style.color=cnt===3?'var(--gr)':'var(--gd)';
+    sysTxt.textContent=`${cnt===3?'정상':cnt+'/3'} (봇 ${cnt}/3)`;
   }catch(e){}
 }
 

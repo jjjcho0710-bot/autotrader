@@ -8,14 +8,55 @@ KIS 실주문·시세 조회는 전부 콜러블로 주입되므로 실제 네�
 import asyncio
 import json
 import sys
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+# order_handler.py는 handle_trade_command 안에서 필요할 때만 aiohttp를 지연 임포트한다.
+# 테스트 환경에 aiohttp가 없어도 현재가 조회를 흉내내려면 미리 더미 모듈을 등록해둔다.
+try:
+    import aiohttp  # noqa: F401
+except ImportError:
+    _stub = types.ModuleType("aiohttp")
+    _stub.ClientSession = object
+    _stub.TCPConnector = lambda *a, **kw: None
+    _stub.ClientTimeout = lambda *a, **kw: None
+    sys.modules["aiohttp"] = _stub
+
 from market.universe import Universe  # noqa: E402
 from router.handlers import order_handler  # noqa: E402
+
+
+class FakePriceResponse:
+    """전량매도 분기까지 도달하기 위한 현재가 조회 응답(가격>0) 목: `pr = await sess.get(...)` 형태로 사용됨"""
+    def __init__(self, data):
+        self._data = data
+
+    def __await__(self):
+        async def _coro():
+            return self
+        return _coro().__await__()
+
+    async def json(self):
+        return self._data
+
+
+class FakePriceSession:
+    def __init__(self, data):
+        self._data = data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def get(self, url, *args, **kwargs):
+        return FakePriceResponse(self._data)
 
 
 class FakeRedis:
@@ -207,6 +248,51 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             config=FakeConfig(), kis_order_fn=None, get_stock_positions_fn=None,
             send_telegram_fn=None, log_journal_fn=None)
         self.assertIn("현재가 조회 실패", reply)
+
+    async def test_all_sell_position_lookup_failure_returns_distinct_message(self):
+        """전량매도 중 보유 조회 자체가 예외로 실패한 경우 — "보유 수량이 없어요"와 달리
+        구분된 메시지("조회에 실패")로 응답해야 한다. KIS 연결 오류 중인데 실제로는 미청산 상태였던
+        9/29 09:37 사고 재현 케이스."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions_fail():
+            raise ConnectionError("KIS 조회 오류")
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 전량 매도", pool=None, redis=None, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=None,
+                get_stock_positions_fn=get_stock_positions_fail,
+                send_telegram_fn=None, log_journal_fn=None)
+
+        self.assertIn("조회에 실패", reply)
+        self.assertNotIn("보유 수량이 없어요", reply)
+
+    async def test_all_sell_zero_quantity_returns_no_holdings_message(self):
+        """전량매도 중 조회는 성공했지만 실제 보유 수량이 0인 경우엔 그대로 "보유 수량이 없어요"."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions_empty():
+            return {"data": []}
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 전량 매도", pool=None, redis=None, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=None,
+                get_stock_positions_fn=get_stock_positions_empty,
+                send_telegram_fn=None, log_journal_fn=None)
+
+        self.assertIn("보유 수량이 없어요", reply)
 
 
 if __name__ == "__main__":

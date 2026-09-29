@@ -224,6 +224,7 @@ class StockTrader:
             try:
                 await self._run_cycle()
                 self._db_err_count = 0
+                await self._notify_kis_recovered_if_needed()
             except Exception as e:
                 err_str = str(e)
                 logger.error(f"❌ 사이클 오류: {e}")
@@ -250,10 +251,58 @@ class StockTrader:
                         # 3회 연속 실패 시에만 텔레그램 (스팸 방지)
                         if self._db_err_count >= 3:
                             await self._notify_error(f"DB 재연결 {self._db_err_count}회 실패: {re_err}")
+                elif self._is_kis_connect_error(e, err_str):
+                    await self._handle_kis_connect_error(err_str)
                 elif "Server disconnected" not in err_str and "ServerDisconnected" not in err_str:
                     await self._notify_error(err_str)
 
             await asyncio.sleep(config.COLLECT_INTERVAL_SEC)
+
+    @staticmethod
+    def _is_kis_connect_error(exc: Exception, err_str: str) -> bool:
+        """KIS 등 외부 API로의 소켓 연결 자체가 실패한 경우를 판별.
+        "Cannot connect to host ..."류 문자열엔 'connect'만 있고 'connection'은 없어
+        위 DB 재연결 분기에 걸리지 않는다 — 이 경우 알림만 보내고 다음 사이클을 그냥 기다리게 된다."""
+        try:
+            import aiohttp
+            if isinstance(exc, (aiohttp.ClientConnectorError, aiohttp.ClientConnectionError)):
+                return True
+        except Exception:
+            pass
+        _lower = err_str.lower()
+        return "cannot connect to host" in _lower or "connect call failed" in _lower
+
+    async def _handle_kis_connect_error(self, err_str: str):
+        """KIS 연결 오류 연속 발생 시: 3회부터 토큰 강제 재발급 + 알림 빈도 축소(5분/회), 재시도는 계속 유지"""
+        self._kis_conn_err_count = getattr(self, "_kis_conn_err_count", 0) + 1
+        logger.warning(f"🔌 KIS 연결 오류 ({self._kis_conn_err_count}회 연속): {err_str}")
+
+        if self._kis_conn_err_count < 3:
+            await self._notify_error(err_str)
+            return
+
+        try:
+            await self.trader.force_reissue_token()
+            logger.info("🔄 KIS 토큰 강제 재발급 시도 완료")
+        except Exception as tok_err:
+            logger.error(f"❌ KIS 토큰 강제 재발급 실패: {tok_err}")
+
+        now_ts = _time.time()
+        last_notify = getattr(self, "_kis_conn_last_notify_ts", 0.0)
+        if now_ts - last_notify >= 300:
+            self._kis_conn_last_notify_ts = now_ts
+            await self._notify_error(f"KIS 연결 오류 {self._kis_conn_err_count}회 연속 — 재시도 중")
+
+    async def _notify_kis_recovered_if_needed(self):
+        """직전까지 KIS 연결 오류가 있었다면 복구 알림 1회 발송 후 카운터 초기화"""
+        if getattr(self, "_kis_conn_err_count", 0) > 0:
+            logger.info("✅ KIS 연결 복구됨")
+            try:
+                from common.telegram import send_stock
+                await send_stock("✅ KIS 연결 복구됨")
+            except Exception:
+                pass
+        self._kis_conn_err_count = 0
 
     # ── ML 자동 학습 ──────────────────────────────────────
     async def _ml_already_trained(self, today) -> bool:

@@ -219,6 +219,47 @@ class TestDashboardChartRateLimit(unittest.IsolatedAsyncioTestCase):
         self.assertIn("모의 빈응답", res["error"])
         self.assertEqual(len(self.calls), 2)
 
+    async def test_daily_empty_error_response_retries_once_and_succeeds(self):
+        """오류 응답(rt_cd != "0")으로 일봉이 비어도 1.5초 뒤 재시도에서 데이터가 오면 성공해야 함"""
+        seq = [
+            {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "일시적 오류", "output2": []},
+            {"rt_cd": "0", "msg1": "정상처리", "output2": _rows(4)},
+        ]
+        self.set_handler(lambda url, kw: seq.pop(0))
+
+        with patch("dashboard.main.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            rows, err = await self.dm._fetch_daily_ohlcv_ex("024060", 40)
+
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(err, "")
+        self.assertEqual(len(self.calls), 2)
+        mock_sleep.assert_awaited_once_with(self.dm._KIS_DAILY_RETRY_DELAY)
+
+    async def test_daily_empty_error_response_retry_also_fails(self):
+        """재시도까지 계속 오류 응답이면 그때 사유와 함께 실패 처리해야 함"""
+        self.set_handler(lambda url, kw: {"rt_cd": "1", "msg_cd": "EGW00123",
+                                          "msg1": "지속 오류", "output2": []})
+
+        with patch("dashboard.main.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            rows, err = await self.dm._fetch_daily_ohlcv_ex("024060", 40)
+
+        self.assertEqual(rows, [])
+        self.assertIn("지속 오류", err)
+        self.assertEqual(len(self.calls), 2)
+        mock_sleep.assert_awaited_once_with(self.dm._KIS_DAILY_RETRY_DELAY)
+
+    async def test_daily_legitimate_no_data_response_does_not_retry(self):
+        """rt_cd="0"인 정상 빈 응답(진짜 데이터 없음)은 재시도하지 않아야 함"""
+        self.set_handler(lambda url, kw: {"rt_cd": "0", "msg1": "조회할 자료가 없습니다.", "output2": []})
+
+        with patch("dashboard.main.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            rows, err = await self.dm._fetch_daily_ohlcv_ex("024060", 40)
+
+        self.assertEqual(rows, [])
+        self.assertIn("조회할 자료가 없습니다.", err)
+        self.assertEqual(len(self.calls), 1)
+        mock_sleep.assert_not_awaited()
+
     async def test_fetch_daily_ohlcv_keeps_list_contract_for_other_callers(self):
         """_fetch_daily_ohlcv는 기존 호출자(차트 분석·챗 컨텍스트)를 위해 성공 시 목록, 실패 시 빈 목록을 반환해야 함"""
         rows = await self.dm._fetch_daily_ohlcv("003010", 40)

@@ -11,7 +11,7 @@ from learning.repository import (
     search_learning_sources,
 )
 from learning.collector import learn_from_url
-from learning.curator import get_jarvis_knowledge
+from learning.curator import get_jarvis_knowledge, get_position_management_principles
 
 
 class TestLearningPipeline(unittest.IsolatedAsyncioTestCase):
@@ -132,6 +132,28 @@ class TestLearningPipeline(unittest.IsolatedAsyncioTestCase):
 
         res = await get_jarvis_knowledge(limit=5, pool=mock_pool)
         self.assertIn("- R99 원칙: 뇌동매매 절대 금지", res)
+
+    async def test_get_position_management_principles_reads_dedicated_category(self):
+        """get_position_management_principles는 knowledge_core가 아니라
+        position_management category만 조회해야 한다(신규 진입 원칙과 분리)."""
+        mock_conn = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        mock_conn.fetch.return_value = [
+            {"id": 1, "content": "보유중 종목 추가매수는 원칙적으로 금지한다"},
+        ]
+
+        res = await get_position_management_principles(limit=10, pool=mock_pool)
+        self.assertIn("- P1 보유중 종목 추가매수는 원칙적으로 금지한다", res)
+
+        query = mock_conn.fetch.call_args[0][0]
+        self.assertIn("position_management", query)
+        self.assertNotIn("knowledge_core", query)
+
+    async def test_get_position_management_principles_empty_without_pool(self):
+        res = await get_position_management_principles(limit=10, pool=None)
+        self.assertEqual(res, "")
 
 
 if __name__ == "__main__":

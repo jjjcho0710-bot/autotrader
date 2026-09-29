@@ -15,6 +15,7 @@ from learning.collector import (
 )
 from learning.curator import (
     get_jarvis_knowledge,
+    get_position_management_principles,
     jarvis_knowledge_curate,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "gemini_watch_youtube",
     "learn_from_url",
     "get_jarvis_knowledge",
+    "get_position_management_principles",
     "jarvis_knowledge_curate",
 ]

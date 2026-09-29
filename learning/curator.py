@@ -73,6 +73,34 @@ async def get_jarvis_knowledge(limit: int = 5, pool=None) -> str:
         return ""
 
 
+async def get_position_management_principles(limit: int = 10, pool=None) -> str:
+    """보유중 종목 추가매수(물타기) 원칙 조회.
+
+    jarvis_notes의 category='position_management'(is_active=TRUE)에서만 가져온다.
+    신규 진입 판단용 지식(get_jarvis_knowledge, knowledge_core)과는 완전히 별도로
+    관리해서, 프롬프트에서도 서로 다른 섹션으로 구분해 보여줄 수 있게 한다
+    (진입 원칙을 보유중 종목 추가매수 근거로 오인용하는 것을 막기 위함)."""
+    if not pool:
+        return ""
+
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, content FROM jarvis_notes
+                WHERE category='position_management' AND is_active=TRUE
+                ORDER BY id LIMIT $1
+                """,
+                limit,
+            )
+        if rows:
+            return "\n".join(f"- P{r['id']} {r['content']}" for r in rows)
+        return ""
+    except Exception as e:
+        logger.error(f"보유중 종목 추가매수 원칙 로드 오류: {e}")
+        return ""
+
+
 async def jarvis_knowledge_curate(
     pool=None,
     ask_llm_fn=None,

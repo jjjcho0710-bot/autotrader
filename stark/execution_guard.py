@@ -21,6 +21,19 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("stark.execution_guard")
 
+# 악재성 공시 키워드 — 매칭되면 투자경고 종목 차단과 동일한 수준으로 신규·추가매수를
+# 기계적으로 차단한다(AI 판단에 맡기지 않음). 조정이 필요하면 이 목록만 고치면 된다.
+BAD_DISCLOSURE_KEYWORDS = [
+    "관리종목 지정",
+    "상장폐지",
+    "감사의견 거절",
+    "감사의견 한정",
+    "횡령",
+    "배임",
+    "불성실공시",
+    "거래정지",
+]
+
 
 class AsyncRLock:
     """비동기 재진입 가능 Lock. 동일 태스크 내 중첩 진입을 허용하고 다른 태스크는 대기시킨다."""
@@ -150,6 +163,25 @@ async def precheck(symbol: str, action: str, bot: str, *, pool: Any, redis: Any)
                 return {"blocked": "buy_fail_suppress"}
         except Exception:
             pass
+
+    # 악재성 공시(관리종목 지정·상장폐지·감사의견 거절/한정·횡령·배임·불성실공시·거래정지) →
+    # 투자경고 종목 차단(stock_trader/main.py)과 동일한 수준으로 신규·추가매수 강제 차단
+    if bot == "stock_trader" and action in ("buy", "BUY"):
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT report_name FROM stock_disclosure
+                    WHERE symbol=$1
+                    ORDER BY rcept_dt DESC LIMIT 20
+                """, symbol)
+            for row in rows:
+                title = row["report_name"] if isinstance(row, dict) else row[0]
+                if any(kw in (title or "") for kw in BAD_DISCLOSURE_KEYWORDS):
+                    logger.info(f"🛑 악재성 공시({title}) — 신규 매수 강제 차단: {symbol}")
+                    return {"blocked": "bad_disclosure"}
+        except Exception as e:
+            logger.error(f"공시 확인 실패(안전을 위해 매수 보류): {e}")
+            return {"error": "공시 확인 실패로 매수 보류"}
 
     # 당일 2회 이상 손절 → 신규 매수 강제 차단 (예전엔 프롬프트 텍스트로만 존재해 AI 판단에만
     # 의존했던 안전장치를 코드 레벨 강제 집행으로 전환한 부분 — 그대로 유지)

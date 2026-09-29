@@ -28,17 +28,21 @@ class _AcquireCtx:
 
 
 class FakeJournalConnection:
-    def __init__(self, hist_rows):
-        self.hist_rows = hist_rows
+    def __init__(self, hist_rows=None, disclosure_rows=None):
+        self.hist_rows = hist_rows or []
+        self.disclosure_rows = disclosure_rows or []
 
     async def fetch(self, query, *args):
-        assert "trade_journal" in query
-        return list(self.hist_rows)
+        if "trade_journal" in query:
+            return list(self.hist_rows)
+        if "stock_disclosure" in query:
+            return list(self.disclosure_rows)
+        raise AssertionError(f"unexpected query: {query}")
 
 
 class FakePool:
-    def __init__(self, hist_rows=None):
-        self._conn = FakeJournalConnection(hist_rows or [])
+    def __init__(self, hist_rows=None, disclosure_rows=None):
+        self._conn = FakeJournalConnection(hist_rows or [], disclosure_rows or [])
 
     def acquire(self):
         return _AcquireCtx(self._conn)
@@ -71,6 +75,16 @@ class TestBuildAnalysisPrompt(unittest.TestCase):
         self.assertIn("(작전 없음", prompt)
         self.assertIn("[주인 지시사항", prompt)
         self.assertIn("(없음)", prompt)
+        self.assertIn("[최근 공시]", prompt)
+        self.assertIn("최근 공시 없음", prompt)  # disclosures_txt 미제공 시 플레이스홀더
+
+    def test_includes_disclosures_section_when_provided(self):
+        signal = {"symbol": "005930", "name": "삼성전자", "action": "buy",
+                   "price": 70000, "qty": 1, "strategy": "MA크로스", "reason": "골든크로스"}
+        context = {"disclosures_txt": "- 유상증자 결정 (20260925)"}
+        prompt = context_collector.build_analysis_prompt(signal, context)
+        self.assertIn("[최근 공시]", prompt)
+        self.assertIn("유상증자 결정 (20260925)", prompt)
 
     def test_position_management_section_is_separate_from_entry_knowledge(self):
         signal = {"symbol": "005930", "action": "buy", "price": 70000, "qty": 1}
@@ -157,6 +171,63 @@ class TestCollect(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx["position_mgmt_txt"], "")
         self.assertEqual(ctx["chart_ctx"], "")
         self.assertEqual(ctx["portfolio_ctx"], "[포트폴리오]")
+
+
+class TestCollectDisclosures(unittest.IsolatedAsyncioTestCase):
+    """collect()가 stock_disclosure를 조회해 disclosures_txt를 채우는지 검증.
+    악재 키워드로 매수를 차단하는 로직은 stark/execution_guard.py의 precheck() 담당이라
+    여기서는 프롬프트 참고자료로만 제공되는지(차단 없이) 확인한다."""
+
+    async def _collect(self, pool):
+        async def get_portfolio_context():
+            return "[포트폴리오]"
+
+        async def get_active_directives():
+            return "- 지시 없음"
+
+        async def get_jarvis_lessons(n):
+            return ""
+
+        async def get_jarvis_knowledge(n):
+            return ""
+
+        async def get_position_management_principles(n):
+            return ""
+
+        async def analyze_chart(symbol, name):
+            return ""
+
+        signal = {"symbol": "005930", "name": "삼성전자", "bot": "stock_trader", "price": 70000}
+        return await context_collector.collect(
+            signal, pool=pool, redis=FakeRedis(),
+            get_portfolio_context=get_portfolio_context,
+            get_active_directives=get_active_directives,
+            get_jarvis_lessons=get_jarvis_lessons,
+            get_jarvis_knowledge=get_jarvis_knowledge,
+            get_position_management_principles=get_position_management_principles,
+            analyze_chart=analyze_chart,
+        )
+
+    async def test_no_disclosures_returns_placeholder(self):
+        pool = FakePool(disclosure_rows=[])
+        ctx = await self._collect(pool)
+        self.assertEqual(ctx["disclosures_txt"], "최근 공시 없음")
+
+    async def test_normal_disclosure_is_listed(self):
+        pool = FakePool(disclosure_rows=[
+            {"report_name": "분기보고서 제출", "rcept_dt": "20260925"},
+        ])
+        ctx = await self._collect(pool)
+        self.assertIn("분기보고서 제출", ctx["disclosures_txt"])
+        self.assertIn("20260925", ctx["disclosures_txt"])
+
+    async def test_bad_keyword_disclosure_is_still_listed_not_filtered_here(self):
+        """context_collector는 필터링하지 않고 참고자료로만 노출 — 차단은 execution_guard 담당."""
+        pool = FakePool(disclosure_rows=[
+            {"report_name": "관리종목 지정 안내", "rcept_dt": "20260925"},
+        ])
+        ctx = await self._collect(pool)
+        self.assertIn("관리종목 지정 안내", ctx["disclosures_txt"])
 
 
 if __name__ == "__main__":

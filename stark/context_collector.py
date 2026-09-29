@@ -10,9 +10,12 @@ stark/execution_guard.py가 각각 전담한다. collect()는 DB/Redis I/O가 �
 build_analysis_prompt()는 그 결과를 문자열로 조립만 하는 순수 함수라 단위 테스트가 쉽다.
 """
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 logger = logging.getLogger("stark.context_collector")
+
+DISCLOSURE_LOOKBACK_DAYS = 7
 
 
 async def collect(
@@ -97,6 +100,25 @@ async def collect(
     except Exception:
         pass
 
+    # 최근 공시 (악재성 공시 매수 차단은 stark/execution_guard.py의 precheck()가 별도로 담당 —
+    # 여기서는 판단 참고자료로 프롬프트에 노출만 한다)
+    disclosures_txt = "최근 공시 없음"
+    try:
+        cutoff = (datetime.now() - timedelta(days=DISCLOSURE_LOOKBACK_DAYS)).strftime("%Y%m%d")
+        async with pool.acquire() as conn:
+            disclosure_rows = await conn.fetch("""
+                SELECT report_name, rcept_dt
+                FROM stock_disclosure
+                WHERE symbol=$1 AND rcept_dt >= $2
+                ORDER BY rcept_dt DESC
+            """, symbol, cutoff)
+        if disclosure_rows:
+            disclosures_txt = "\n".join(
+                f"- {r['report_name']} ({r['rcept_dt']})" for r in disclosure_rows
+            )
+    except Exception:
+        pass
+
     return {
         "portfolio_ctx": portfolio_ctx,
         "daily_plan": daily_plan,
@@ -106,6 +128,7 @@ async def collect(
         "position_mgmt_txt": position_mgmt_txt,
         "chart_ctx": chart_ctx,
         "self_history": self_history,
+        "disclosures_txt": disclosures_txt,
     }
 
 
@@ -148,6 +171,9 @@ def build_analysis_prompt(signal: Dict[str, Any], context: Dict[str, str]) -> st
 
 {context.get('chart_ctx') or ''}
 {context.get('self_history') or ''}
+[최근 공시]
+{context.get('disclosures_txt') or '최근 공시 없음'}
+
 [현재 포트폴리오 현황]
 {context.get('portfolio_ctx') or ''}
 

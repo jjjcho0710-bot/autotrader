@@ -72,6 +72,20 @@ class TestBuildAnalysisPrompt(unittest.TestCase):
         self.assertIn("[주인 지시사항", prompt)
         self.assertIn("(없음)", prompt)
 
+    def test_position_management_section_is_separate_from_entry_knowledge(self):
+        signal = {"symbol": "005930", "action": "buy", "price": 70000, "qty": 1}
+        context = {
+            "knowledge_txt": "- K79 매수세 강한 양봉",
+            "position_mgmt_txt": "- P1 보유중 종목 추가매수는 원칙적으로 금지",
+        }
+        prompt = context_collector.build_analysis_prompt(signal, context)
+        self.assertIn("[보유중 종목 추가매수 원칙", prompt)
+        self.assertIn("- P1 보유중 종목 추가매수는 원칙적으로 금지", prompt)
+        # 두 섹션이 별도로 존재하고, 보유중 원칙 섹션이 진입 원칙 섹션보다 뒤에 나온다
+        knowledge_idx = prompt.index("[학습한 매매 원칙")
+        position_idx = prompt.index("[보유중 종목 추가매수 원칙")
+        self.assertLess(knowledge_idx, position_idx)
+
 
 class TestCollect(unittest.IsolatedAsyncioTestCase):
     async def test_collect_computes_self_history_drift_and_warns_on_repeated_skip(self):
@@ -93,6 +107,9 @@ class TestCollect(unittest.IsolatedAsyncioTestCase):
         async def get_jarvis_knowledge(n):
             return "지식 없음"
 
+        async def get_position_management_principles(n):
+            return "물타기 원칙 없음"
+
         async def analyze_chart(symbol, name):
             return "[차트]"
 
@@ -103,11 +120,13 @@ class TestCollect(unittest.IsolatedAsyncioTestCase):
             get_active_directives=get_active_directives,
             get_jarvis_lessons=get_jarvis_lessons,
             get_jarvis_knowledge=get_jarvis_knowledge,
+            get_position_management_principles=get_position_management_principles,
             analyze_chart=analyze_chart,
         )
         self.assertEqual(ctx["daily_plan"], "오늘은 신중하게")
         self.assertIn("SKIP 2회", ctx["self_history"])
         self.assertIn("추세가 확인되면", ctx["self_history"])  # drift>=1.0 & skip>=2 경고 문구
+        self.assertEqual(ctx["position_mgmt_txt"], "물타기 원칙 없음")
 
     async def test_optional_dependency_failures_degrade_to_empty_string(self):
         """lessons/knowledge/chart_ctx는 원본처럼 try/except로 감싸여 있어 실패해도
@@ -130,10 +149,12 @@ class TestCollect(unittest.IsolatedAsyncioTestCase):
             get_active_directives=get_active_directives,
             get_jarvis_lessons=boom,
             get_jarvis_knowledge=boom,
+            get_position_management_principles=boom,
             analyze_chart=boom,
         )
         self.assertEqual(ctx["lessons_txt"], "")
         self.assertEqual(ctx["knowledge_txt"], "")
+        self.assertEqual(ctx["position_mgmt_txt"], "")
         self.assertEqual(ctx["chart_ctx"], "")
         self.assertEqual(ctx["portfolio_ctx"], "[포트폴리오]")
 

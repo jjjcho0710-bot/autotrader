@@ -94,6 +94,42 @@ async def _get_max_positions(pool: Any, default: int = 5) -> int:
     return default
 
 
+async def _check_averaging_down_guard(pool: Any, bot: str, symbol: str, price: float) -> Optional[str]:
+    """이미 보유 중인 종목에 대한 추가매수(물타기) 정책 검사.
+
+    정책: 원칙적으로 금지. 예외 — 최초 매수가 대비 현재가가 -3% 이내인 경우에 한해
+    종목당 평생 1회만 허용(trade_history 전체 이력 기준, 보유 기간과 무관).
+    반환: 허용 시 None, 차단 시 사유 코드 문자열."""
+    try:
+        async with pool.acquire() as conn:
+            buys = await conn.fetch("""
+                SELECT price FROM trade_history
+                WHERE bot=$1 AND symbol=$2 AND side='BUY'
+                ORDER BY ts ASC
+            """, bot, symbol)
+    except Exception as e:
+        logger.error(f"물타기 정책 확인 실패(안전을 위해 매수 차단): {e}")
+        return "averaging_down_check_failed"
+
+    if not buys:
+        # KIS 잔고상 보유 중인데 trade_history에 매수 이력이 없음(시스템 밖 매수 등) —
+        # 최초 매수가를 확인할 수 없어 조건 (b)를 검증할 수 없으므로 보수적으로 차단
+        return "averaging_down_no_entry_history"
+
+    if len(buys) >= 2:
+        return "averaging_down_already_used"
+
+    first_price = float(buys[0]["price"] or 0)
+    if first_price <= 0:
+        return "averaging_down_check_failed"
+
+    drift_pct = (float(price) - first_price) / first_price * 100
+    if drift_pct < -3.0:
+        return "averaging_down_price_drop_exceeded"
+
+    return None
+
+
 async def precheck(symbol: str, action: str, bot: str, *, pool: Any, redis: Any) -> Optional[Dict[str, str]]:
     """AI 판단 호출 전 룰 기반 사전 차단.
 
@@ -244,6 +280,48 @@ async def execute(
             # 한도 계산: KIS 보유 종목과 in-flight 기록의 합집합
             total_held_symbols = kis_held_symbols | inflight_symbols
             is_already_held = symbol in total_held_symbols
+
+            # 이미 보유 중인 종목에 대한 추가매수(물타기) 정책 강제 — AI가 EXECUTE/EXECUTE_SMALL로
+            # 판단했더라도 (a) 종목당 평생 1회 한도, (b) 최초 매수가 대비 -3% 이내 조건 중
+            # 하나라도 위반하면 코드 레벨에서 SKIP 처리한다.
+            if is_already_held:
+                block_reason = await _check_averaging_down_guard(pool, bot, symbol, price)
+                if block_reason:
+                    reason_text = {
+                        "averaging_down_already_used": "물타기 정책: 종목당 평생 1회 한도 이미 사용",
+                        "averaging_down_price_drop_exceeded": "물타기 정책: 최초 매수가 대비 -3% 초과 하락",
+                        "averaging_down_no_entry_history": "물타기 정책: 최초 매수 이력 확인 불가",
+                        "averaging_down_check_failed": "물타기 정책 확인 실패로 매수 보류",
+                    }.get(block_reason, "물타기 정책 위반")
+                    logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
+
+                    from stark.decision_logger import log_decision
+                    await log_decision(
+                        pool, symbol, "SKIP",
+                        name=name,
+                        confidence=decision.get("confidence", 0.0),
+                        reason=reason_text,
+                        rationale=f"실행 레이어 안전장치: 보유중 종목 추가매수(물타기) 정책 위반({block_reason})",
+                        strategy=strategy,
+                        source="execution_guard",
+                        executed=False,
+                        order_success=None,
+                        price=float(price),
+                        quantity=float(qty),
+                    )
+
+                    if log_journal_fn:
+                        await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                                             "SKIP", reason_text, False, False, price, qty)
+
+                    return {
+                        "success": True,
+                        "executed": False,
+                        "skipped": True,
+                        "blocked": block_reason,
+                        "reason": reason_text,
+                        "jarvis_reply": reply,
+                    }
 
             limit = max_positions
             if limit is None:

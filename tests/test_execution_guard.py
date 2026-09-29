@@ -28,11 +28,15 @@ class _AcquireCtx:
 
 
 class FakeTradeHistoryConnection:
-    def __init__(self, stop_loss_count=0, raise_on_fetchval=False):
+    def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
+                 buy_history=None, raise_on_fetch=False):
         self.stop_loss_count = stop_loss_count
         self.raise_on_fetchval = raise_on_fetchval
         self.inserted = []
         self.decisions = []
+        # symbol -> list of {"price": ...} 딕셔너리(매수 순서대로) — 물타기 정책 검사용
+        self.buy_history = buy_history or {}
+        self.raise_on_fetch = raise_on_fetch
 
     async def fetchval(self, query, *args):
         if self.raise_on_fetchval:
@@ -49,6 +53,14 @@ class FakeTradeHistoryConnection:
             return {"params": {"max_positions": 5}}
         return None
 
+    async def fetch(self, query, *args):
+        if self.raise_on_fetch:
+            raise RuntimeError("DB down")
+        if "trade_history" in query and "side='BUY'" in query:
+            symbol = args[1]
+            return list(self.buy_history.get(symbol, []))
+        return []
+
     async def execute(self, query, *args):
         if "trade_history" in query:
             self.inserted.append(args)
@@ -57,8 +69,10 @@ class FakeTradeHistoryConnection:
 
 
 class FakePool:
-    def __init__(self, stop_loss_count=0, raise_on_fetchval=False):
-        self._conn = FakeTradeHistoryConnection(stop_loss_count, raise_on_fetchval)
+    def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
+                 buy_history=None, raise_on_fetch=False):
+        self._conn = FakeTradeHistoryConnection(
+            stop_loss_count, raise_on_fetchval, buy_history, raise_on_fetch)
 
     def acquire(self):
         return _AcquireCtx(self._conn)
@@ -337,7 +351,9 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
 
     async def test_already_held_symbol_allowed_even_at_limit(self):
         execution_guard.reset_buy_lock()
-        pool = FakePool()
+        # 최초 매수가(70,000원) 대비 현재가(신호가 70,000원) 이내 하락 + 아직 물타기 미사용
+        # → 물타기 정책 조건 충족(평생 1회 허용 케이스)
+        pool = FakePool(buy_history={"005930": [{"price": 70000}]})
         redis = FakeRedis()
         sent, orders = [], []
 
@@ -382,6 +398,241 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["executed"])
         self.assertEqual(len(orders), 1)
         self.assertEqual(len(sent), 1)
+
+    async def test_new_symbol_buy_passes_without_averaging_down_check(self):
+        """정상 신규매수: 보유하지 않은 종목은 물타기 정책 검사 대상이 아니라 정상 체결된다."""
+        execution_guard.reset_buy_lock()
+        pool = FakePool()  # trade_history에 매수 이력이 전혀 없어도 무방(신규 진입이므로)
+        redis = FakeRedis()
+        orders, sent = [], []
+
+        current_positions = [{"symbol": f"0000{i}", "name": f"종목{i}", "qty": 10} for i in range(1, 3)]
+
+        async def get_positions():
+            return {"success": True, "data": current_positions}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def save_trade_memory(**kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "신규종목"
+
+        signal = make_signal(symbol="000099", name="신규종목", action="buy")
+        decision = make_decision()
+
+        result = await execution_guard.execute(
+            signal, decision, pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=save_trade_memory,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+            max_positions=5,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["executed"])
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(len(sent), 1)
+
+    async def test_averaging_down_allowed_when_within_3_percent_and_first_use(self):
+        """조건 충족 물타기 1회 허용: 최초 매수가 대비 -3% 이내 하락 + 첫 추가매수 → 체결."""
+        execution_guard.reset_buy_lock()
+        # 최초 매수가 70,000원, 현재가 68,500원(-2.14%, -3% 이내)
+        pool = FakePool(buy_history={"005930": [{"price": 70000}]})
+        redis = FakeRedis()
+        orders, sent = [], []
+
+        current_positions = [{"symbol": "005930", "name": "삼성전자", "qty": 5}]
+
+        async def get_positions():
+            return {"success": True, "data": current_positions}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def save_trade_memory(**kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        signal = make_signal(symbol="005930", name="삼성전자", action="buy", price=68500)
+        decision = make_decision()
+
+        result = await execution_guard.execute(
+            signal, decision, pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=save_trade_memory,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+            max_positions=5,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["executed"])
+        self.assertEqual(len(orders), 1)
+
+    async def test_averaging_down_blocked_when_price_drop_exceeds_3_percent(self):
+        """조건 위반 차단 1: 최초 매수가 대비 -3% 초과 하락 시 물타기 차단."""
+        execution_guard.reset_buy_lock()
+        # 최초 매수가 70,000원, 현재가 67,000원(-4.29%, -3% 초과 하락)
+        pool = FakePool(buy_history={"005930": [{"price": 70000}]})
+        redis = FakeRedis()
+        orders, sent, journaled = [], [], []
+
+        current_positions = [{"symbol": "005930", "name": "삼성전자", "qty": 5}]
+
+        async def get_positions():
+            return {"success": True, "data": current_positions}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            journaled.append(args)
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        signal = make_signal(symbol="005930", name="삼성전자", action="buy", price=67000)
+        decision = make_decision()
+
+        result = await execution_guard.execute(
+            signal, decision, pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+            max_positions=5,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["executed"])
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("blocked"), "averaging_down_price_drop_exceeded")
+        # 주문/텔레그램 미발생, 매매일지엔 SKIP 기록
+        self.assertEqual(len(orders), 0)
+        self.assertEqual(len(sent), 0)
+        self.assertEqual(len(journaled), 1)
+        self.assertEqual(journaled[0][6], "SKIP")
+        self.assertEqual(len(pool._conn.decisions), 1)
+        self.assertEqual(pool._conn.decisions[0][2], "SKIP")
+
+    async def test_averaging_down_blocked_when_lifetime_limit_already_used(self):
+        """조건 위반 차단 2: 해당 종목에 이미 평생 1회 물타기를 사용한 이력(BUY 2건 이상)이면
+        가격 조건을 충족해도 추가매수를 차단한다."""
+        execution_guard.reset_buy_lock()
+        # 최초 매수 70,000원 + 이미 한 번 물타기(69,000원) 완료 → 이번이 두 번째 물타기 시도
+        pool = FakePool(buy_history={"005930": [{"price": 70000}, {"price": 69000}]})
+        redis = FakeRedis()
+        orders, sent, journaled = [], [], []
+
+        current_positions = [{"symbol": "005930", "name": "삼성전자", "qty": 10}]
+
+        async def get_positions():
+            return {"success": True, "data": current_positions}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            journaled.append(args)
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        # 가격은 최초 매수가 이내(-0%)라 조건 (b)는 충족하지만, 조건 (a) 위반으로 차단되어야 함
+        signal = make_signal(symbol="005930", name="삼성전자", action="buy", price=70000)
+        decision = make_decision()
+
+        result = await execution_guard.execute(
+            signal, decision, pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+            max_positions=5,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["executed"])
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("blocked"), "averaging_down_already_used")
+        self.assertEqual(len(orders), 0)
+        self.assertEqual(len(sent), 0)
+        self.assertEqual(len(journaled), 1)
+        self.assertEqual(journaled[0][6], "SKIP")
+
+    async def test_averaging_down_blocks_execution_even_when_ai_decided_execute(self):
+        """AI가 EXECUTE로 판단해도 물타기 정책 위반이면 코드 레벨에서 실행을 막는다."""
+        execution_guard.reset_buy_lock()
+        pool = FakePool(buy_history={"005930": [{"price": 70000}]})
+        redis = FakeRedis()
+        orders, sent = [], []
+
+        current_positions = [{"symbol": "005930", "name": "삼성전자", "qty": 5}]
+
+        async def get_positions():
+            return {"success": True, "data": current_positions}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        # AI가 강한 확신으로 EXECUTE 판단(is_small=False) — 그러나 -3% 초과 하락이라 정책 위반
+        signal = make_signal(symbol="005930", name="삼성전자", action="buy", price=67000)
+        decision = make_decision(is_small=False, reply="EXECUTE: 강한 확신, 지금 진입해야 함")
+
+        result = await execution_guard.execute(
+            signal, decision, pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+            max_positions=5,
+        )
+
+        # AI 판단(EXECUTE)과 무관하게 코드가 강제로 SKIP 처리해야 한다
+        self.assertTrue(result["success"])
+        self.assertFalse(result["executed"])
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("blocked"), "averaging_down_price_drop_exceeded")
+        self.assertEqual(len(orders), 0)
+        self.assertEqual(len(sent), 0)
 
     async def test_concurrent_10_buy_signals_limited_to_max_positions(self):
         """동시 신호 10건이 들어와도 한도(5)를 넘어 주문되지 않아야 한다."""

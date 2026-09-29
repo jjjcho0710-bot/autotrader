@@ -24,6 +24,7 @@ async def collect(
     get_active_directives,
     get_jarvis_lessons,
     get_jarvis_knowledge,
+    get_position_management_principles,
     analyze_chart,
 ) -> Dict[str, str]:
     """신호 판단에 필요한 컨텍스트 조각들을 모아 dict로 반환.
@@ -54,6 +55,13 @@ async def collect(
     try:
         lessons_txt = await get_jarvis_lessons(3)
         knowledge_txt = await get_jarvis_knowledge(5)
+    except Exception:
+        pass
+
+    # 신규 진입 원칙(knowledge_txt)과는 별개 — 이미 보유 중인 종목의 추가매수 판단에만 적용
+    position_mgmt_txt = ""
+    try:
+        position_mgmt_txt = await get_position_management_principles(10)
     except Exception:
         pass
 
@@ -95,6 +103,7 @@ async def collect(
         "directives": directives,
         "lessons_txt": lessons_txt,
         "knowledge_txt": knowledge_txt,
+        "position_mgmt_txt": position_mgmt_txt,
         "chart_ctx": chart_ctx,
         "self_history": self_history,
     }
@@ -133,6 +142,9 @@ def build_analysis_prompt(signal: Dict[str, Any], context: Dict[str, str]) -> st
 
 [학습한 매매 원칙 — 판단에 적용한 원칙이 있으면 이유 끝에 "근거원칙: K12,K7" 형식으로 표기]
 {context.get('knowledge_txt') or '(없음)'}
+
+[보유중 종목 추가매수 원칙 — 이미 보유 중인 종목에 대한 판단에만 적용되며 위 신규 진입 원칙과는 별개다. 신규 진입 원칙을 이 판단의 근거로 인용하지 말 것]
+{context.get('position_mgmt_txt') or '(없음)'}
 
 {context.get('chart_ctx') or ''}
 {context.get('self_history') or ''}

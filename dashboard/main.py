@@ -42,6 +42,7 @@ from learning.collector import (
 )
 from learning.curator import (
     get_jarvis_knowledge as _curator_get_jarvis_knowledge,
+    get_position_management_principles as _curator_get_position_management_principles,
     jarvis_knowledge_curate as _curator_jarvis_knowledge_curate,
 )
 from learning.repository import (
@@ -1049,6 +1050,12 @@ async def _jarvis_closing_report():
 async def _get_jarvis_knowledge(limit: int = 5) -> str:
     """학습 지식 — learning_rules 우선, 없으면 jarvis_notes (learning.curator 이관)"""
     return await _curator_get_jarvis_knowledge(limit=limit, pool=db_pool)
+
+
+async def _get_position_management_principles(limit: int = 10) -> str:
+    """보유중 종목 추가매수(물타기) 원칙 — jarvis_notes category='position_management'
+    (learning.curator 이관, 신규 진입 원칙(_get_jarvis_knowledge)과는 별도 관리)"""
+    return await _curator_get_position_management_principles(limit=limit, pool=db_pool)
 
 
 _extract_youtube_id = _collector_extract_youtube_id
@@ -5974,6 +5981,7 @@ async def jarvis_signal(request: Request):
                 get_active_directives=_get_active_directives,
                 get_jarvis_lessons=_get_jarvis_lessons,
                 get_jarvis_knowledge=_get_jarvis_knowledge,
+                get_position_management_principles=_get_position_management_principles,
                 analyze_chart=_analyze_chart,
             )
             analysis_prompt = context_collector.build_analysis_prompt(signal, ctx_data)

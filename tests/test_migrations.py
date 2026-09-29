@@ -71,6 +71,7 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V007__add_learning_indexes.sql",
                 "V008__stark_decisions_features_and_symbol_index.sql",
                 "V009__data_baseline_and_reliable_views.sql",
+                "V010__position_management_policy.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -117,7 +118,7 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 9, "마이그레이션 파일 9개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 10, "마이그레이션 파일 10개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
@@ -147,7 +148,10 @@ class TestMigrationRoundTrip(unittest.TestCase):
         # 중간 상태 확인: V009(data_baseline 테이블)도 반영되어야 함
         self.assertIn("data_baseline", tables)
 
-        # Down: V009 -> V001 역순
+        # V010(jarvis_notes INSERT/DELETE)은 테이블 생성/삭제가 없어 tables/indexes
+        # 상태에는 영향을 주지 않는다(데이터 마이그레이션만 포함).
+
+        # Down: V010 -> V001 역순
         for version, _up_sql, down_sql in reversed(self.migrations):
             apply_sql_to_state(down_sql, tables, indexes)
 
@@ -186,6 +190,24 @@ class TestMigrationRoundTrip(unittest.TestCase):
         self.assertNotIn("idx_stark_decisions_symbol_decided_at", indexes)
         # V008의 Down은 stark_decisions 테이블 자체를 지우지 않는다 (컬럼/인덱스만 원복)
         self.assertIn("stark_decisions", tables)
+
+    def test_v010_position_management_policy_is_data_only_and_symmetric(self):
+        """V010: jarvis_notes에 position_management 원칙을 INSERT하고, Down은 같은
+        category의 행만 DELETE한다 (테이블 구조 변경 없음)."""
+        _version, up_sql, down_sql = next(
+            m for m in self.migrations if m[0].startswith("V010")
+        )
+        self.assertIn("position_management", up_sql)
+        self.assertIn("INSERT INTO jarvis_notes", up_sql)
+        self.assertIn("DELETE FROM jarvis_notes", down_sql)
+        self.assertIn("position_management", down_sql)
+
+        # 데이터 전용 마이그레이션이므로 tables/indexes 상태에는 영향이 없어야 함
+        tables, indexes = {"jarvis_notes"}, set()
+        apply_sql_to_state(up_sql, tables, indexes)
+        self.assertEqual(tables, {"jarvis_notes"})
+        apply_sql_to_state(down_sql, tables, indexes)
+        self.assertEqual(tables, {"jarvis_notes"})
 
 
 if __name__ == "__main__":

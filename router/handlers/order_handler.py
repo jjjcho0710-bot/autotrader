@@ -156,28 +156,47 @@ async def handle_trade_command(
     if price <= 0:
         return f"⚠️ {name}({symbol}) 현재가 조회 실패 — 주문 불가"
 
-    # 수량
+    # 수량 (+ 매도 시 손익 계산용 평단가 조회)
+    avg_price = 0.0
     if all_sell and not qty_m:
         try:
             pos = await get_stock_positions_fn()
         except Exception as e:
             logger.warning(f"수동주문 보유 수량 조회 실패 [{symbol}]: {e}")
             return f"⚠️ {name}({symbol}) 종목 조회에 실패했습니다. 잠시 후 다시 시도해주세요"
-        qty = next((int(p["qty"]) for p in pos.get("data", []) if p["symbol"] == symbol), 0)
+        pos_row = next((p for p in pos.get("data", []) if p["symbol"] == symbol), None)
+        qty = int(pos_row["qty"]) if pos_row else 0
         if qty <= 0:
             return f"⚠️ {name}({symbol}) 보유 수량이 없어요"
+        if is_sell and pos_row:
+            avg_price = float(pos_row.get("avg_price", 0) or 0)
     else:
         qty = int(qty_m.group(1))
+        if is_sell:
+            try:
+                pos = await get_stock_positions_fn()
+                pos_row = next((p for p in pos.get("data", []) if p["symbol"] == symbol), None)
+                avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
+            except Exception as e:
+                logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
+                avg_price = 0.0
 
     result = await kis_order_fn(symbol, price, qty, is_buy)
 
     if result.get("success"):
+        pnl = None
+        pnl_text = ""
+        if is_sell and avg_price > 0:
+            pnl = (price - avg_price) * qty
+            pnl_rate = (price - avg_price) / avg_price * 100
+            pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
+
         try:
             async with pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
-                    VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,'수동지시')
-                """, symbol, action.upper(), float(price), float(qty), float(price * qty))
+                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                    VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,'수동지시',$6)
+                """, symbol, action.upper(), float(price), float(qty), float(price * qty), pnl)
         except Exception:
             pass
         # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
@@ -188,12 +207,12 @@ async def handle_trade_command(
             pass
         await send_telegram_fn(
             f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
-            f"가격: {price:,}원 × {qty}주 = {price*qty:,}원",
+            f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}",
             broadcast=True)
         await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
                               user_msg[:200], "MANUAL", "사용자 직접 지시",
                               True, True, price, qty, source="chat")
         return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
-                f"{price:,}원 × {qty}주 = {price*qty:,}원")
+                f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}")
     else:
         return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error', '알 수 없음')}"

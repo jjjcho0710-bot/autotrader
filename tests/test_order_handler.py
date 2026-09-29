@@ -294,6 +294,147 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("보유 수량이 없어요", reply)
 
+    async def test_all_sell_success_computes_and_reports_pnl(self):
+        """전량매도 체결 성공 시 보유 평단가로 손익을 계산해 메시지·trade_history에 남긴다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+        logged = []
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"data": [{"symbol": "005930", "qty": 22, "avg_price": 65000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text, **kw):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            logged.append(args)
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 전량 매도", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions,
+                send_telegram_fn=send_telegram, log_journal_fn=log_journal)
+
+        # pnl = (70000 - 65000) * 22 = 110,000 / pnl_rate = 5000/65000*100 ≈ +7.7%
+        self.assertIn("손익 +110,000원 (+7.7%)", reply)
+        self.assertIn("손익 +110,000원 (+7.7%)", sent[0])
+        inserted_args = pool._conn.inserted[0]
+        self.assertEqual(inserted_args[-1], 110000.0)
+
+    async def test_qty_sell_success_looks_up_avg_price_and_reports_pnl(self):
+        """수량 지정 매도("N주 매도")도 전량매도와 동일하게 평단가를 조회해 손익을 계산한다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"data": [{"symbol": "005930", "qty": 30, "avg_price": 65000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 22주 매도", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions,
+                send_telegram_fn=send_telegram, log_journal_fn=log_journal)
+
+        self.assertIn("손익 +110,000원 (+7.7%)", reply)
+        inserted_args = pool._conn.inserted[0]
+        self.assertEqual(inserted_args[-1], 110000.0)
+
+    async def test_buy_success_has_no_pnl_display(self):
+        """매수는 평단가 조회·손익 계산·표시를 하지 않는다(기존 동작 유지)."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            raise AssertionError("매수 시엔 보유 조회를 호출하면 안 된다")
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 2주 매수", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions,
+                send_telegram_fn=send_telegram, log_journal_fn=log_journal)
+
+        self.assertNotIn("손익", reply)
+        inserted_args = pool._conn.inserted[0]
+        self.assertIsNone(inserted_args[-1])
+
+    async def test_qty_sell_avg_price_lookup_failure_skips_pnl_but_still_sells(self):
+        """손익 계산용 평단가 조회가 실패해도 매도 자체는 정상 체결·보고되고, 손익만 생략된다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions_fail():
+            raise ConnectionError("KIS 조회 오류")
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 22주 매도", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions_fail,
+                send_telegram_fn=send_telegram, log_journal_fn=log_journal)
+
+        self.assertIn("[실제 체결]", reply)
+        self.assertNotIn("손익", reply)
+        inserted_args = pool._conn.inserted[0]
+        self.assertIsNone(inserted_args[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

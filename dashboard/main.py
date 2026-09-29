@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import asyncpg
 import redis.asyncio as aioredis
 
-from common.config import config
+from common.config import config, compute_total_pnl
 from common.migrations import run_migrations
 from market.universe import Universe
 from market.sync_batch import sync_stock_universe
@@ -996,10 +996,12 @@ async def _jarvis_closing_report():
 
         # 보유 현황은 추정치가 아닌 실제 KIS 계좌 조회로 (DB 누적 추정은 부정확할 수 있음)
         real_positions = []
+        real_account = {}
         try:
             pos_res = await get_stock_positions()
             if pos_res.get("success"):
                 real_positions = pos_res.get("data") or []
+                real_account = pos_res.get("account") or {}
         except Exception:
             pass
 
@@ -1031,6 +1033,11 @@ async def _jarvis_closing_report():
                 f"  · {p.get('name') or p.get('symbol')} {p.get('qty')}주 ({p.get('pnl_rate', 0):+.1f}%)"
                 for p in real_positions[:8])
             msg += f"\n{hold_list}"
+
+        if real_account:
+            cum_pnl = real_account.get("total_pnl", 0)
+            cum_pnl_rate = real_account.get("total_pnl_rate", 0)
+            msg += f"\n💰 누적손익(원금대비): {cum_pnl:+,.0f}원 ({cum_pnl_rate:+.2f}%)"
 
         await _send_telegram(msg, broadcast=True)
         logger.info("✅ Jarvis 마감 리포트 전송 완료")
@@ -5010,6 +5017,7 @@ async def _get_stock_positions_raw():
                 if cash_val == 0:
                     cash_val = total_eval - stock_eval
 
+                total_pnl, total_pnl_rate = compute_total_pnl(total_eval)
                 account = {
                     "total_eval":   total_eval,
                     "stock_eval":   stock_eval,
@@ -5017,6 +5025,8 @@ async def _get_stock_positions_raw():
                     "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),
                     "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),
                     "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0) or 0),
+                    "total_pnl":       total_pnl,       # 누적 손익 (시작 자금 대비)
+                    "total_pnl_rate":  total_pnl_rate,
                     "_raw_keys":    list(summary.keys()),  # 디버그용
                 }
                 result = {"success": True, "data": positions, "account": account}
@@ -5592,7 +5602,9 @@ async def account_stock_summary():
         return {"success": True, "data": {
             "total_eval": acct.get("total_eval", 0),
             "pnl": acct.get("pnl", acct.get("total_pnl", 0)),
-            "cash": acct.get("cash", 0)}}
+            "cash": acct.get("cash", 0),
+            "total_pnl": acct.get("total_pnl", 0),
+            "total_pnl_rate": acct.get("total_pnl_rate", 0)}}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

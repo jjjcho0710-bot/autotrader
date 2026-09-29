@@ -82,6 +82,9 @@
   .hero-pnl {
     font-size: 16px; font-weight: 700; margin-top: 4px;
   }
+  .hero-pnl-label {
+    font-size: 11px; color: var(--text-dim); margin-top: 10px;
+  }
   .cards {
     display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
     padding: 12px 16px;
@@ -185,7 +188,10 @@
 <div class="summary">
   <div class="hero-eval" id="heroLabel">총 평가금액</div>
   <div class="hero-amount mono" id="heroAmount">—</div>
+  <div class="hero-pnl-label">평가손익 (보유 종목)</div>
   <div class="hero-pnl mono" id="heroPnl">—</div>
+  <div class="hero-pnl-label">누적 손익 (원금 대비)</div>
+  <div class="hero-pnl mono" id="heroTotalPnl">—</div>
 </div>
 
 <div class="cards">
@@ -274,11 +280,17 @@ async function loadSummary() {
     const pnlRate = acct.pnl_rate ?? 0;
     const cash  = acct.cash ?? 0;
     const buy   = acct.buy_amount ?? 0;
+    const totalPnl = acct.total_pnl ?? 0;
+    const totalPnlRate = acct.total_pnl_rate ?? 0;
 
     document.getElementById("heroAmount").textContent = won(total);
     const heroPnl = document.getElementById("heroPnl");
     heroPnl.textContent = (pnl >= 0 ? "▲ " : "▼ ") + won(Math.abs(pnl)) + "  " + pct(pnlRate);
     heroPnl.className = "hero-pnl mono " + cls(pnl);
+
+    const heroTotalPnl = document.getElementById("heroTotalPnl");
+    heroTotalPnl.textContent = (totalPnl >= 0 ? "▲ " : "▼ ") + won(Math.abs(totalPnl)) + "  " + pct(totalPnlRate);
+    heroTotalPnl.className = "hero-pnl mono " + cls(totalPnl);
 
     document.getElementById("cardCash").textContent = won(cash);
     document.getElementById("cardBuy").textContent = won(buy);

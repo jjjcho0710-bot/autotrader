@@ -2,7 +2,7 @@
 .hp{padding:26px 34px 40px;}
 .htitle{font-size:19px;color:var(--br);font-weight:800;margin-bottom:4px;}
 .hsub{font-size:12px;color:var(--dim);margin-bottom:22px;}
-.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:22px;}
+.kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:14px;margin-bottom:22px;}
 .kpi{background:linear-gradient(145deg,var(--p),var(--p2));border:1px solid var(--bd);border-radius:16px;padding:17px;}
 .kl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;}
 .kv{font-size:19px;font-weight:800;color:var(--br);margin-top:6px;}
@@ -30,6 +30,7 @@ td{padding:9px 6px;border-bottom:1px solid var(--bd);}
   <div class="kpis">
     <div class="kpi"><div class="kl">총 자산</div><div class="kv mono" id="kTotal">-</div><div class="ks" id="kTotalS"></div></div>
     <div class="kpi"><div class="kl">평가 손익</div><div class="kv mono" id="kPnl">-</div><div class="ks" id="kPnlS"></div></div>
+    <div class="kpi"><div class="kl">누적 손익(원금대비)</div><div class="kv mono" id="kTotalPnl">-</div><div class="ks" id="kTotalPnlS"></div></div>
     <div class="kpi"><div class="kl">예수금 D+2</div><div class="kv mono" id="kCash">-</div><div class="ks">출금 가능</div></div>
     <div class="kpi"><div class="kl">코스피</div><div class="kv mono" id="kKospi">-</div><div class="ks mono" id="kKospiS"></div></div>
     <div class="kpi"><div class="kl">오늘 판단</div><div class="kv mono" id="kJdg">-</div><div class="ks" id="kJdgS"></div></div>
@@ -87,6 +88,8 @@ async function loadKpi(){
   try{const r=await fetch('/api/account/stock');const j=await r.json();const a=j.data||{};
     kTotal.textContent=won(a.total_eval); kCash.textContent=won(a.cash);
     kPnl.textContent=won(a.pnl); kPnl.className='kv mono '+cls(a.pnl);
+    kTotalPnl.textContent=won(a.total_pnl)+' ('+pct(a.total_pnl_rate)+')';
+    kTotalPnl.className='kv mono '+cls(a.total_pnl);
   }catch(e){}
   try{const r=await fetch('/api/market/index');const j=await r.json();const d=j.data||{};
     if(d.KOSPI){kKospi.textContent=d.KOSPI.price.toLocaleString();

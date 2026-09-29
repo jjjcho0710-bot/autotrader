@@ -6,8 +6,8 @@ RSI반등·볼린저밴드는 신호 기반), AI exit_decision은 +3% 이상부�
 익절 구간이 좁아 손익비가 불리했다. 이를 구간별로 명시적으로 분리한다.
 - <1%: 보유 유지 (판단 근거 부족)
 - 1~5%: 진입 신호 유지 여부로 보유/전량매도 판단 (stock_trader/main.py의 SIGNAL_CHECK 분기)
-- 5%~: 자비스 AI HOLD/HALF/ALL 판단 (기존 exit_ai_cool 경로, 문턱 3%→5% 상향)
-+10% 이상 절반확정·트레일링 스탑은 다음 단계에서 별도 구현 예정이며 이번 커밋 범위 밖이다.
+- 5~10%: 자비스 AI HOLD/HALF/ALL 판단 (기존 exit_ai_cool 경로, 문턱 3%→5% 상향)
+- 10%~: 절반 즉시 확정 매도 + 잔여 트레일링 스탑 관리 (2단계, PM 승인, 착수 승인 2026-09-29)
 """
 import sys
 import types
@@ -72,15 +72,14 @@ class TestClassifyExitBand(unittest.TestCase):
         self.assertEqual(StockTrader.classify_exit_band(3.0), StockTrader.EXIT_BAND_SIGNAL_CHECK)
         self.assertEqual(StockTrader.classify_exit_band(4.99), StockTrader.EXIT_BAND_SIGNAL_CHECK)
 
-    def test_5_percent_and_above_is_ai_judge(self):
+    def test_5_to_10_percent_is_ai_judge(self):
         self.assertEqual(StockTrader.classify_exit_band(5.0), StockTrader.EXIT_BAND_AI_JUDGE)
         self.assertEqual(StockTrader.classify_exit_band(7.5), StockTrader.EXIT_BAND_AI_JUDGE)
+        self.assertEqual(StockTrader.classify_exit_band(9.99), StockTrader.EXIT_BAND_AI_JUDGE)
 
-    def test_above_10_percent_still_ai_judge_until_next_phase(self):
-        # +10% 이상 절반확정·트레일링 스탑은 다음 단계 구현 예정. 그 전까지는
-        # 기존 AI 판단 경로가 계속 적용되어야 하며(회귀 방지), 미판단 상태로
-        # 방치되면 안 된다.
-        self.assertEqual(StockTrader.classify_exit_band(12.0), StockTrader.EXIT_BAND_AI_JUDGE)
+    def test_10_percent_and_above_is_half_lock_trail(self):
+        self.assertEqual(StockTrader.classify_exit_band(10.0), StockTrader.EXIT_BAND_HALF_LOCK_TRAIL)
+        self.assertEqual(StockTrader.classify_exit_band(12.0), StockTrader.EXIT_BAND_HALF_LOCK_TRAIL)
 
 
 class TestSignalCheckBandUsesStrategyGenerateSignal(unittest.TestCase):

@@ -56,10 +56,15 @@ DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up
 
 class StockTrader:
     # 차등 익절 정책 구간 (PM 승인, 2026-09-29): 손절 -7% 대비 익절 구간이 좁아
-    # 손익비가 불리했던 문제 개선. +10% 이상 절반확정·트레일링 스탑은 다음 단계에서 구현.
-    EXIT_BAND_HOLD         = "HOLD"          # <1%: 판단 근거 부족, 보유 유지
-    EXIT_BAND_SIGNAL_CHECK = "SIGNAL_CHECK"  # 1~5%: 진입 신호 유지 여부로 보유/전량매도 판단
-    EXIT_BAND_AI_JUDGE     = "AI_JUDGE"      # 5%~: 자비스 AI HOLD/HALF/ALL 판단
+    # 손익비가 불리했던 문제 개선. +10% 이상은 2단계(PM 승인, 착수 승인 2026-09-29)로
+    # 절반확정·트레일링 스탑을 구현.
+    EXIT_BAND_HOLD            = "HOLD"             # <1%: 판단 근거 부족, 보유 유지
+    EXIT_BAND_SIGNAL_CHECK    = "SIGNAL_CHECK"     # 1~5%: 진입 신호 유지 여부로 보유/전량매도 판단
+    EXIT_BAND_AI_JUDGE        = "AI_JUDGE"         # 5~10%: 자비스 AI HOLD/HALF/ALL 판단
+    EXIT_BAND_HALF_LOCK_TRAIL = "HALF_LOCK_TRAIL"  # 10%~: 절반 즉시 확정 + 잔여 트레일링 스탑
+
+    # 트레일링 스탑 발동 기준: 잔여 보유분의 고점 대비 하락률(퍼센트 포인트)
+    TRAILING_STOP_PCT = 3.0
 
     def __init__(self):
         self.running    = False
@@ -135,7 +140,9 @@ class StockTrader:
             return StockTrader.EXIT_BAND_HOLD
         if pnl_rate < 5.0:
             return StockTrader.EXIT_BAND_SIGNAL_CHECK
-        return StockTrader.EXIT_BAND_AI_JUDGE
+        if pnl_rate < 10.0:
+            return StockTrader.EXIT_BAND_AI_JUDGE
+        return StockTrader.EXIT_BAND_HALF_LOCK_TRAIL
 
     # ── Redis 전략 변경 구독 ─────────────────────────────
     async def subscribe_strategy_updates(self):
@@ -819,7 +826,9 @@ class StockTrader:
                             self.positions[symbol] = pos
                         else:
                             try:
-                                await cache.client.delete(f"half_tp:{symbol}")
+                                await cache.client.delete(
+                                    f"half_tp:{symbol}", f"half_lock_done:{symbol}",
+                                    f"trailing_high:{symbol}")
                             except Exception:
                                 pass
                             self.positions.pop(symbol, None)
@@ -1063,6 +1072,111 @@ class StockTrader:
                                 continue
                 except Exception as e:
                     logger.warning(f"AI 익절 판단 처리 오류 [{symbol}]: {e}")
+
+            # 익절 +10% 이상: 절반 즉시 확정 매도 + 잔여는 고점 대비 -TRAILING_STOP_PCT%
+            # 하락 시 전량 매도하는 트레일링 스탑으로 관리 (차등 익절 정책 2단계, PM 승인)
+            if exit_band == self.EXIT_BAND_HALF_LOCK_TRAIL and qty >= 1 and symbol not in self._selling:
+                half_lock_key = f"half_lock_done:{symbol}"
+                trailing_high_key = f"trailing_high:{symbol}"
+                try:
+                    if not await cache.client.get(half_lock_key):
+                        half_qty = max(1, qty // 2)
+                        self._selling.add(symbol)
+                        try:
+                            result = await self.trader.sell(symbol, cur_price, half_qty)
+                        finally:
+                            self._selling.discard(symbol)
+                        if result.get("success"):
+                            sold_qty = result.get("filled_qty", half_qty)
+                            s_pnl = int((cur_price - avg_price) * sold_qty)
+                            remain = qty - sold_qty
+                            await db.insert_trade(
+                                bot="stock_trader", asset_type="stock",
+                                symbol=symbol, side="SELL",
+                                price=cur_price, quantity=sold_qty,
+                                amount=cur_price * sold_qty,
+                                strategy=f"{strat_name}_절반확정", pnl=s_pnl,
+                            )
+                            await self._invalidate_position_cache()
+                            await cache.client.setex(half_lock_key, 30 * 86400, "1")
+                            await cache.client.setex(trailing_high_key, 30 * 86400, str(cur_price))
+                            from common.telegram import send_stock
+                            await send_stock(
+                                f"🟢 <b>{pos.get('name', symbol)} 익절(+10%↑ 절반확정)</b>\n"
+                                f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                f"잔여 {remain}주는 고점 대비 -{self.TRAILING_STOP_PCT:.0f}% 하락 시 "
+                                f"전량 매도하는 트레일링 스탑으로 관리합니다."
+                            )
+                            if remain > 0:
+                                pos["qty"] = remain
+                                pos["sellable_qty"] = remain
+                                self.positions[symbol] = pos
+                            else:
+                                self.positions.pop(symbol, None)
+                                await cache.client.delete(half_lock_key, trailing_high_key)
+                            continue
+                        else:
+                            logger.warning(f"절반확정 매도 실패 [{symbol}]: {result.get('error')}")
+                    else:
+                        high_raw = await cache.client.get(trailing_high_key)
+                        high = float(high_raw) if high_raw else cur_price
+                        if cur_price > high:
+                            high = cur_price
+                            await cache.client.setex(trailing_high_key, 30 * 86400, str(high))
+
+                        drop_pct = (high - cur_price) / high * 100 if high > 0 else 0
+                        if drop_pct >= self.TRAILING_STOP_PCT:
+                            self._selling.add(symbol)
+                            try:
+                                result = await self.trader.sell(symbol, cur_price, qty)
+                            finally:
+                                self._selling.discard(symbol)
+                            if result.get("success"):
+                                sold_qty = result.get("filled_qty", qty)
+                                s_pnl = int((cur_price - avg_price) * sold_qty)
+                                remain = qty - sold_qty
+                                await db.insert_trade(
+                                    bot="stock_trader", asset_type="stock",
+                                    symbol=symbol, side="SELL",
+                                    price=cur_price, quantity=sold_qty,
+                                    amount=cur_price * sold_qty,
+                                    strategy=f"{strat_name}_트레일링스탑", pnl=s_pnl,
+                                )
+                                await self._invalidate_position_cache()
+                                from common.telegram import send_stock
+                                await send_stock(
+                                    f"📉 <b>{pos.get('name', symbol)} 트레일링 스탑 발동"
+                                    f"(고점 대비 -{self.TRAILING_STOP_PCT:.0f}%)</b>\n"
+                                    f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                    f"고점 {high:,.0f}원 대비 {drop_pct:.1f}% 하락"
+                                    + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
+                                )
+                                if remain > 0:
+                                    pos["qty"] = remain
+                                    pos["sellable_qty"] = remain
+                                    self.positions[symbol] = pos
+                                else:
+                                    self.positions.pop(symbol, None)
+                                    await cache.client.delete(half_lock_key, trailing_high_key)
+                                    try:
+                                        from common.alert_throttle import reset_symbol_alert
+                                        await reset_symbol_alert(symbol, redis_client=cache.client)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        from datetime import datetime as _dt
+                                        _now = _dt.now()
+                                        _eod = _now.replace(hour=23, minute=59, second=0)
+                                        await cache.client.setex(
+                                            f"rebuy_block:{symbol}",
+                                            max(60, int((_eod - _now).total_seconds())), "tp")
+                                    except Exception:
+                                        pass
+                                continue
+                            else:
+                                logger.warning(f"트레일링 스탑 매도 실패 [{symbol}]: {result.get('error')}")
+                except Exception as e:
+                    logger.warning(f"절반확정/트레일링 처리 오류 [{symbol}]: {e}")
 
         # ② 신규 진입 신호 체크
         if len(self.positions) >= max_positions:

@@ -55,6 +55,12 @@ DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up
 
 
 class StockTrader:
+    # 차등 익절 정책 구간 (PM 승인, 2026-09-29): 손절 -7% 대비 익절 구간이 좁아
+    # 손익비가 불리했던 문제 개선. +10% 이상 절반확정·트레일링 스탑은 다음 단계에서 구현.
+    EXIT_BAND_HOLD         = "HOLD"          # <1%: 판단 근거 부족, 보유 유지
+    EXIT_BAND_SIGNAL_CHECK = "SIGNAL_CHECK"  # 1~5%: 진입 신호 유지 여부로 보유/전량매도 판단
+    EXIT_BAND_AI_JUDGE     = "AI_JUDGE"      # 5%~: 자비스 AI HOLD/HALF/ALL 판단
+
     def __init__(self):
         self.running    = False
         self.trader     = KISTrader()
@@ -120,6 +126,16 @@ class StockTrader:
                 max_positions = int(params.get("max_positions", 5)),
             ))
         return None
+
+    @staticmethod
+    def classify_exit_band(pnl_rate: float) -> str:
+        """차등 익절 정책(PM 승인)의 손익률 구간 분류.
+        pnl_rate는 퍼센트 숫자 그대로(+5 = +5%)를 받는다."""
+        if pnl_rate < 1.0:
+            return StockTrader.EXIT_BAND_HOLD
+        if pnl_rate < 5.0:
+            return StockTrader.EXIT_BAND_SIGNAL_CHECK
+        return StockTrader.EXIT_BAND_AI_JUDGE
 
     # ── Redis 전략 변경 구독 ─────────────────────────────
     async def subscribe_strategy_updates(self):
@@ -891,8 +907,69 @@ class StockTrader:
             except Exception as e:
                 logger.warning(f"급등 절반익절 처리 오류 [{symbol}]: {e}")
 
-            # 익절 AI 판단: +3% 이상이면 자비스가 HOLD/HALF/ALL 판단 (30분 쿨다운)
-            if pnl_rate >= 3.0 and qty >= 1 and symbol not in self._selling:
+            # 익절 구간 판단 +1~5%: 진입 신호(strategy.generate_signal)가 아직 살아있으면
+            # (예: MA크로스 골든크로스 유지) 보유 지속, 신호가 꺾였으면(데드크로스 전환 등)
+            # 당일 중 전량 매도로 확정 (차등 익절 정책, PM 승인)
+            if self.classify_exit_band(pnl_rate) == self.EXIT_BAND_SIGNAL_CHECK \
+                    and qty >= 1 and symbol not in self._selling:
+                try:
+                    rows = await db.get_recent_ohlcv(symbol, limit=100, asset="stock", daily=True)
+                    entry_prices = [float(r["close"]) for r in rows] if rows else []
+                    sig = default_strategy.generate_signal(symbol, entry_prices) if entry_prices else None
+                    if sig == "SELL":
+                        result = await self.trader.sell(symbol, cur_price, qty)
+                        if result.get("success"):
+                            sold_qty = result.get("filled_qty", qty)
+                            s_pnl = int((cur_price - avg_price) * sold_qty)
+                            remain = qty - sold_qty
+                            await db.insert_trade(
+                                bot="stock_trader", asset_type="stock",
+                                symbol=symbol, side="SELL",
+                                price=cur_price, quantity=sold_qty,
+                                amount=cur_price * sold_qty,
+                                strategy=f"{strat_name}_구간익절_신호소멸", pnl=s_pnl,
+                            )
+                            await self._invalidate_position_cache()
+                            from common.telegram import send_stock
+                            await send_stock(
+                                f"🟡 <b>{pos.get('name', symbol)} 익절(+1~5% 신호소멸 전량매도)</b>\n"
+                                f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                f"사유: {strat_name} 진입 신호 소멸(데드크로스 등)"
+                                + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
+                            )
+                            if remain > 0:
+                                pos["qty"] = remain
+                                pos["sellable_qty"] = remain
+                                self.positions[symbol] = pos
+                            else:
+                                self.positions.pop(symbol, None)
+                                try:
+                                    from datetime import datetime as _dt
+                                    _now = _dt.now()
+                                    _eod = _now.replace(hour=23, minute=59, second=0)
+                                    await cache.client.setex(
+                                        f"rebuy_block:{symbol}",
+                                        max(60, int((_eod - _now).total_seconds())), "tp")
+                                except Exception:
+                                    pass
+                                try:
+                                    from common.alert_throttle import reset_symbol_alert
+                                    await reset_symbol_alert(symbol, redis_client=cache.client)
+                                except Exception:
+                                    pass
+                            continue
+                        else:
+                            logger.warning(
+                                f"구간익절(+1~5% 신호소멸) 매도 실패 [{symbol}]: {result.get('error')}")
+                except Exception as e:
+                    logger.warning(f"구간 익절(+1~5%) 판단 오류 [{symbol}]: {e}")
+
+            # 익절 AI 판단: +5% 이상이면 자비스가 HOLD/HALF/ALL 판단 (30분 쿨다운)
+            # 차등 익절 정책(PM 승인)으로 문턱을 3%→5%로 상향. +10% 이상 절반확정·
+            # 트레일링 스탑은 다음 단계에서 별도 구현 예정 — 그 전까지는 이 AI 판단이
+            # +5% 이상 전 구간에 적용된다.
+            exit_band = self.classify_exit_band(pnl_rate)
+            if exit_band == self.EXIT_BAND_AI_JUDGE and qty >= 1 and symbol not in self._selling:
                 try:
                     if not await cache.client.get(f"exit_ai_cool:{symbol}"):
                         await cache.client.setex(f"exit_ai_cool:{symbol}", 1800, "1")
@@ -933,7 +1010,7 @@ class StockTrader:
                                 from common.telegram import send_stock
                                 remain = qty - sell_qty
                                 await send_stock(
-                                    f"🤖 <b>{pos.get('name', symbol)} AI 익절 판단: {decision}</b>\n"
+                                    f"🤖 <b>{pos.get('name', symbol)} 익절(+5%↑ AI판단 {decision})</b>\n"
                                     f"{sell_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
                                     f"근거: {reason}\n"
                                     + (f"잔여 {remain}주는 계속 보유·관찰합니다." if remain > 0 else "전량 매도 완료.")

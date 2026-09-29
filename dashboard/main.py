@@ -260,6 +260,7 @@ _KIS_QUOTE_SEM = asyncio.Semaphore(_KIS_QUOTE_CONCURRENCY)
 _KIS_RATE_LIMIT_RETRIES = 2
 _KIS_RATE_LIMIT_DELAY = 0.7
 _KIS_REAL_BASE = "https://openapi.koreainvestment.com:9443"
+_KIS_DAILY_RETRY_DELAY = 1.5  # 일봉 조회가 모의/실전 폴백까지 다 실패하면 일시적 오류로 보고 1회 더 시도
 
 
 def _scrub_kis_msg(msg) -> str:
@@ -312,7 +313,8 @@ async def _kis_daily_get(sess, base: str, token: str, symbol: str, start: str, e
 async def _fetch_daily_ohlcv_ex(symbol: str, days: int = 40) -> tuple:
     """KIS 일봉 조회 → ([{date,open,high,low,close,vol}] 오래된→최신, 실패사유)
     데이터가 있으면 사유는 빈 문자열. 사유에는 계좌번호·키를 마스킹한 KIS 응답 msg가 들어간다.
-    모의투자 서버는 중소형주 일봉이 비어있는 경우가 있어 실전 시세 도메인도 폴백 시도(시세 조회는 주문이 아니라 안전)"""
+    모의투자 서버는 중소형주 일봉이 비어있는 경우가 있어 실전 시세 도메인도 폴백 시도(시세 조회는 주문이 아니라 안전).
+    모의/실전 폴백까지 다 실패하고 오류 응답(rt_cd != "0")이면 일시적 오류로 보고 1회 더 재시도한다."""
     try:
         token = await get_kis_token()
         if not token:
@@ -326,15 +328,27 @@ async def _fetch_daily_ohlcv_ex(symbol: str, days: int = 40) -> tuple:
         bases = [config.kis_base_url]
         if config.KIS_IS_PAPER and _KIS_REAL_BASE not in bases:
             bases.append(_KIS_REAL_BASE)
-        rows = []
-        results = []  # 서버별 응답 (첫 항목이 기본 서버)
-        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
-            for base in bases:
-                data = await _kis_daily_get(sess, base, token, symbol, start, end)
-                results.append((base, data))
-                rows = data.get("output2", []) or []
-                if rows:
-                    break
+
+        async def _attempt_all_bases():
+            rows = []
+            results = []  # 서버별 응답 (첫 항목이 기본 서버)
+            async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+                for base in bases:
+                    data = await _kis_daily_get(sess, base, token, symbol, start, end)
+                    results.append((base, data))
+                    rows = data.get("output2", []) or []
+                    if rows:
+                        break
+            return rows, results
+
+        rows, results = await _attempt_all_bases()
+        primary_data = results[0][1]
+        # "초당" 호출 제한은 _kis_quote_get 내부에서 이미 재시도했으므로 여기서는 그 외 오류만 재시도
+        if not rows and primary_data.get("rt_cd") != "0" and "초당" not in str(primary_data.get("msg1", "")):
+            logger.info(f"일봉 빈응답 재시도 [{symbol}] rt_cd={primary_data.get('rt_cd')} "
+                        f"{_KIS_DAILY_RETRY_DELAY}초 뒤 1회 더 시도")
+            await asyncio.sleep(_KIS_DAILY_RETRY_DELAY)
+            rows, results = await _attempt_all_bases()
         err = ""
         if not rows:
             for base, data in results:

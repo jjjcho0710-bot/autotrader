@@ -2113,22 +2113,27 @@ async def run_weekly_preview():
     return {"success": True}
 
 
+async def _daily_gate(name: str, today) -> bool:
+    """스케줄러 일일 트리거 중복 실행 방지 게이트.
+    Redis에 SETNX(nx=True)로 "오늘 이미 실행했는지"를 영구 기록한다. 로컬 Python 변수로만
+    추적하면 재배포로 프로세스가 재시작될 때 변수가 초기화되어, 이미 보낸 리포트가 같은 날
+    다시 발송되는 문제가 있었다(예: 15:40~15:45 사이 재배포 시 마감 결산 중복 발송).
+    True를 반환한 호출만 실행해야 한다(같은 날 두 번째 호출부터는 False)."""
+    key = f"jarvis:sched:{name}:{today.isoformat()}"
+    if not redis_client:
+        return True
+    try:
+        return bool(await redis_client.set(key, "1", nx=True, ex=48 * 3600))
+    except Exception as e:
+        logger.warning(f"일일 스케줄 게이트 조회 실패({name}): {e}")
+        return True
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
     from datetime import time as dtime
     logger.info("🕐 Jarvis 스케줄러 시작")
-    last_morning = None
-    last_closing = None
-    last_daily_report = None
-    last_scan_0930 = None
-    last_scan_1030 = None
-    last_scan_1300 = None
-    last_wk_review = None
-    last_wk_preview = None
-    last_adv_11 = None
-    last_adv_14 = None
-    last_queue_run = None
 
     while True:
         await asyncio.sleep(60)
@@ -2139,8 +2144,7 @@ async def _jarvis_scheduler():
         cur_time = now.time().replace(tzinfo=None)
 
         # 통합 일일보고 (매일 21:00, 주말 포함 — 코인 반영)
-        if dtime(21, 0) <= cur_time <= dtime(21, 5) and last_daily_report != today:
-            last_daily_report = today
+        if dtime(21, 0) <= cur_time <= dtime(21, 5) and await _daily_gate("daily_report", today):
             asyncio.create_task(_jarvis_unified_daily_report())
             asyncio.create_task(_summarize_old_chats())  # 장기 기억 이관 (하루 1일치)
 
@@ -2150,20 +2154,19 @@ async def _jarvis_scheduler():
 
         if now.weekday() >= 5:
             # 주말 스터디: 토 10:00 주간복습 / 일 20:00 다음주예습
-            if now.weekday() == 5 and dtime(10, 0) <= cur_time <= dtime(10, 5)                     and last_wk_review != today:
-                last_wk_review = today
+            if now.weekday() == 5 and dtime(10, 0) <= cur_time <= dtime(10, 5) \
+                    and await _daily_gate("wk_review", today):
                 async def _sat_study():
                     await _jarvis_weekly_review()
                     await _jarvis_knowledge_curate()
                 asyncio.create_task(_sat_study())
-            if now.weekday() == 6 and dtime(20, 0) <= cur_time <= dtime(20, 5)                     and last_wk_preview != today:
-                last_wk_preview = today
+            if now.weekday() == 6 and dtime(20, 0) <= cur_time <= dtime(20, 5) \
+                    and await _daily_gate("wk_preview", today):
                 asyncio.create_task(_jarvis_weekly_preview())
             continue
 
         # 장외 승인 예약 실행 (09:01)
-        if dtime(9, 1) <= cur_time <= dtime(9, 6) and last_queue_run != today:
-            last_queue_run = today
+        if dtime(9, 1) <= cur_time <= dtime(9, 6) and await _daily_gate("queue_run", today):
             async def _run_queue():
                 try:
                     while True:
@@ -2178,26 +2181,20 @@ async def _jarvis_scheduler():
             asyncio.create_task(_run_queue())
 
         # 자비스 능동 제안 (11:00 / 14:00)
-        if dtime(11, 0) <= cur_time <= dtime(11, 5) and last_adv_11 != today:
-            last_adv_11 = today
+        if dtime(11, 0) <= cur_time <= dtime(11, 5) and await _daily_gate("adv_11", today):
             asyncio.create_task(_jarvis_proactive_advice())
-        if dtime(14, 0) <= cur_time <= dtime(14, 5) and last_adv_14 != today:
-            last_adv_14 = today
+        if dtime(14, 0) <= cur_time <= dtime(14, 5) and await _daily_gate("adv_14", today):
             asyncio.create_task(_jarvis_proactive_advice())
 
         # 장중 보충 스캔 (09:30 / 10:30 / 13:00) — 새 거래량 상위 종목 감시 추가
-        if dtime(9, 30) <= cur_time <= dtime(9, 35) and last_scan_0930 != today:
-            last_scan_0930 = today
+        if dtime(9, 30) <= cur_time <= dtime(9, 35) and await _daily_gate("scan_0930", today):
             asyncio.create_task(_intraday_scan())
-        if dtime(10, 30) <= cur_time <= dtime(10, 35) and last_scan_1030 != today:
-            last_scan_1030 = today
+        if dtime(10, 30) <= cur_time <= dtime(10, 35) and await _daily_gate("scan_1030", today):
             asyncio.create_task(_intraday_scan())
-        if dtime(13, 0) <= cur_time <= dtime(13, 5) and last_scan_1300 != today:
-            last_scan_1300 = today
+        if dtime(13, 0) <= cur_time <= dtime(13, 5) and await _daily_gate("scan_1300", today):
             asyncio.create_task(_intraday_scan())
 
-        if dtime(8, 30) <= cur_time <= dtime(8, 35) and last_morning != today:
-            last_morning = today
+        if dtime(8, 30) <= cur_time <= dtime(8, 35) and await _daily_gate("morning", today):
             logger.info("🌅 Jarvis 장 시작 전 루틴")
             await _jarvis_stock_scanner()        # 1. 전종목 스캔 → watchlist 업데이트
             await _jarvis_auto_analysis()         # 2. watchlist ML 예측
@@ -2217,8 +2214,7 @@ async def _jarvis_scheduler():
             except Exception as e:
                 logger.warning(f"공시 확인 실패: {e}")
 
-        if dtime(15, 40) <= cur_time <= dtime(15, 45) and last_closing != today:
-            last_closing = today
+        if dtime(15, 40) <= cur_time <= dtime(15, 45) and await _daily_gate("closing", today):
             logger.info("🌆 Jarvis 장 마감 후 자동 분석")
             await _jarvis_auto_analysis()
             asyncio.create_task(_manual_collect())  # 장 마감 후 뉴스 수집

@@ -76,6 +76,7 @@
   <div class="rail">
     <div class="rc"><div class="rt">계좌</div><div class="big2 mono" id="rTotal">-</div>
       <div style="margin-top:6px;" id="rPnl"></div>
+      <div style="margin-top:4px;font-size:12px;" id="rTotalPnl"></div>
       <div style="color:var(--dim);font-size:11px;margin-top:4px;" id="rCash"></div></div>
     <div class="rc"><div class="rt">보유 포지션</div><div id="rPos"><div class="empty">로딩...</div></div></div>
     <div class="rc"><div class="rt">시장</div><div id="rMkt"><div class="empty">로딩...</div></div></div>
@@ -173,6 +174,7 @@ async function rail(){
   try{const r=await fetch('/api/account/stock');const j=await r.json();const a=j.data||{};
     rTotal.textContent=won(a.total_eval);
     rPnl.innerHTML=`<b class="${cls(a.pnl)}">${won(a.pnl)}</b> 평가손익`;
+    rTotalPnl.innerHTML=`<span style="color:var(--dim)">누적 손익(원금대비):</span> <b class="${cls(a.total_pnl)}">${won(a.total_pnl)}</b> <span class="${cls(a.total_pnl)}">(${pct(a.total_pnl_rate)})</span>`;
     rCash.textContent=`예수금 ${won(a.cash)}`;
   }catch(e){}
   try{const r=await fetch('/api/positions/stock');const j=await r.json();const ps=j.data||[];

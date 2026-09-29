@@ -67,10 +67,11 @@ class Universe:
                     name = None
             return code, (name or code)
 
-        # 이름으로 찾기: 인메모리 캐시
-        for name, code in self.name_cache.items():
-            if name and name in text:
-                return code, name
+        # 이름으로 찾기: 인메모리 캐시 (텍스트에 포함되는 가장 긴 종목명 우선)
+        candidates = [(name, code) for name, code in self.name_cache.items() if name and name in text]
+        if candidates:
+            name, code = max(candidates, key=lambda item: len(item[0]))
+            return code, name
 
         # DB 폴백 (캐시 미로드 시): 텍스트에 포함되는 가장 긴 종목명
         if self.db_pool is not None:

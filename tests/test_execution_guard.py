@@ -29,14 +29,25 @@ class _AcquireCtx:
 
 class FakeTradeHistoryConnection:
     def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
-                 buy_history=None, raise_on_fetch=False):
+                 buy_history=None, raise_on_fetch=False, disclosures=None):
         self.stop_loss_count = stop_loss_count
         self.raise_on_fetchval = raise_on_fetchval
+        self.disclosures = disclosures if disclosures is not None else []
         self.inserted = []
         self.decisions = []
         # symbol -> list of {"price": ...} 딕셔너리(매수 순서대로) — 물타기 정책 검사용
         self.buy_history = buy_history or {}
         self.raise_on_fetch = raise_on_fetch
+
+    async def fetch(self, query, *args):
+        if self.raise_on_fetch:
+            raise RuntimeError("DB down")
+        if "stock_disclosure" in query:
+            return list(self.disclosures)
+        if "trade_history" in query and "side='BUY'" in query:
+            symbol = args[1]
+            return list(self.buy_history.get(symbol, []))
+        return []
 
     async def fetchval(self, query, *args):
         if self.raise_on_fetchval:
@@ -53,14 +64,6 @@ class FakeTradeHistoryConnection:
             return {"params": {"max_positions": 5}}
         return None
 
-    async def fetch(self, query, *args):
-        if self.raise_on_fetch:
-            raise RuntimeError("DB down")
-        if "trade_history" in query and "side='BUY'" in query:
-            symbol = args[1]
-            return list(self.buy_history.get(symbol, []))
-        return []
-
     async def execute(self, query, *args):
         if "trade_history" in query:
             self.inserted.append(args)
@@ -70,9 +73,9 @@ class FakeTradeHistoryConnection:
 
 class FakePool:
     def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
-                 buy_history=None, raise_on_fetch=False):
+                 buy_history=None, raise_on_fetch=False, disclosures=None):
         self._conn = FakeTradeHistoryConnection(
-            stop_loss_count, raise_on_fetchval, buy_history, raise_on_fetch)
+            stop_loss_count, raise_on_fetchval, buy_history, raise_on_fetch, disclosures)
 
     def acquire(self):
         return _AcquireCtx(self._conn)
@@ -134,6 +137,26 @@ class TestPrecheck(unittest.IsolatedAsyncioTestCase):
         pool = FakePool(raise_on_fetchval=True)
         result = await execution_guard.precheck("005930", "buy", "stock_trader", pool=pool, redis=FakeRedis())
         self.assertIn("error", result)
+
+    async def test_no_disclosure_does_not_block(self):
+        pool = FakePool(disclosures=[])
+        result = await execution_guard.precheck("005930", "buy", "stock_trader", pool=pool, redis=FakeRedis())
+        self.assertIsNone(result)
+
+    async def test_normal_disclosure_does_not_block(self):
+        pool = FakePool(disclosures=[{"report_name": "분기보고서 제출"}])
+        result = await execution_guard.precheck("005930", "buy", "stock_trader", pool=pool, redis=FakeRedis())
+        self.assertIsNone(result)
+
+    async def test_bad_disclosure_keyword_blocks_new_buy(self):
+        pool = FakePool(disclosures=[{"report_name": "관리종목 지정 안내"}])
+        result = await execution_guard.precheck("005930", "buy", "stock_trader", pool=pool, redis=FakeRedis())
+        self.assertEqual(result, {"blocked": "bad_disclosure"})
+
+    async def test_bad_disclosure_keyword_does_not_block_sell(self):
+        pool = FakePool(disclosures=[{"report_name": "상장폐지 사유 발생"}])
+        result = await execution_guard.precheck("005930", "sell", "stock_trader", pool=pool, redis=FakeRedis())
+        self.assertIsNone(result)
 
 
 def make_signal(**overrides):

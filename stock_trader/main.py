@@ -501,6 +501,72 @@ class StockTrader:
         except Exception:
             pass
 
+    _STOP_LOSS_TRANSIENT_MARKERS = ("체결 0주", "체결수량 0", "미체결")
+
+    async def _compute_stop_loss_suppress_sec(self, symbol: str, err_msg: str):
+        """손절 매도 실패 사유별 재시도 억제 시간 계산.
+        - "체결 0주" 등 일시적 오류로 보이는 사유: 90초(60~120초 범위) 뒤 재시도
+        - 같은 사유로 3회 이상 연속 실패: 5분 → 15분 → 30분으로 점진 확대(그 이상은 30분 고정)
+        - 그 외 사유: 기존과 동일하게 30분 억제
+        반환: (suppress_sec, 연속 실패 횟수)"""
+        from common.alert_throttle import normalize_cause
+        norm_reason = normalize_cause(err_msg)
+        streak_key = f"sell_fail_streak:{symbol}"
+        streak = None
+        try:
+            raw = await cache.client.get(streak_key)
+            if raw:
+                streak = json.loads(raw)
+        except Exception:
+            pass
+
+        fail_count = 1
+        if streak and streak.get("reason") == norm_reason:
+            fail_count = int(streak.get("count", 0)) + 1
+
+        try:
+            await cache.client.setex(
+                streak_key, 3600,
+                json.dumps({"reason": norm_reason, "count": fail_count, "ts": datetime.now().timestamp()}),
+            )
+        except Exception:
+            pass
+
+        if fail_count >= 3:
+            tier = min(fail_count - 2, 3)
+            suppress_sec = {1: 300, 2: 900, 3: 1800}[tier]
+        elif any(marker in err_msg for marker in self._STOP_LOSS_TRANSIENT_MARKERS):
+            suppress_sec = 90
+        else:
+            suppress_sec = 1800
+
+        return suppress_sec, fail_count
+
+    @staticmethod
+    def _format_suppress_sec(sec: int) -> str:
+        if sec < 60:
+            return f"{sec}초간"
+        return f"{sec // 60}분간"
+
+    async def _maybe_alert_stop_loss_worsening(self, symbol: str, name: str, pnl_rate: float):
+        """손절 매도 재시도 억제 중에도 최소 5분 간격으로는 알림이 가도록 별도 스로틀 유지
+        (원인별 시간당 1회 제한과 별개로, 사람이 계속 상황을 알 수 있게 하기 위함)"""
+        alert_key = f"sell_fail_alert_5m:{symbol}"
+        try:
+            if await cache.client.get(alert_key):
+                return
+            await cache.client.setex(alert_key, 300, "1")
+        except Exception:
+            return
+        try:
+            from common.telegram import send_stock
+            await send_stock(
+                f"🔻 <b>{name}({symbol}) 손절 매도 대기 중 {pnl_rate:+.1f}%</b>\n"
+                f"매도 재시도 억제 중입니다 — 상황을 계속 알려드립니다."
+            )
+        except Exception:
+            pass
+
     async def _recently_sold(self, symbol: str) -> bool:
         """최근 10분 내 이 종목 SELL 체결 기록이 있는지 확인
         (KIS 잔고 반영 지연으로 이미 판 종목이 self.positions에 잠깐 남아있는 경우
@@ -641,15 +707,16 @@ class StockTrader:
 
             # 손절 -7% 도달 → 즉시 자동 매도 (주인 지시: 알아서 처리)
             if default_strategy.check_stop_loss(avg_price, cur_price):
+                nm = pos.get("name", symbol)
                 suppress_key = f"sell_fail_suppress:{symbol}"
                 try:
                     if await cache.client.get(suppress_key):
                         logger.debug(f"⏸️ [{symbol}] 손절 실패 쿨다운 중 — 매도 스킵")
+                        await self._maybe_alert_stop_loss_worsening(symbol, nm, pnl_rate)
                         continue
                 except Exception:
                     pass
                 try:
-                    nm = pos.get("name", symbol)
                     result = await self.trader.sell(symbol, cur_price, qty)
                     # 초당 거래건수 제한 등 일시 오류는 짧은 대기 후 1회 재시도
                     if not result.get("success") and any(
@@ -660,6 +727,7 @@ class StockTrader:
                     if result.get("success"):
                         _fq = result.get("filled_qty", qty)
                         _fpnl = int((cur_price - avg_price) * _fq)
+                        remain = qty - _fq
                         await db.insert_trade(
                             bot="stock_trader", asset_type="stock",
                             symbol=symbol, side="SELL", price=cur_price, quantity=_fq,
@@ -667,27 +735,42 @@ class StockTrader:
                         )
                         await self._invalidate_position_cache()
                         try:
-                            await cache.client.delete(f"half_tp:{symbol}")
+                            await cache.client.delete(f"sell_fail_streak:{symbol}")
+                            await cache.client.delete(f"sell_fail_alert_5m:{symbol}")
                         except Exception:
                             pass
                         from common.telegram import send_stock
                         await send_stock(
                             f"🔴 <b>{nm}({symbol}) 손절 매도 체결 {pnl_rate:+.1f}%</b>\n"
-                            f"{qty}주 @ {cur_price:,}원 (손실 {pnl:+,.0f}원)\n"
+                            f"{_fq}주 @ {cur_price:,}원 (손실 {_fpnl:+,}원)\n"
                             f"평단 {avg_price:,.0f} → 매도 {cur_price:,.0f}"
+                            + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
                         )
-                        logger.info(f"🔴 손절 자동매도 체결 [{symbol}] {pnl_rate:+.1f}%")
-                        self.positions.pop(symbol, None)
-                        try:
-                            from common.alert_throttle import reset_symbol_alert
-                            await reset_symbol_alert(symbol, redis_client=cache.client)
-                        except Exception:
-                            pass
+                        logger.info(f"🔴 손절 자동매도 체결 [{symbol}] {pnl_rate:+.1f}% ({_fq}주 체결, 잔여 {remain}주)")
+                        if remain > 0:
+                            # 부분체결: 포지션을 지우지 않고 잔량을 유지해 다음 사이클에 즉시 재시도
+                            pos["qty"] = remain
+                            pos["sellable_qty"] = remain
+                            self.positions[symbol] = pos
+                        else:
+                            try:
+                                await cache.client.delete(f"half_tp:{symbol}")
+                            except Exception:
+                                pass
+                            self.positions.pop(symbol, None)
+                            try:
+                                from common.alert_throttle import reset_symbol_alert
+                                await reset_symbol_alert(symbol, redis_client=cache.client)
+                            except Exception:
+                                pass
                     else:
                         err_msg = str(result.get('error', '알 수 없음'))
+                        suppress_sec, fail_count = await self._compute_stop_loss_suppress_sec(symbol, err_msg)
                         try:
-                            suppress_val = json.dumps({"reason": err_msg, "ts": datetime.now().timestamp()})
-                            await cache.client.setex(suppress_key, 1800, suppress_val)
+                            suppress_val = json.dumps({
+                                "reason": err_msg, "ts": datetime.now().timestamp(), "fail_count": fail_count,
+                            })
+                            await cache.client.setex(suppress_key, suppress_sec, suppress_val)
                         except Exception:
                             pass
                         try:
@@ -700,11 +783,14 @@ class StockTrader:
                                 from common.telegram import send_stock
                                 await send_stock(
                                     f"⚠️ <b>{nm}({symbol}) 손절 매도 실패</b> {pnl_rate:+.1f}%\n"
-                                    f"사유: {err_msg} — 30분간 재시도 억제"
+                                    f"사유: {err_msg} — {self._format_suppress_sec(suppress_sec)} 재시도 억제 "
+                                    f"(연속 {fail_count}회)"
                                 )
                         except Exception:
                             pass
-                        logger.warning(f"손절 매도 실패 [{symbol}]: {err_msg}")
+                        logger.warning(
+                            f"손절 매도 실패 [{symbol}]: {err_msg} (연속 {fail_count}회, {suppress_sec}초 억제)"
+                        )
                 except Exception as e:
                     logger.warning(f"손절 자동매도 오류 [{symbol}]: {e}")
                 continue

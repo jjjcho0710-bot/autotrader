@@ -393,7 +393,7 @@ class KISTrader:
         # 접수 성공 ≠ 체결 성공. 잠시 대기 후 실제 체결 수량을 재조회해 확정한다.
         import asyncio as _aio
         await _aio.sleep(1.5)
-        filled_qty = await self._get_filled_qty(order_no, symbol)
+        filled_qty, avg_fill_price = await self._get_filled_qty(order_no, symbol, with_price=True)
         if filled_qty is None:
             # 체결 조회 자체가 실패하면 판정 불가 — 접수는 됐으니 보수적으로 성공 처리하되 표시
             self.invalidate_balance_cache()
@@ -402,6 +402,7 @@ class KISTrader:
         if filled_qty <= 0:
             logger.error(f"❌ 매도 미체결: {symbol} 주문 {qty}주 접수됐으나 체결 0주")
             return {"success": False, "error": f"주문 접수됐으나 미체결(체결수량 0)"}
+        await self._check_sell_slippage(symbol, price, avg_fill_price)
         if filled_qty < qty:
             self.invalidate_balance_cache()
             logger.warning(f"⚠️ 매도 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
@@ -410,11 +411,37 @@ class KISTrader:
         logger.info(f"✅ 매도 체결 확인: {symbol} {price:,}원 × {filled_qty}주")
         return {"success": True, "order_no": order_no, "filled_qty": filled_qty}
 
-    async def _get_filled_qty(self, order_no: str, symbol: str, side: str = "01"):
+    async def _check_sell_slippage(
+        self, symbol: str, signal_price: int, avg_fill_price: Optional[float], threshold_pct: float = 3.0
+    ):
+        """매도 체결가가 신호 발생 시점 가격(signal_price)보다 threshold_pct%(기본 3%) 이상
+        낮으면 경고 로그와 텔레그램 알림을 남긴다. 시장가(01) 매도는 이미 체결된 뒤 확인만
+        가능하므로 주문 자체를 막지 않고 감지·기록·알림까지만 수행한다."""
+        if not avg_fill_price or signal_price <= 0:
+            return
+        slippage_pct = (avg_fill_price - signal_price) / signal_price * 100
+        if slippage_pct > -threshold_pct:
+            return
+        logger.warning(
+            f"⚠️ 매도 슬리피지 경고 [{symbol}] 신호가 {signal_price:,}원 → 체결가 {avg_fill_price:,.0f}원 "
+            f"({slippage_pct:+.1f}%)"
+        )
+        try:
+            from common.telegram import send_stock
+            await send_stock(
+                f"⚠️ <b>{symbol} 매도 슬리피지 경고</b>\n"
+                f"신호가 {signal_price:,}원 → 체결가 {avg_fill_price:,.0f}원 ({slippage_pct:+.1f}%)\n"
+                f"시장가 매도로 급락 갭 발생 — 참고용 알림입니다."
+            )
+        except Exception as e:
+            logger.warning(f"슬리피지 텔레그램 알림 실패 [{symbol}]: {e}")
+
+    async def _get_filled_qty(self, order_no: str, symbol: str, side: str = "01", with_price: bool = False):
         """당일 주문체결내역조회로 특정 주문번호의 실제 체결수량 확인. 실패 시 None.
+        with_price=True면 (체결수량, 평균체결단가) 튜플을 반환한다(조회 실패 시 (None, None)).
         side: '01' 매도, '02' 매수"""
         if not order_no:
-            return None
+            return (None, None) if with_price else None
         try:
             today = datetime.now().strftime("%Y%m%d")
             tr_id = "VTTC0081R" if config.KIS_IS_PAPER else "TTTC0081R"
@@ -436,11 +463,14 @@ class KISTrader:
             rows = data.get("output1", []) or []
             for row in rows:
                 if row.get("odno") == order_no:
-                    return int(row.get("tot_ccld_qty", 0) or 0)
-            return 0
+                    fq = int(row.get("tot_ccld_qty", 0) or 0)
+                    if with_price:
+                        return fq, float(row.get("avg_prvs", 0) or 0)
+                    return fq
+            return (0, 0.0) if with_price else 0
         except Exception as e:
             logger.warning(f"체결 조회 오류 [{symbol}]: {e}")
-            return None
+            return (None, None) if with_price else None
 
     # ── 일봉 데이터 조회 ────────────────────────────────
     async def get_daily_ohlcv(self, symbol: str, start: str, end: str) -> list:

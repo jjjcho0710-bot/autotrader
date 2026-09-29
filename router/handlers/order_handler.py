@@ -160,9 +160,10 @@ async def handle_trade_command(
     if all_sell and not qty_m:
         try:
             pos = await get_stock_positions_fn()
-            qty = next((int(p["qty"]) for p in pos.get("data", []) if p["symbol"] == symbol), 0)
-        except Exception:
-            qty = 0
+        except Exception as e:
+            logger.warning(f"수동주문 보유 수량 조회 실패 [{symbol}]: {e}")
+            return f"⚠️ {name}({symbol}) 종목 조회에 실패했습니다. 잠시 후 다시 시도해주세요"
+        qty = next((int(p["qty"]) for p in pos.get("data", []) if p["symbol"] == symbol), 0)
         if qty <= 0:
             return f"⚠️ {name}({symbol}) 보유 수량이 없어요"
     else:

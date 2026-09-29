@@ -303,6 +303,16 @@ class KISTrader:
             return True
         return False
 
+    async def force_reissue_token(self):
+        """Redis 캐시를 무시하고 새 토큰을 강제 발급한다 (캐시된 토큰이 만료/오염된 경우 대응)"""
+        redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
+        try:
+            await cache.client.delete(redis_key)
+        except Exception:
+            pass
+        self.access_token = ""
+        await self._get_token()
+
     async def _ensure_session(self):
         """세션 끊김 시 자동 재시작"""
         if self.session is None or self.session.closed:

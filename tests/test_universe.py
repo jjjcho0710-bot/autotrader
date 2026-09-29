@@ -102,6 +102,17 @@ class TestResolveSymbolByName(unittest.TestCase):
         self.assertEqual(symbol, "005930")
         self.assertEqual(name, "삼성전자")
 
+    def test_name_in_text_prefers_longest_memory_cache_match(self):
+        """짧은 종목명이 긴 종목명의 부분 문자열인 경우, 캐시 매칭도
+        가장 긴 이름을 우선해야 한다 (예: '대덕' vs '대덕전자')."""
+        pool = FakePool([])
+        universe = Universe(pool)
+        universe.replace_cache({"대덕": "008060", "대덕전자": "353200"})
+
+        symbol, name = asyncio.run(universe.resolve_symbol("대덕전자 추가 매수"))
+        self.assertEqual(symbol, "353200")
+        self.assertEqual(name, "대덕전자")
+
     def test_name_falls_back_to_stocks_db_longest_match(self):
         pool = FakePool([
             {"symbol": "005930", "name": "삼성전자"},

@@ -69,6 +69,10 @@ class Config:
     COLLECT_INTERVAL_SEC: int = int(os.getenv("COLLECT_INTERVAL_SEC", "60"))  # 1분봉
     STOCK_SYMBOLS: list = None   # 아래에서 설정
 
+    # ── 계좌 설정 ──
+    # 모의투자 시작 자금(원) — "누적 손익(원금 대비)" 계산 기준. PM 확인 값 1,000만원.
+    INITIAL_SEED_KRW: int = int(os.getenv("INITIAL_SEED_KRW", "10000000"))
+
     def __post_init__(self):
         # 수집할 주식 종목 (환경변수로 override 가능)
         symbols_env = os.getenv("STOCK_SYMBOLS", "")
@@ -101,3 +105,12 @@ class Config:
 
 
 config = Config()
+
+
+def compute_total_pnl(total_eval: float, seed: float = None) -> tuple:
+    """시작 자금(seed) 대비 누적 손익(원, %) 계산. seed 미지정 시 INITIAL_SEED_KRW 사용."""
+    seed = config.INITIAL_SEED_KRW if seed is None else seed
+    if not seed:
+        return 0, 0.0
+    pnl = total_eval - seed
+    return pnl, pnl / seed * 100

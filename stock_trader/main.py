@@ -10,7 +10,7 @@ import signal
 import os
 from datetime import datetime, time, timezone, timedelta
 
-from common.config import config
+from common.config import config, compute_total_pnl
 from common.database import db, cache
 from kis_trader import KISTrader
 from ml_report import build_ml_report_text
@@ -1304,6 +1304,7 @@ class StockTrader:
 
                 acct = await self.trader.get_balance()
                 cash = acct.get('cash', 0)
+                total_eval = acct.get('total', 0)
 
                 report = (
                     f"📊 주식 6시간 리포트 ({now.strftime('%m/%d %H:%M')})\n\n"
@@ -1312,6 +1313,9 @@ class StockTrader:
                     f"보유: {', '.join(pos_list) if pos_list else '없음'}\n"
                     f"예수금: {cash:,.0f}원"
                 )
+                if total_eval > 0:
+                    cum_pnl, cum_pnl_rate = compute_total_pnl(total_eval)
+                    report += f"\n누적손익(원금대비): {cum_pnl:+,.0f}원 ({cum_pnl_rate:+.2f}%)"
 
                 if trades:
                     report += "\n\n최근 매매:"

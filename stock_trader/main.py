@@ -66,6 +66,17 @@ class StockTrader:
     # 트레일링 스탑 발동 기준: 잔여 보유분의 고점 대비 하락률(퍼센트 포인트)
     TRAILING_STOP_PCT = 3.0
 
+    # ── 리스크 기반 포지션 사이징 (PM 승인, 2026-09-30) ──────────────
+    # ML 정확도(42~64%)가 확신도 기반 사이징의 근거가 되기엔 약해 "종목당 최대 손실 고정"
+    # 방식으로 재설계: 기본 매수금액 = 자산 × RISK_PER_TRADE_PCT ÷ |손절률|.
+    # 손절률은 strategy_config.stop_loss 를 쓰고, 값이 없을 때만 이 참고값(현재 운영값 -7%)을 쓴다.
+    DEFAULT_STOP_LOSS_PCT = 7.0
+    # ATR(20일, stock_daily_ohlcv)을 현재가 대비 %로 환산한 변동성 구간별 배율 — (상한%, 배율) 오름차순.
+    VOLATILITY_BANDS = ((2.0, 1.00), (4.0, 0.75), (6.0, 0.50))
+    VOLATILITY_MULT_HIGH = 0.30        # 6% 초과
+    VOLATILITY_MULT_FALLBACK = 0.75    # ATR 계산 불가(데이터 부족) 시 보수적 처리
+    ATR_PERIOD = 20
+
     def __init__(self):
         self.running    = False
         self.trader     = KISTrader()
@@ -97,6 +108,33 @@ class StockTrader:
 
     def get_all_active_strategies(self):
         return [(name, s["params"]) for name, s in self.strategies.items() if s["is_active"]]
+
+    async def _warn_if_position_sizing_exceeds_equity(self):
+        """리스크 기반 사이징(PM 승인, 2026-09-30) 정합성 점검: max_positions × 기본매수금액이
+        총자산을 넘으면 시작 로그로 경고만 남긴다(자동 조정은 하지 않는다)."""
+        try:
+            balance = await self.trader.get_balance()
+            equity = float(balance.get("total") or 0) or float(config.INITIAL_SEED_KRW)
+
+            active = self.get_all_active_strategies()
+            max_positions = 5
+            stop_loss_pct = self.DEFAULT_STOP_LOSS_PCT
+            if active:
+                _, first_params = active[0]
+                max_positions = int(first_params.get("max_positions", max_positions))
+                stop_loss_pct = abs(float(first_params.get("stop_loss", stop_loss_pct)))
+
+            base_amount = self._compute_base_amount(equity, stop_loss_pct, config.RISK_PER_TRADE_PCT)
+            projected = max_positions * base_amount
+            if projected > equity:
+                logger.warning(
+                    f"⚠️ 포지션 사이징 경고: max_positions({max_positions}) × 기본매수금액"
+                    f"({base_amount:,.0f}원) = {projected:,.0f}원이 총자산({equity:,.0f}원)을 "
+                    f"초과합니다. (RISK_PER_TRADE_PCT={config.RISK_PER_TRADE_PCT}%, "
+                    f"손절률={stop_loss_pct}%)"
+                )
+        except Exception as e:
+            logger.warning(f"포지션 사이징 정합성 점검 실패(무시): {e}")
 
     def build_strategy(self, name, params):
         # strategy_config.params의 stop_loss는 채팅 설정(router/handlers/setting_handler.py)·
@@ -169,6 +207,7 @@ class StockTrader:
         await cache.connect()
         await self.trader.start()
         await self.load_strategies()
+        await self._warn_if_position_sizing_exceeds_equity()
 
         try:
             positions = await self.trader.get_positions() or []
@@ -1270,9 +1309,28 @@ class StockTrader:
             # ML 예측 결과 (Jarvis에게 참고 정보로 전달)
             ml_result = await self._get_ml_result(symbol, rows)
 
-            # ML 확률 기반 매수 금액 산정 (ML 실패 시 확률 없이 최소 비율 고정)
-            buy_amount, ml_text = self._ml_buy_plan(ml_result, cash)
-            qty = max(1, buy_amount // cur_price)
+            # ML 문구는 reason 생성에만 사용 — 매수 금액 산정에서는 제외한다(PM 승인, 2026-09-30).
+            # ML 정확도가 42~64%(동전 수준)라 확신도 기반 사이징의 근거가 약해 "종목당 최대
+            # 손실 고정" 방식으로 대체했다.
+            _, ml_text = self._ml_buy_plan(ml_result, cash)
+
+            # 리스크 기반 매수 금액 = 기본(자산×위험비율÷손절률) × 변동성배율.
+            # 확신도 배율(EXECUTE=1.0/EXECUTE_SMALL=0.5)과 예수금 최종 캡은 AI 판단 이후
+            # dashboard/main.py(jarvis_signal)에서 적용한다 — 판단 시점이 다르기 때문.
+            equity = float(available_cash.get("total") or 0) or float(config.INITIAL_SEED_KRW)
+            stop_loss_pct = abs(float(s_params.get("stop_loss", self.DEFAULT_STOP_LOSS_PCT)))
+            base_amount = self._compute_base_amount(equity, stop_loss_pct, config.RISK_PER_TRADE_PCT)
+            atr_pct = self._compute_atr_pct(rows, cur_price)
+            vol_mult = self._volatility_multiplier(atr_pct)
+            planned_amount = base_amount * vol_mult
+
+            if planned_amount < cur_price:
+                logger.info(
+                    f"💸 [{symbol}] 리스크 기반 매수금액 부족 (기본×변동성={planned_amount:,.0f}원, "
+                    f"1주={cur_price:,}원) → 매수 스킵"
+                )
+                continue
+            qty = max(1, int(planned_amount // cur_price))
 
             # 수급 정보 수집
             supply_reason = "수급 데이터 없음"
@@ -1356,6 +1414,11 @@ class StockTrader:
                             "qty": qty,
                             "strategy": triggered_strategy,
                             "reason": reason,
+                            # 리스크 기반 사이징(PM 승인, 2026-09-30): 기본×변동성 금액과 예수금을
+                            # 그대로 실어 보내 dashboard가 확신도 배율(EXECUTE/EXECUTE_SMALL)을
+                            # 적용한 뒤 예수금 기준 최종 캡을 걸 수 있게 한다.
+                            "base_amount": planned_amount,
+                            "cash": cash,
                         },
                         timeout=http.ClientTimeout(total=60)
                     )
@@ -1423,7 +1486,12 @@ class StockTrader:
         """ML 결과 → (매수 금액, reason 에 넣을 ML 문구).
         성공: 확률 구간별 비율(강함 30%/보통 20%/약함 15%/최소 10%) + "ML매수확률:NN%(강도)".
         실패: 확률을 쓰지 않고 최소 비율(10%) 고정 + "ML예측 없음(사유)".
-        (stark/decision_engine.py 의 AI 폴백은 "ML매수확률:NN%" 만 읽으므로 실패 문구는 확률 0 으로 처리된다.)"""
+        (stark/decision_engine.py 의 AI 폴백은 "ML매수확률:NN%" 만 읽으므로 실패 문구는 확률 0 으로 처리된다.)
+
+        주의(PM 승인, 2026-09-30): 이 함수가 반환하는 매수 금액은 더 이상 실제 매수 금액
+        산정에 쓰이지 않는다(리스크 기반 사이징으로 대체, _compute_base_amount 참고). 호출부는
+        ml_text 만 사용한다. 기존 회귀 테스트(tests/test_ml_no_prediction.py)를 유지하기 위해
+        반환값 자체는 그대로 둔다."""
         if ml_result.get("success") and isinstance(ml_result.get("buy_prob"), (int, float)):
             buy_prob = ml_result["buy_prob"]
             if buy_prob >= 0.90:
@@ -1442,6 +1510,49 @@ class StockTrader:
         buy_amount = min(int(cash * ratio), cash)
         buy_amount = max(buy_amount, 100000)
         return buy_amount, ml_text
+
+    @staticmethod
+    def _compute_base_amount(equity: float, stop_loss_pct: float, risk_per_trade_pct: float) -> float:
+        """기본 매수금액 = 자산 × RISK_PER_TRADE_PCT(%) ÷ |손절률(%)| (PM 승인, 2026-09-30).
+        equity/stop_loss_pct/risk_per_trade_pct 는 모두 퍼센트 단위가 아닌 실제 원/퍼센트 숫자
+        (예: stop_loss_pct=7.0 은 -7%)."""
+        stop_loss_pct = abs(stop_loss_pct)
+        if equity <= 0 or stop_loss_pct <= 0:
+            return 0.0
+        return equity * (risk_per_trade_pct / 100) / (stop_loss_pct / 100)
+
+    @staticmethod
+    def _compute_atr_pct(rows: list, cur_price: float, period: int = None) -> float:
+        """최근 `period`일 ATR(True Range 단순평균)을 현재가 대비 %로 환산.
+        데이터 부족(21개 미만)이거나 가격이 0 이하면 None (호출부가 보수적 배율로 폴백)."""
+        period = period or StockTrader.ATR_PERIOD
+        if not cur_price or cur_price <= 0 or len(rows) < period + 1:
+            return None
+        try:
+            highs  = [float(r["high"])  for r in rows]
+            lows   = [float(r["low"])   for r in rows]
+            closes = [float(r["close"]) for r in rows]
+        except (KeyError, TypeError, ValueError):
+            return None
+        trs = [
+            max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+            for i in range(1, len(rows))
+        ]
+        recent = trs[-period:]
+        if len(recent) < period:
+            return None
+        atr = sum(recent) / period
+        return (atr / cur_price) * 100
+
+    @classmethod
+    def _volatility_multiplier(cls, atr_pct: float) -> float:
+        """ATR%(현재가 대비) 구간별 변동성 배율. atr_pct=None(계산 불가)이면 보수적 기본값."""
+        if atr_pct is None:
+            return cls.VOLATILITY_MULT_FALLBACK
+        for upper, mult in cls.VOLATILITY_BANDS:
+            if atr_pct <= upper:
+                return mult
+        return cls.VOLATILITY_MULT_HIGH
 
     # ── 즉시 텔레그램 알림 (손절/익절용) ─────────────────
     async def _notify_trade(self, action: str, symbol: str, name: str,

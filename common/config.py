@@ -73,6 +73,10 @@ class Config:
     # 모의투자 시작 자금(원) — "누적 손익(원금 대비)" 계산 기준. PM 확인 값 1,000만원.
     INITIAL_SEED_KRW: int = int(os.getenv("INITIAL_SEED_KRW", "10000000"))
 
+    # ── 리스크 기반 포지션 사이징 (PM 승인, 2026-09-30) ──
+    # 종목당 목표 최대 손실 = 총자산 × RISK_PER_TRADE_PCT(%). 기본 0.75%.
+    RISK_PER_TRADE_PCT: float = float(os.getenv("RISK_PER_TRADE_PCT", "0.75"))
+
     def __post_init__(self):
         # 수집할 주식 종목 (환경변수로 override 가능)
         symbols_env = os.getenv("STOCK_SYMBOLS", "")

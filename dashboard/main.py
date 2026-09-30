@@ -5943,6 +5943,39 @@ async def jarvis_exit_decision(request: Request):
         return {"decision": "HOLD", "reason": f"판단 오류: {e}"}
 
 
+# ── 리스크 기반 포지션 사이징 (PM 승인, 2026-09-30) ────────────────────
+# 확신도 배율: EXECUTE=1.0배, EXECUTE_SMALL/PROPOSE(규칙 밖 강신호 자동승격 포함)=0.5배.
+# stock_trader/main.py가 신호에 실어 보낸 base_amount(기본×변동성 금액)에 곱한 뒤
+# cash(예수금)로 최종 캡을 건다.
+STOCK_CONFIDENCE_MULT_EXECUTE = 1.0
+STOCK_CONFIDENCE_MULT_SMALL = 0.5
+
+
+def _apply_stock_confidence_sizing(signal: Dict[str, Any], is_small: bool) -> int:
+    """주식 매수 신호의 최종 수량 산정.
+    최종 매수금액 = signal["base_amount"](기본×변동성) × 확신도배율, 예수금(signal["cash"])
+    초과 시 예수금 기준으로 제한한다. base_amount 가 없는 구버전 신호는 기존
+    EXECUTE_SMALL 절반 수량 로직으로만 폴백한다(확신도 배율과 이중 적용되지 않는다)."""
+    price = signal.get("price", 0)
+    qty = signal.get("qty", 0)
+    base_amount = signal.get("base_amount")
+
+    if not (isinstance(base_amount, (int, float)) and base_amount > 0 and price and price > 0):
+        if is_small:
+            try:
+                qty = max(1, int(float(qty) // 2))
+            except Exception:
+                pass
+        return qty
+
+    confidence_mult = STOCK_CONFIDENCE_MULT_SMALL if is_small else STOCK_CONFIDENCE_MULT_EXECUTE
+    final_amount = base_amount * confidence_mult
+    cash = signal.get("cash")
+    if isinstance(cash, (int, float)) and cash > 0:
+        final_amount = min(final_amount, cash)
+    return max(1, int(final_amount // price))
+
+
 @app.post("/api/jarvis/signal")
 async def jarvis_signal(request: Request):
     """
@@ -5963,6 +5996,10 @@ async def jarvis_signal(request: Request):
         qty       = body.get("qty", 0)
         strategy  = body.get("strategy", "")
         reason    = body.get("reason", "")
+        # 리스크 기반 사이징(PM 승인, 2026-09-30): stock_trader가 실어 보낸 기본×변동성
+        # 금액과 예수금 — 확신도 배율 적용(_apply_stock_confidence_sizing)에 쓰인다.
+        base_amount = body.get("base_amount")
+        cash        = body.get("cash")
 
         if not symbol:
             return {"success": False, "error": "종목코드 없음"}
@@ -5985,7 +6022,8 @@ async def jarvis_signal(request: Request):
         chat_id = config.TELEGRAM_CHAT_ID or config.JARVIS_ANALYST_CHAT_ID
 
         signal = {"bot": bot, "action": action, "symbol": symbol, "name": name,
-                  "price": price, "qty": qty, "strategy": strategy, "reason": reason}
+                  "price": price, "qty": qty, "strategy": strategy, "reason": reason,
+                  "base_amount": base_amount, "cash": cash}
 
         is_stock_buy = (action in ("buy", "BUY") and bot == "stock_trader")
 
@@ -6009,13 +6047,19 @@ async def jarvis_signal(request: Request):
             is_small = decision["is_small"]
             should_execute = decision["should_execute"]
 
-            # EXECUTE_SMALL(또는 규칙 밖 강신호 PROPOSE 자동승격)은 절반 수량으로 진입 —
-            # 코인/주식 두 실행 경로가 공유해야 해서 분기 전에 한 번만 적용한다.
-            if is_small and action in ("buy", "BUY"):
-                try:
-                    qty = max(1, int(float(qty) // 2))
-                except Exception:
-                    pass
+            # 확신도 배율 적용 (PM 승인, 2026-09-30). 주식 매수는 리스크 기반 사이징
+            # (기본×변동성×확신도, _apply_stock_confidence_sizing)을 쓰고, 코인 매수는
+            # 기존 EXECUTE_SMALL 절반 수량 로직을 그대로 둔다(코인 경로는 STARK_PLAN상
+            # 폐기 예정이라 stark/execution_guard.py로 옮기지 않는다 — 이중 적용 방지를 위해
+            # 주식 경로는 이 절반 로직을 타지 않는다).
+            if action in ("buy", "BUY"):
+                if bot == "stock_trader":
+                    qty = _apply_stock_confidence_sizing(signal, is_small)
+                elif is_small:
+                    try:
+                        qty = max(1, int(float(qty) // 2))
+                    except Exception:
+                        pass
                 signal["qty"] = qty
 
             if should_execute:

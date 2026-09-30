@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from datetime import time as dtime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 KST = timezone(timedelta(hours=9))
 

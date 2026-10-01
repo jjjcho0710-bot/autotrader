@@ -147,7 +147,7 @@ class DARTCollector:
             for d in important[:5]:
                 msg += f"🔔 {d['corp_name']}({d['symbol']})\n"
                 msg += f"   {d['report_name']}\n\n"
-            await telegram_func(msg)
+            await telegram_func(msg, dest="personal")
 
         logger.info(f"✅ 공시 수집 완료: 전체 {len(all_disclosures)}건, 중요 {len(important)}건")
 

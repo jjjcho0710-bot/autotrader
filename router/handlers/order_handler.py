@@ -37,6 +37,17 @@ _RE_PROP = re.compile(r"(승인|오케이|오케|ok|ㅇㅋ|사자|매수 ?해|�
 _RE_REJECT = re.compile(r"(거절|취소해|사지 ?마|안 ?사)")
 
 
+def _fill_channel_summary(name: str, symbol: str, action_kr: str, qty, price: float,
+                           pnl_rate: Optional[float] = None) -> str:
+    """매수·매도 체결 알림의 채널용 한 줄 요약 — 금액(평가손익 등) 없이 가격·수량·손익률(%)만
+    ([AT] feat/telegram-routing). 가격은 종목 단가(공개 시세)라 계좌 잔고 규모를 드러내지 않는다."""
+    emoji = "📈" if action_kr == "매수" else "📉"
+    line = f"{emoji} {name}({symbol}) {action_kr} {qty}주 @ {price:,.0f}원"
+    if pnl_rate is not None:
+        line += f" ({pnl_rate:+.1f}%)"
+    return line
+
+
 async def handle_advice_response(
     user_msg: str, *, redis: Any, jarvis_chat_fn, send_telegram_fn, session_id: str,
 ) -> Optional[str]:
@@ -62,13 +73,13 @@ async def handle_advice_response(
     if is_trade and not is_open:
         await redis.rpush("advice:queue", json.dumps({"command": cmd, "title": it.get("title", "")}, ensure_ascii=False))
         out = f"⏰ 제안 {n} 승인 — 장외라 다음 개장(09:01)에 자동 실행 예약: {cmd}"
-        await send_telegram_fn(out)
+        await send_telegram_fn(out, dest="personal")
         return out
 
     sub = await jarvis_chat_fn({"message": cmd, "session_id": session_id, "_no_mirror": True})
     rep = sub.get("reply") or sub.get("error") or "실행 결과 없음"
     out = f"✅ 제안 {n} 승인 → 실행: {cmd}\n{rep}"
-    await send_telegram_fn(out)
+    await send_telegram_fn(out, dest="personal")
     return out
 
 
@@ -121,7 +132,10 @@ async def handle_proposal_response(
                                   int(target["price"]), int(target["qty"]))
             msg = (f"✅ <b>{target['name']} 매수 체결 (주인 승인)</b>\n"
                    f"{target['qty']}주 @ {int(target['price']):,}원")
-            await send_telegram_fn(msg, broadcast=True)
+            await send_telegram_fn(msg, dest="personal")
+            await send_telegram_fn(
+                _fill_channel_summary(target["name"], symbol, "매수", target["qty"], float(target["price"])),
+                dest="channel")
             return msg.replace("<b>", "").replace("</b>", "")
 
         if order.get("uncertain") and get_positions_fn is not None:
@@ -147,7 +161,10 @@ async def handle_proposal_response(
                                       int(target["price"]), diff_qty)
                 msg = (f"✅ <b>{target['name']} 매수 체결 확인 (응답 지연, 주인 승인)</b>\n"
                        f"{diff_qty}주 @ {int(target['price']):,}원")
-                await send_telegram_fn(msg, broadcast=True)
+                await send_telegram_fn(msg, dest="personal")
+                await send_telegram_fn(
+                    _fill_channel_summary(target["name"], symbol, "매수", diff_qty, float(target["price"])),
+                    dest="channel")
                 return msg.replace("<b>", "").replace("</b>", "")
             return (f"⚠️ {target['name']} 주문 결과 불명 — 보유 수량 변화 없음. "
                     f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
@@ -292,7 +309,7 @@ async def handle_trade_command(
                 # get_balance_fn 미주입(테스트 전용 분기)과 달리, 운영 경로에서 한도 계산이
                 # 예외로 실패하면 한도 없이 조용히 주문이 나가면 안 되므로 알려야 한다.
                 logger.warning(f"수동주문 사이징 한도 계산 실패 [{symbol}]: {e}")
-                await send_telegram_fn(f"⚠️ [{name}] 사이징 한도 계산 실패 — 한도 미적용 ({e})")
+                await send_telegram_fn(f"⚠️ [{name}] 사이징 한도 계산 실패 — 한도 미적용 ({e})", dest="personal")
                 max_amount = None
                 sizing_note = "\n⚠️ 사이징 한도 계산 실패 — 한도 미적용"
             if max_amount is not None and price * qty > max_amount:
@@ -313,6 +330,7 @@ async def handle_trade_command(
 
     if result.get("success"):
         pnl = None
+        pnl_rate = None
         pnl_text = ""
         if is_sell and avg_price > 0:
             pnl = (price - avg_price) * qty
@@ -336,7 +354,9 @@ async def handle_trade_command(
         await send_telegram_fn(
             f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
             f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",
-            broadcast=True)
+            dest="personal")
+        await send_telegram_fn(
+            _fill_channel_summary(name, symbol, action_kr, qty, price, pnl_rate), dest="channel")
         await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
                               user_msg[:200], "MANUAL", "사용자 직접 지시",
                               True, True, price, qty, source="chat")
@@ -350,6 +370,7 @@ async def handle_trade_command(
         if recon["status"] == "filled":
             diff_qty = int(round(recon.get("qty_diff") or qty))
             pnl = None
+            pnl_rate = None
             pnl_text = ""
             if is_sell and avg_price > 0:
                 pnl = (price - avg_price) * diff_qty
@@ -372,7 +393,9 @@ async def handle_trade_command(
             await send_telegram_fn(
                 f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 확인 (응답 지연)</b>\n"
                 f"가격: {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}",
-                broadcast=True)
+                dest="personal")
+            await send_telegram_fn(
+                _fill_channel_summary(name, symbol, action_kr, diff_qty, price, pnl_rate), dest="channel")
             await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
                                   user_msg[:200], "MANUAL_UNCERTAIN_FILLED", "사용자 직접 지시(응답지연 체결확인)",
                                   True, True, price, diff_qty, source="chat")

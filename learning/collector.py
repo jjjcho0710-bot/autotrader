@@ -28,7 +28,7 @@ from learning.repository import save_learning_source, save_learning_rules
 logger = logging.getLogger("learning.collector")
 
 LEARN_PROMPT_BASE = """이 주식 투자 학습 자료의 내용을 바탕으로,
-자비스(자동매매 AI)가 실전 매수·매도 판단에 적용할 수 있는 핵심 원칙을
+한강뷰매니저(자동매매 AI)가 실전 매수·매도 판단에 적용할 수 있는 핵심 원칙을
 정확히 3~5개, 각 1줄(40자 이내)로 뽑아라. 각 줄은 "원칙: "으로 시작.
 근거 없는 낙관·종목 추천·광고성 내용은 제외하라."""
 

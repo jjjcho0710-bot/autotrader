@@ -834,7 +834,7 @@ async def _jarvis_stock_scanner():
         if candidates is None:
             # 스캔 자체 실패 → 기존 watchlist 보존
             logger.error("🔍 스캔 실패 — 기존 watchlist 유지")
-            await _send_telegram(f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n⚠️ 스캔 실패 (기존 감시종목 유지)", broadcast=True)
+            await _send_telegram(f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n⚠️ 스캔 실패 (기존 감시종목 유지)", broadcast=True)
             return
 
         if not candidates:
@@ -842,7 +842,7 @@ async def _jarvis_stock_scanner():
             cleaned = await _cleanup_scanner_watchlist()
             logger.info(f"🔍 스캔 완료: 유망 종목 없음 (잔재 {cleaned}개 정리)")
             await _send_telegram(
-                f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음"
+                f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음"
                 + (f" · 기존 {cleaned}종목 해제" if cleaned else ""),
                 broadcast=True
             )
@@ -895,7 +895,7 @@ async def _jarvis_stock_scanner():
                 if c["symbol"] not in existing_active:
                     added.append(f"  {gc}{c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%{rsi_tag}{mom_tag}")
 
-        msg = f"🔍 Jarvis 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n"
+        msg = f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n"
         msg += f"총 {len(candidates)}종목 선정 (재선정)"
         if deactivated:
             msg += f" · 기존 {deactivated}종목 해제"
@@ -955,7 +955,7 @@ async def _jarvis_auto_analysis():
 
         # 텔레그램 리포트
         now = datetime.now(timezone(timedelta(hours=9))).strftime("%m/%d %H:%M")
-        msg = f"🤖 Jarvis 자동 분석 [{now}]\n"
+        msg = f"🤖 한강뷰매니저 자동 분석 [{now}]\n"
         msg += f"총 {len(symbols)}종목 분석\n\n"
         if buy_list:
             msg += "📈 매수 신호:\n" + "\n".join(buy_list) + "\n\n"
@@ -1038,7 +1038,7 @@ async def _jarvis_closing_report():
         sell_trades = [t for t in trades if t["side"] == "SELL"]
         total_pnl = sum(float(t["pnl"] or 0) for t in sell_trades)
 
-        msg = f"📊 <b>Jarvis 마감 결산</b> [{now_kst.strftime('%m/%d')}]\n"
+        msg = f"📊 <b>한강뷰매니저 마감 결산</b> [{now_kst.strftime('%m/%d')}]\n"
         msg += f"{'='*25}\n"
 
         if trades:
@@ -1197,7 +1197,7 @@ async def _jarvis_daily_plan():
         if plan and not plan.startswith("❌"):
             await redis_client.setex("jarvis:daily_plan", 60 * 60 * 12, plan)
             logger.info("🧭 오늘의 작전 캐시 완료")
-            await _send_telegram(f"🧭 자비스 오늘의 작전 [{now_str}]\n{plan[:900]}", broadcast=True)
+            await _send_telegram(f"🧭 한강뷰매니저 오늘의 작전 [{now_str}]\n{plan[:900]}", broadcast=True)
         else:
             logger.warning(f"작전 수립 실패(AI 응답 불가): {str(plan)[:100]}")
     except Exception as e:
@@ -1380,7 +1380,7 @@ async def _jarvis_evening_review(target_date=None):
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)", lesson)
-            await _send_telegram(f"🌙 자비스 복기\n{lesson}", broadcast=True)
+            await _send_telegram(f"🌙 한강뷰매니저 복기\n{lesson}", broadcast=True)
             logger.info("🌙 복기 교훈 저장 완료")
     except Exception as e:
         logger.error(f"복기 오류: {e}")
@@ -1431,7 +1431,7 @@ async def _jarvis_weekend_study_report():
         missed = int(wk["missed"] or 0)
         skip_acc = round(good_skip / (good_skip + missed) * 100) if (good_skip + missed) else 0
 
-        parts = [f"📚 <b>자비스 주말 학습보고</b> [{today.strftime('%m/%d')} {'일' if is_sun else '토'}]\n"]
+        parts = [f"📚 <b>한강뷰매니저 주말 학습보고</b> [{today.strftime('%m/%d')} {'일' if is_sun else '토'}]\n"]
         parts.append(f"[이번 주 복습]\n판단 {total}건 (실행 {int(wk['ex'] or 0)} / 보류 {sk})\n"
                      f"SKIP 정확도 {skip_acc}% (잘거름 {good_skip} / 놓침 {missed})")
         if miss_rows:
@@ -1464,7 +1464,7 @@ async def _jarvis_weekend_study_report():
                 pass
 
         # 자비스 총평 (이번 주 배운 것 한 줄 요약)
-        summary_prompt = (f"다음은 자비스의 이번 주 학습 요약이다.\n" + "\n".join(parts[1:]) +
+        summary_prompt = (f"다음은 한강뷰매니저의 이번 주 학습 요약이다.\n" + "\n".join(parts[1:]) +
                           "\n\n주인에게 보고하듯 이번 주 배운 핵심을 2~3문장으로 정리하라. "
                           "숫자 반복 말고 '무엇을 깨달았고 다음 주에 무엇을 다르게 할지' 중심으로. "
                           "[[FINAL]] 같은 내부 표식이나 사고과정 없이 최종 문장만 출력하라.")
@@ -1474,7 +1474,7 @@ async def _jarvis_weekend_study_report():
             if c and not c.startswith("❌"):
                 if "[[FINAL]]" in c:
                     c = c.split("[[FINAL]]")[-1]
-                comment = f"\n\n💬 자비스 총평:\n{c.strip()[:600]}"
+                comment = f"\n\n💬 한강뷰매니저 총평:\n{c.strip()[:600]}"
         except Exception:
             pass
 
@@ -1576,7 +1576,7 @@ async def _jarvis_unified_daily_report():
 
         # 🛑 코인봇 당분간 미사용 (주인 지시) — 일일보고에서 코인 섹션 제외
         raw = (f"[주식봇 보고]\n{stock_txt}\n\n"
-               f"[자비스 판단 활동] 판단 {journal['total']}건 (실행 {journal['ex']} / 보류 {journal['sk']})\n"
+               f"[한강뷰매니저 판단 활동] 판단 {journal['total']}건 (실행 {journal['ex']} / 보류 {journal['sk']})\n"
                f"[오늘 총 손익] {stock_pnl:+,.0f}원")
 
         # 자비스 총평 (AI 1회)
@@ -1587,11 +1587,11 @@ async def _jarvis_unified_daily_report():
                 f"주인에게 전할 총평을 2~3문장으로 작성하라. 솔직하고 간결하게.\n\n{raw}",
                 session_id="daily_report")
             if reply and not reply.startswith("❌"):
-                comment = f"\n\n💬 자비스 총평:\n{reply.strip()[:400]}"
+                comment = f"\n\n💬 한강뷰매니저 총평:\n{reply.strip()[:400]}"
         except Exception:
             pass
 
-        msg = (f"📊 <b>자비스 일일보고</b> [{today.strftime('%m/%d')}]\n\n{raw}{comment}")
+        msg = (f"📊 <b>한강뷰매니저 일일보고</b> [{today.strftime('%m/%d')}]\n\n{raw}{comment}")
         await _send_telegram(msg, broadcast=True)
         logger.info("📊 통합 일일보고 발송 완료")
     except Exception as e:
@@ -1758,7 +1758,7 @@ async def _jarvis_weekly_review():
                             "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)",
                             f"[주간] {line[:280]}")
                         saved += 1
-            await _send_telegram(f"📚 자비스 주간 복습 완료 — 교훈 {saved}건 저장\n{review[:600]}", broadcast=True)
+            await _send_telegram(f"📚 한강뷰매니저 주간 복습 완료 — 교훈 {saved}건 저장\n{review[:600]}", broadcast=True)
         logger.info(f"📚 주간 복습 완료: 교훈 {saved}건")
     except Exception as e:
         logger.error(f"주간 복습 오류: {e}")
@@ -1785,7 +1785,7 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
         except Exception:
             pass
         names = ", ".join(p_.get("name", p_["symbol"]) for p_ in positions) or "(없음)"
-        prompt = f"""너는 주인의 트레이딩 파트너 자비스다. 아래를 종합해 지금 실행할 가치가 있는 제안만 골라라.
+        prompt = f"""너는 주인의 트레이딩 파트너 한강뷰매니저다. 아래를 종합해 지금 실행할 가치가 있는 제안만 골라라.
 확신 없으면 제안하지 마라. 최대 3개.
 
 {mkt}
@@ -1885,7 +1885,7 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
         except Exception:
             pass
         now = datetime.now(KST).strftime("%H:%M")
-        msg = f"🤖 <b>자비스 자동 실행 [{now}]</b>\n\n" + "\n\n".join(results)
+        msg = f"🤖 <b>한강뷰매니저 자동 실행 [{now}]</b>\n\n" + "\n\n".join(results)
         await _send_telegram(msg, broadcast=True)
         # 웹 자비스 대화에도 기록
         import re as _rr
@@ -1959,7 +1959,7 @@ async def _jarvis_weekly_preview():
                 await redis_client.setex("jarvis:weekly_plan", 86400 * 7, preview[:800])
             except Exception:
                 pass
-            await _send_telegram(f"🗓️ 자비스 다음주 예습 브리핑\n{preview[:900]}", broadcast=True)
+            await _send_telegram(f"🗓️ 한강뷰매니저 다음주 예습 브리핑\n{preview[:900]}", broadcast=True)
         logger.info("🗓️ 주간 예습 완료")
     except Exception as e:
         logger.error(f"주간 예습 오류: {e}")
@@ -3581,7 +3581,7 @@ from datetime import datetime
 # 대화 히스토리 (메모리)
 _jarvis_history: list = []
 
-JARVIS_SYSTEM_PROMPT = """너는 AutoTrader의 AI 집사 Jarvis야. 주인님(민기)을 섬기는 똑똑하고 친근한 AI야.
+JARVIS_SYSTEM_PROMPT = """너는 AutoTrader의 AI 집사 한강뷰매니저야. 주인님(민기)을 섬기는 똑똑하고 친근한 AI야.
 
 ## 성격
 - 집사처럼 격식 있지만 친근하게
@@ -3749,7 +3749,7 @@ async def get_portfolio_context(trades_since: Optional[datetime] = None) -> str:
                     elif 1 <= rate < 5:
                         status = " (익절 구간판단 대상(+1~5%) — 진입 신호 유지 여부로 보유/전량매도 자동 판단 중)"
                     elif rate >= 5:
-                        status = " ✅익절 판단 대상(+5%↑) — 자비스가 차트·거래량 분석해 HOLD/HALF/ALL 자동 실행 중"
+                        status = " ✅익절 판단 대상(+5%↑) — 한강뷰매니저가 차트·거래량 분석해 HOLD/HALF/ALL 자동 실행 중"
                     ctx_parts.append(
                         f"  - {p['name']}({p['symbol']}): {p['qty']}주 "
                         f"평균{p['avg_price']:,} 현재{p['cur_price']:,} "
@@ -4213,7 +4213,7 @@ async def _search_past_chats(query: str, limit: int = 5, since: Optional[datetim
     try:
         import re as _re
         words = [w for w in _re.findall(r"[가-힣A-Za-z0-9]{2,}", query)
-                 if w not in ("자비스", "그때", "저번", "예전", "우리", "했던", "말한", "얘기")][:4]
+                 if w not in ("자비스", "한강뷰매니저", "그때", "저번", "예전", "우리", "했던", "말한", "얘기")][:4]
         if not words:
             return ""
         conds = " OR ".join(f"content ILIKE ${i+1}" for i in range(len(words)))
@@ -4232,7 +4232,7 @@ async def _search_past_chats(query: str, limit: int = 5, since: Optional[datetim
             return ""
         lines = []
         for r in reversed(rows):
-            who = "주인" if r["role"] == "user" else "자비스"
+            who = "주인" if r["role"] == "user" else "한강뷰매니저"
             lines.append(f"[{r['created_at'].strftime('%m/%d')}] {who}: {r['content'][:150]}")
         return "\n".join(lines)
     except Exception:
@@ -4323,7 +4323,7 @@ async def _jarvis_chat_impl(body: dict):
                     result = await _learn_from_url(_learn_url, _learn_hint)
                 except Exception as le:
                     result = f"❌ 학습 실패: {le}"
-                await _send_telegram(f"📚 <b>자비스 학습 결과</b>\n{result}", broadcast=True)
+                await _send_telegram(f"📚 <b>한강뷰매니저 학습 결과</b>\n{result}", broadcast=True)
                 # 웹 자비스 대화 기록에도 남김 (다음 화면 로드 시 표시)
                 for sid in {_sid_for_learn, os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "pc"}:
                     try:
@@ -4579,7 +4579,7 @@ async def jarvis_analyze():
         reply = response.text
 
         # 텔레그램 전송
-        tg_msg = f"📊 <b>Jarvis 정기 분석</b>\n\n{reply}"
+        tg_msg = f"📊 <b>한강뷰매니저 정기 분석</b>\n\n{reply}"
         await _send_telegram(tg_msg, broadcast=True)
 
         return {"success": True, "reply": reply}
@@ -4722,7 +4722,7 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None, repl
     try:
         from datetime import datetime as _dt
         if _dt.now().weekday() >= 5:
-            _signal_keywords = ("매수 신호 건너뜀", "Jarvis 판단: SKIP", "매수 신호 감지",
+            _signal_keywords = ("매수 신호 건너뜀", "한강뷰매니저 판단: SKIP", "매수 신호 감지",
                                 "익절선 도달", "손절선 도달", "급락", "급등")
             if any(kw in (text or "") for kw in _signal_keywords):
                 return  # 주말엔 매매 신호 알림 무음
@@ -5956,7 +5956,7 @@ async def jarvis_exit_decision(request: Request):
         ana = await _analyze_chart(symbol, name)
         knowledge = await _get_jarvis_knowledge(6)
         lessons = await _get_jarvis_lessons(3)
-        prompt = f"""너는 한국 주식 트레이더 자비스다. 보유 중인 수익 종목의 익절 시점을 판단하라.
+        prompt = f"""너는 한국 주식 트레이더 한강뷰매니저다. 보유 중인 수익 종목의 익절 시점을 판단하라.
 
 [종목] {name}({symbol})
 [보유] {qty}주, 평단 {avg_price:,.0f}원, 현재가 {cur_price:,.0f}원, 손익률 {pnl_rate:+.1f}%
@@ -6137,7 +6137,7 @@ async def jarvis_signal(request: Request):
                             f"코인: {symbol}\n"
                             f"금액: {amount:,.0f}원\n"
                             f"전략: {strategy}\n"
-                            f"Jarvis: {jarvis_reply[:80]}"
+                            f"한강뷰매니저: {jarvis_reply[:80]}"
                         )
                         await _send_telegram(msg, chat_id, token)
                         logger.info(f"✅ Jarvis 코인 {action_kr}: {symbol} {amount:,.0f}원")

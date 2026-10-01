@@ -498,7 +498,7 @@ async def execute(
                 f"가격: {price:,}원 × {qty}주\n"
                 f"금액: {price*qty:,}원{pnl_text}\n"
                 f"전략: {strategy}\n"
-                f"Jarvis 판단: {reply[:80]}"
+                f"한강뷰매니저 판단: {reply[:80]}"
             )
             await send_telegram_fn(msg)
             logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")

@@ -999,6 +999,47 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pool._conn.inserted[0][-1], None)
         self.assertNotIn("손익", sent[0])
 
+    async def test_sell_full_exit_pnl_computed_from_pre_order_positions(self):
+        """전량 매도 시 주문 체결 후에는 보유 목록에서 해당 종목이 사라지므로, avg_price
+        조회는 주문 전에 이뤄져야 보유 목록이 비어 있어도 pnl이 정상 계산된다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+        state = {"order_placed": False}
+
+        async def get_positions():
+            if state["order_placed"]:
+                return {"success": True, "data": []}
+            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            state["order_placed"] = True
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        signal = make_signal(action="sell", price=75000, qty=10)
+        result = await execution_guard.execute(
+            signal, make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+        )
+
+        self.assertTrue(result["executed"])
+        self.assertEqual(result["pnl"], 50000)
+        self.assertAlmostEqual(result["pnl_rate"], (75000 - 70000) / 70000 * 100, places=5)
+        self.assertEqual(pool._conn.inserted[0][-1], 50000)
+        self.assertIn("손익 +50,000원 (+7.1%)", sent[0])
+
     async def test_sell_pnl_skipped_when_symbol_not_held(self):
         """get_positions_fn()에 해당 종목이 없으면(미보유) pnl=None으로 두고 매도는 정상 진행된다."""
         pool = FakePool()

@@ -396,6 +396,24 @@ async def execute(
                     "jarvis_reply": reply,
                 }
 
+        # 매도 손익(pnl) 계산용 평단가 사전 조회 — 주문 성공 후에 조회하면 전량 매도 시
+        # 이미 보유 목록에서 빠져 avg_price를 못 구해 pnl=None이 되므로, 주문 전에
+        # get_positions_fn()(기존 max_positions 체크용) 결과에서 미리 조회해 둔다.
+        # 조회 실패/미보유 시 None으로 두고 매도 자체는 그대로 진행(안전 우선 원칙).
+        pre_avg_price = None
+        if not is_buy and bot == "stock_trader" and get_positions_fn is not None:
+            try:
+                pos_res = await get_positions_fn()
+                if isinstance(pos_res, dict) and pos_res.get("success", False):
+                    pos_row = next(
+                        (p for p in (pos_res.get("data") or [])
+                         if isinstance(p, dict) and p.get("symbol") == symbol),
+                        None,
+                    )
+                    pre_avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
+            except Exception as e:
+                logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
+
         order = await kis_order_fn(symbol, int(price), int(qty), is_buy)
 
         if order.get("success"):
@@ -406,28 +424,14 @@ async def execute(
                 except Exception as e:
                     logger.warning(f"inflight_buy 등록 실패: {e}")
 
-            # 매도 손익(pnl) 계산 — get_positions_fn()(기존 max_positions 체크용)
-            # 결과에서 해당 종목 avg_price를 재사용. 조회 실패/미보유 시 pnl=None으로
-            # 두고 매도는 그대로 진행(안전 우선, order_handler.py와 동일 원칙).
+            # 매도 손익(pnl) 계산 — 주문 전에 조회해 둔 pre_avg_price 사용.
             pnl = None
             pnl_rate = None
             pnl_text = ""
-            if not is_buy and bot == "stock_trader" and get_positions_fn is not None:
-                try:
-                    pos_res = await get_positions_fn()
-                    if isinstance(pos_res, dict) and pos_res.get("success", False):
-                        pos_row = next(
-                            (p for p in (pos_res.get("data") or [])
-                             if isinstance(p, dict) and p.get("symbol") == symbol),
-                            None,
-                        )
-                        avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
-                        if avg_price > 0:
-                            pnl = (price - avg_price) * qty
-                            pnl_rate = (price - avg_price) / avg_price * 100
-                            pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
-                except Exception as e:
-                    logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
+            if not is_buy and bot == "stock_trader" and pre_avg_price:
+                pnl = (price - pre_avg_price) * qty
+                pnl_rate = (price - pre_avg_price) / pre_avg_price * 100
+                pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
 
             if pool:
                 async with pool.acquire() as conn:

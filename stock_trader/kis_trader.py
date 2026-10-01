@@ -37,6 +37,13 @@ class KISTrader:
         self._balance_cache_ttl: float = 20.0
         self._kis_call_lock: Optional[asyncio.Lock] = None
         self._last_kis_call_ts: float = 0.0
+        # 총평가금액(total) 캐시 — inquire-psbl-order 응답엔 tot_evlu_amt가 없어
+        # get_positions()(inquire-balance)가 조회할 때마다 여기 채워 넣는다. get_balance()는
+        # 이 값이 신선하면 재사용하고, 없으면 get_positions()를 1회 직접 호출한다([AT]
+        # fix/balance-total-source — KIS 호출을 추가로 늘리지 않기 위한 재사용 캐시).
+        self._last_total: int = 0
+        self._last_total_ts: float = 0.0
+        self._last_total_ttl: float = 180.0
 
     def invalidate_balance_cache(self):
         """잔고 캐시 즉시 무효화 (주문 체결 시 호출)"""
@@ -242,6 +249,25 @@ class KISTrader:
         }
 
     # ── 잔고 조회 ───────────────────────────────────────
+    async def _get_total_eval(self) -> tuple:
+        """총평가금액(total) 조회. (총평가금액, stale 여부) 튜플을 반환한다.
+        self._last_total이 _last_total_ttl(180초) 이내로 신선하면 그대로 재사용해 KIS 호출을
+        추가로 늘리지 않는다([AT] fix/balance-total-source). 신선하지 않으면 get_positions()를
+        1회 직접 호출해 inquire-balance(output2.tot_evlu_amt)에서 읽는다 — 그마저 실패하면
+        옛 값을 총자산으로 돌려주지 않고 total=0, stale=True로 반환한다(안전 우선)."""
+        now = time.time()
+        if self._last_total > 0 and (now - self._last_total_ts) < self._last_total_ttl:
+            return self._last_total, False
+        try:
+            await self.get_positions()
+        except Exception as e:
+            logger.warning(f"총평가금액 직접 조회 실패: {type(e).__name__}: {e}")
+            return 0, True
+        now = time.time()
+        if self._last_total > 0 and (now - self._last_total_ts) < self._last_total_ttl:
+            return self._last_total, False
+        return 0, True
+
     async def get_balance(self) -> dict:
         """예수금 + 총평가금액 조회 (동시 호출 직렬화 + 20초 캐시 + 10초 타임아웃)"""
         now = time.time()
@@ -310,11 +336,15 @@ class KISTrader:
                         self._last_cash)  # get_positions에서 읽은 잔고 fallback
                 if cash > 0:
                     self._last_cash = cash
-                total = int(output.get("tot_evlu_amt", 0) or 0)
+                # 총평가금액(tot_evlu_amt)은 이 API(inquire-psbl-order) 응답에 아예 없는
+                # 필드다 — inquire-balance(get_positions)에서 읽는다([AT] fix/balance-total-source)
+                total, total_stale = await self._get_total_eval()
                 res = {
                     "cash": cash,
                     "total": total,
                 }
+                if total_stale:
+                    res["stale"] = True
                 self._balance_cache = dict(res)
                 self._balance_cache_ts = time.time()
                 return res
@@ -376,11 +406,16 @@ class KISTrader:
                         "pnl":       int(row.get("evlu_pfls_amt", 0)),
                         "pnl_rate":  float(row.get("evlu_pfls_rt", 0) or 0),
                     })
-                # 잔고도 같이 읽기
+                # 잔고도 같이 읽기 — 총평가금액(tot_evlu_amt)은 inquire-balance에만 있으므로
+                # 여기서 함께 캐시해 get_balance()가 재사용할 수 있게 한다([AT] fix/balance-total-source)
                 out2 = data.get("output2", [{}])
                 if out2:
                     s = out2[0]
                     self._last_cash = int(s.get("dnca_tot_amt", 0) or 0)
+                    total_eval = int(s.get("tot_evlu_amt", 0) or 0)
+                    if total_eval > 0:
+                        self._last_total = total_eval
+                        self._last_total_ts = time.time()
                 return positions
         return []
 

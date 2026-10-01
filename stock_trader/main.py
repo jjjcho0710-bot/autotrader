@@ -12,6 +12,7 @@ from datetime import datetime, time, timezone, timedelta
 
 from common.config import config, compute_total_pnl
 from common.database import db, cache
+from common import position_sizing
 from kis_trader import KISTrader
 from ml_report import build_ml_report_text
 from strategy.ma_cross import MACrossStrategy, MACrossConfig
@@ -70,12 +71,12 @@ class StockTrader:
     # ML 정확도(42~64%)가 확신도 기반 사이징의 근거가 되기엔 약해 "종목당 최대 손실 고정"
     # 방식으로 재설계: 기본 매수금액 = 자산 × RISK_PER_TRADE_PCT ÷ |손절률|.
     # 손절률은 strategy_config.stop_loss 를 쓰고, 값이 없을 때만 이 참고값(현재 운영값 -7%)을 쓴다.
-    DEFAULT_STOP_LOSS_PCT = 7.0
-    # ATR(20일, stock_daily_ohlcv)을 현재가 대비 %로 환산한 변동성 구간별 배율 — (상한%, 배율) 오름차순.
-    VOLATILITY_BANDS = ((2.0, 1.00), (4.0, 0.75), (6.0, 0.50))
-    VOLATILITY_MULT_HIGH = 0.30        # 6% 초과
-    VOLATILITY_MULT_FALLBACK = 0.75    # ATR 계산 불가(데이터 부족) 시 보수적 처리
-    ATR_PERIOD = 20
+    # 실제 계산 로직은 common/position_sizing.py로 이관(order_handler.py와 공용, 중복 구현 금지).
+    DEFAULT_STOP_LOSS_PCT = position_sizing.DEFAULT_STOP_LOSS_PCT
+    VOLATILITY_BANDS = position_sizing.VOLATILITY_BANDS
+    VOLATILITY_MULT_HIGH = position_sizing.VOLATILITY_MULT_HIGH
+    VOLATILITY_MULT_FALLBACK = position_sizing.VOLATILITY_MULT_FALLBACK
+    ATR_PERIOD = position_sizing.ATR_PERIOD
 
     def __init__(self):
         self.running    = False
@@ -1513,46 +1514,18 @@ class StockTrader:
 
     @staticmethod
     def _compute_base_amount(equity: float, stop_loss_pct: float, risk_per_trade_pct: float) -> float:
-        """기본 매수금액 = 자산 × RISK_PER_TRADE_PCT(%) ÷ |손절률(%)| (PM 승인, 2026-09-30).
-        equity/stop_loss_pct/risk_per_trade_pct 는 모두 퍼센트 단위가 아닌 실제 원/퍼센트 숫자
-        (예: stop_loss_pct=7.0 은 -7%)."""
-        stop_loss_pct = abs(stop_loss_pct)
-        if equity <= 0 or stop_loss_pct <= 0:
-            return 0.0
-        return equity * (risk_per_trade_pct / 100) / (stop_loss_pct / 100)
+        """기본 매수금액 계산 (common/position_sizing.py로 이관, 여기선 얇은 위임만 유지)."""
+        return position_sizing.compute_base_amount(equity, stop_loss_pct, risk_per_trade_pct)
 
     @staticmethod
     def _compute_atr_pct(rows: list, cur_price: float, period: int = None) -> float:
-        """최근 `period`일 ATR(True Range 단순평균)을 현재가 대비 %로 환산.
-        데이터 부족(21개 미만)이거나 가격이 0 이하면 None (호출부가 보수적 배율로 폴백)."""
-        period = period or StockTrader.ATR_PERIOD
-        if not cur_price or cur_price <= 0 or len(rows) < period + 1:
-            return None
-        try:
-            highs  = [float(r["high"])  for r in rows]
-            lows   = [float(r["low"])   for r in rows]
-            closes = [float(r["close"]) for r in rows]
-        except (KeyError, TypeError, ValueError):
-            return None
-        trs = [
-            max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
-            for i in range(1, len(rows))
-        ]
-        recent = trs[-period:]
-        if len(recent) < period:
-            return None
-        atr = sum(recent) / period
-        return (atr / cur_price) * 100
+        """ATR% 계산 (common/position_sizing.py로 이관, 여기선 얇은 위임만 유지)."""
+        return position_sizing.compute_atr_pct(rows, cur_price, period)
 
     @classmethod
     def _volatility_multiplier(cls, atr_pct: float) -> float:
-        """ATR%(현재가 대비) 구간별 변동성 배율. atr_pct=None(계산 불가)이면 보수적 기본값."""
-        if atr_pct is None:
-            return cls.VOLATILITY_MULT_FALLBACK
-        for upper, mult in cls.VOLATILITY_BANDS:
-            if atr_pct <= upper:
-                return mult
-        return cls.VOLATILITY_MULT_HIGH
+        """변동성 배율 (common/position_sizing.py로 이관, 여기선 얇은 위임만 유지)."""
+        return position_sizing.volatility_multiplier(atr_pct)
 
     # ── 즉시 텔레그램 알림 (손절/익절용) ─────────────────
     async def _notify_trade(self, action: str, symbol: str, name: str,

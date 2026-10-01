@@ -16,6 +16,13 @@ import re
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
+from common.position_sizing import (
+    DEFAULT_STOP_LOSS_PCT,
+    compute_atr_pct,
+    compute_base_amount,
+    volatility_multiplier,
+)
+
 logger = logging.getLogger("router.handlers.order")
 
 KST = timezone(timedelta(hours=9))
@@ -107,9 +114,38 @@ async def handle_proposal_response(
         return None
 
 
+async def _compute_buy_sizing_cap(
+    *, config: Any, get_balance_fn, get_recent_ohlcv_fn, symbol: str, cur_price: float,
+) -> Optional[float]:
+    """채팅 직접 매수 사이징 상한(원) = 기본금액(자산×RISK_PER_TRADE_PCT÷|손절률|) × ATR 변동성배율
+    (common/position_sizing.py 공용 로직, PM 승인 2026-09-30).
+    get_balance_fn 미주입(테스트 등 사이징 의존성 없는 호출) 시 None을 반환해 호출부가
+    사이징을 건너뛰게 한다. 채팅 직접 매매는 특정 전략에 묶이지 않으므로 손절률은
+    strategy_config 조회 없이 참고값(DEFAULT_STOP_LOSS_PCT)을 쓴다."""
+    if get_balance_fn is None:
+        return None
+    risk_pct = getattr(config, "RISK_PER_TRADE_PCT", None)
+    if risk_pct is None:
+        return None
+    balance = await get_balance_fn() or {}
+    equity = float(balance.get("total") or 0) or float(getattr(config, "INITIAL_SEED_KRW", 0) or 0)
+    if equity <= 0:
+        return None
+    base_amount = compute_base_amount(equity, DEFAULT_STOP_LOSS_PCT, risk_pct)
+    atr_pct = None
+    if get_recent_ohlcv_fn is not None:
+        try:
+            rows = await get_recent_ohlcv_fn(symbol)
+            atr_pct = compute_atr_pct(rows, cur_price)
+        except Exception as e:
+            logger.warning(f"수동주문 ATR 조회 실패 [{symbol}]: {e}")
+    return base_amount * volatility_multiplier(atr_pct)
+
+
 async def handle_trade_command(
     user_msg: str, *, pool: Any, redis: Any, universe: Any, get_kis_token_fn, config: Any,
     kis_order_fn, get_stock_positions_fn, send_telegram_fn, log_journal_fn,
+    get_balance_fn=None, get_recent_ohlcv_fn=None,
 ) -> Optional[str]:
     """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
     msg = user_msg.strip()
@@ -181,6 +217,29 @@ async def handle_trade_command(
                 logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
                 avg_price = 0.0
 
+    # 매수 사이징 한도 적용 (PM 승인, 2026-09-30 리스크 기반 사이징을 채팅 직접 매매에도 적용).
+    # "한도무시" 키워드가 있으면 사용자가 의도적으로 한도를 넘기는 것이므로 조정하지 않는다.
+    sizing_note = ""
+    if is_buy:
+        if "한도무시" in msg:
+            sizing_note = "\n⚠️ 한도무시 적용"
+        else:
+            requested_qty = qty
+            try:
+                max_amount = await _compute_buy_sizing_cap(
+                    config=config, get_balance_fn=get_balance_fn,
+                    get_recent_ohlcv_fn=get_recent_ohlcv_fn, symbol=symbol, cur_price=price,
+                )
+            except Exception as e:
+                logger.warning(f"수동주문 사이징 한도 계산 실패 [{symbol}]: {e}")
+                max_amount = None
+            if max_amount is not None and price * qty > max_amount:
+                qty = int(max_amount // price)
+                if qty <= 0:
+                    return (f"⚠️ 사이징 한도(약 {max_amount / 10000:,.0f}만원) 초과로 "
+                            f"1주도 매수 불가 — 고가 종목")
+                sizing_note = f"\n요청 {requested_qty}주 → 사이징 한도로 {qty}주로 조정"
+
     result = await kis_order_fn(symbol, price, qty, is_buy)
 
     if result.get("success"):
@@ -207,12 +266,12 @@ async def handle_trade_command(
             pass
         await send_telegram_fn(
             f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
-            f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}",
+            f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",
             broadcast=True)
         await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
                               user_msg[:200], "MANUAL", "사용자 직접 지시",
                               True, True, price, qty, source="chat")
         return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
-                f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}")
+                f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}")
     else:
         return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error', '알 수 없음')}"

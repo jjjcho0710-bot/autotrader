@@ -396,6 +396,24 @@ async def execute(
                     "jarvis_reply": reply,
                 }
 
+        # 매도 손익(pnl) 계산용 평단가 사전 조회 — 주문 성공 후에 조회하면 전량 매도 시
+        # 이미 보유 목록에서 빠져 avg_price를 못 구해 pnl=None이 되므로, 주문 전에
+        # get_positions_fn()(기존 max_positions 체크용) 결과에서 미리 조회해 둔다.
+        # 조회 실패/미보유 시 None으로 두고 매도 자체는 그대로 진행(안전 우선 원칙).
+        pre_avg_price = None
+        if not is_buy and bot == "stock_trader" and get_positions_fn is not None:
+            try:
+                pos_res = await get_positions_fn()
+                if isinstance(pos_res, dict) and pos_res.get("success", False):
+                    pos_row = next(
+                        (p for p in (pos_res.get("data") or [])
+                         if isinstance(p, dict) and p.get("symbol") == symbol),
+                        None,
+                    )
+                    pre_avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
+            except Exception as e:
+                logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
+
         order = await kis_order_fn(symbol, int(price), int(qty), is_buy)
 
         if order.get("success"):
@@ -405,18 +423,28 @@ async def execute(
                     await redis.setex(f"stark:inflight_buy:{symbol}", 120, "1")
                 except Exception as e:
                     logger.warning(f"inflight_buy 등록 실패: {e}")
+
+            # 매도 손익(pnl) 계산 — 주문 전에 조회해 둔 pre_avg_price 사용.
+            pnl = None
+            pnl_rate = None
+            pnl_text = ""
+            if not is_buy and bot == "stock_trader" and pre_avg_price:
+                pnl = (price - pre_avg_price) * qty
+                pnl_rate = (price - pre_avg_price) / pre_avg_price * 100
+                pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
+
             if pool:
                 async with pool.acquire() as conn:
                     await conn.execute("""
-                        INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                    """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy)
+                        INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy, pnl)
 
             emoji = "📈" if action == "buy" else "📉"
             msg = (
                 f"{emoji} <b>{name} {action_kr} 완료</b>\n"
                 f"가격: {price:,}원 × {qty}주\n"
-                f"금액: {price*qty:,}원\n"
+                f"금액: {price*qty:,}원{pnl_text}\n"
                 f"전략: {strategy}\n"
                 f"Jarvis 판단: {reply[:80]}"
             )
@@ -443,7 +471,11 @@ async def execute(
             await log_journal_fn(bot, symbol, name, action, strategy, reason,
                                   "EXECUTE_SMALL" if is_small else "EXECUTE",
                                   reply, True, True, price, qty)
-            return {"success": True, "executed": True, "jarvis_reply": reply}
+            result = {"success": True, "executed": True, "jarvis_reply": reply}
+            if pnl is not None:
+                result["pnl"] = pnl
+                result["pnl_rate"] = pnl_rate
+            return result
 
     err = str(order.get("error") or "")
     disp = await code_to_name_fn(symbol)

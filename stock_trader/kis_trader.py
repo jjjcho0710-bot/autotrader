@@ -21,6 +21,12 @@ class KISTrader:
 
     BASE_URL = config.kis_base_url
 
+    # KIS API 전체 공용 최소 호출 간격(초당 거래건수 초과 방지). get_current_price,
+    # get_balance, get_positions, get_market_warning, buy 등 거의 모든 KIS 호출에
+    # 공통 적용한다. 단, 매도는 체결 지연이 손실 확대로 이어질 수 있어 예외로 둔다
+    # (sell() 참고).
+    KIS_MIN_CALL_INTERVAL_SEC = 0.55
+
     def __init__(self):
         self.access_token: str = ""
         self._last_cash: int = 0
@@ -29,13 +35,31 @@ class KISTrader:
         self._balance_cache: Optional[dict] = None
         self._balance_cache_ts: float = 0.0
         self._balance_cache_ttl: float = 20.0
-        self._market_warning_lock: Optional[asyncio.Lock] = None
-        self._last_market_warning_call_ts: float = 0.0
+        self._kis_call_lock: Optional[asyncio.Lock] = None
+        self._last_kis_call_ts: float = 0.0
 
     def invalidate_balance_cache(self):
         """잔고 캐시 즉시 무효화 (주문 체결 시 호출)"""
         self._balance_cache = None
         self._balance_cache_ts = 0.0
+
+    async def _throttle_kis_call(self):
+        """KIS API 호출 전 공용 최소 간격(KIS_MIN_CALL_INTERVAL_SEC)만큼 대기한다.
+        이전엔 get_market_warning()에만 있던 0.5초 간격 제어를 모든 KIS 호출에
+        공통 적용되도록 KISTrader 레벨로 올린 것이다."""
+        if self._kis_call_lock is None:
+            self._kis_call_lock = asyncio.Lock()
+        async with self._kis_call_lock:
+            elapsed = time.time() - self._last_kis_call_ts
+            wait = self.KIS_MIN_CALL_INTERVAL_SEC - elapsed
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_kis_call_ts = time.time()
+
+    @staticmethod
+    def _is_rate_limited(data: dict) -> bool:
+        """KIS 속도제한(초당 거래건수 초과, EGW00201) 응답 여부."""
+        return isinstance(data, dict) and data.get("msg_cd") == "EGW00201"
 
     async def start(self):
         # 키 설정 진단
@@ -150,6 +174,7 @@ class KISTrader:
         except Exception:
             pass
         # Redis 없으면 KIS API 직접 조회
+        await self._throttle_kis_call()
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         async with self._new_session() as sess:
@@ -157,58 +182,64 @@ class KISTrader:
             url, headers=self._headers("FHKST01010100"), params=params
           ) as resp:
             data = await resp.json()
+            if self._is_rate_limited(data):
+                await asyncio.sleep(1.5)
+                async with self._new_session() as sess2:
+                    async with sess2.get(
+                        url, headers=self._headers("FHKST01010100"), params=params
+                    ) as resp2:
+                        data = await resp2.json()
             return int(data.get("output", {}).get("stck_prpr", 0))
 
     # ── 종목 상태(투자경고/VI) 조회 ──────────────────────
-    MARKET_WARNING_MIN_INTERVAL_SEC = 0.5
-
     async def get_market_warning(self, symbol: str) -> Optional[dict]:
         """투자경고/VI 상태 조회 (FHKST01010100).
 
         get_current_price()와 달리 rt_cd/output 실패를 삼키지 않고, 실패 시 None을
         반환한다 — 호출부는 None을 "상태 확인 불가"로 취급해 안전하게(매수 보류)
-        처리해야 한다. 같은 시세 API를 반복 호출하므로 최소 호출 간격을 둔다.
+        처리해야 한다. 같은 시세 API를 반복 호출하므로 KISTrader 공용 최소 호출
+        간격(_throttle_kis_call)을 적용한다.
         """
-        if self._market_warning_lock is None:
-            self._market_warning_lock = asyncio.Lock()
+        await self._throttle_kis_call()
 
-        async with self._market_warning_lock:
-            elapsed = time.time() - self._last_market_warning_call_ts
-            wait = self.MARKET_WARNING_MIN_INTERVAL_SEC - elapsed
-            if wait > 0:
-                await asyncio.sleep(wait)
-
-            url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
-            params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
-            try:
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
+        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+        try:
+            async with self._new_session() as sess:
+                async with sess.get(
+                    url, headers=self._headers("FHKST01010100"), params=params
+                ) as resp:
+                    status = resp.status
+                    data = await resp.json()
+            if status == 200 and self._is_rate_limited(data):
+                logger.warning(f"⏳ [{symbol}] 종목상태 조회 KIS 속도제한(EGW00201) — 1.5초 후 재시도")
+                await asyncio.sleep(1.5)
                 async with self._new_session() as sess:
                     async with sess.get(
                         url, headers=self._headers("FHKST01010100"), params=params
                     ) as resp:
                         status = resp.status
                         data = await resp.json()
-            except Exception as e:
-                logger.warning(f"⚠️ [{symbol}] 종목상태 조회 예외: {type(e).__name__}: {e}")
-                return None
-            finally:
-                self._last_market_warning_call_ts = time.time()
+        except Exception as e:
+            logger.warning(f"⚠️ [{symbol}] 종목상태 조회 예외: {type(e).__name__}: {e}")
+            return None
 
-            if status != 200 or data.get("rt_cd") != "0":
-                logger.warning(
-                    f"⚠️ [{symbol}] 종목상태 조회 실패: HTTP {status} | "
-                    f"rt_cd={data.get('rt_cd')} | msg_cd={data.get('msg_cd')} | msg1={data.get('msg1')}"
-                )
-                return None
+        if status != 200 or data.get("rt_cd") != "0":
+            logger.warning(
+                f"⚠️ [{symbol}] 종목상태 조회 실패: HTTP {status} | "
+                f"rt_cd={data.get('rt_cd')} | msg_cd={data.get('msg_cd')} | msg1={data.get('msg1')}"
+            )
+            return None
 
-            output = data.get("output") or {}
-            if not output:
-                logger.warning(f"⚠️ [{symbol}] 종목상태 조회 응답 output 비어있음")
-                return None
+        output = data.get("output") or {}
+        if not output:
+            logger.warning(f"⚠️ [{symbol}] 종목상태 조회 응답 output 비어있음")
+            return None
 
-            return {
-                "mrkt_warn_cls_code": output.get("mrkt_warn_cls_code", ""),
-                "vi_cls_code": output.get("vi_cls_code", ""),
-            }
+        return {
+            "mrkt_warn_cls_code": output.get("mrkt_warn_cls_code", ""),
+            "vi_cls_code": output.get("vi_cls_code", ""),
+        }
 
     # ── 잔고 조회 ───────────────────────────────────────
     async def get_balance(self) -> dict:
@@ -238,48 +269,55 @@ class KISTrader:
             tr_id = "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R"
             timeout = aiohttp.ClientTimeout(total=10)
 
+            await self._throttle_kis_call()
             try:
-                async with self._new_session() as sess:
-                    async with sess.get(
-                        url, headers=self._headers(tr_id), params=params, timeout=timeout
-                    ) as resp:
-                        status = resp.status
-                        data = await resp.json()
+                for attempt in range(2):
+                    async with self._new_session() as sess:
+                        async with sess.get(
+                            url, headers=self._headers(tr_id), params=params, timeout=timeout
+                        ) as resp:
+                            status = resp.status
+                            data = await resp.json()
+                    if attempt == 0 and status == 200 and self._is_rate_limited(data):
+                        logger.warning("⏳ KIS 잔고 조회 속도제한(EGW00201) — 1.5초 후 재시도")
+                        await asyncio.sleep(1.5)
+                        continue
+                    break
 
-                        if status != 200 or data.get("rt_cd") != "0":
-                            rt_cd = data.get("rt_cd", "None")
-                            msg_cd = data.get("msg_cd", "None")
-                            msg1 = data.get("msg1", "")
-                            if self._cano:
-                                msg1 = msg1.replace(self._cano, "********")
-                            logger.error(
-                                f"❌ KIS 잔고 조회 실패: HTTP {status} | rt_cd={rt_cd} | msg_cd={msg_cd} | msg1={msg1}"
-                            )
-                            return {
-                                "cash": self._last_cash,
-                                "total": 0,
-                                "error": msg1,
-                                "status": status,
-                                "rt_cd": rt_cd,
-                                "msg_cd": msg_cd,
-                                "stale": True,
-                            }
+                if status != 200 or data.get("rt_cd") != "0":
+                    rt_cd = data.get("rt_cd", "None")
+                    msg_cd = data.get("msg_cd", "None")
+                    msg1 = data.get("msg1", "")
+                    if self._cano:
+                        msg1 = msg1.replace(self._cano, "********")
+                    logger.error(
+                        f"❌ KIS 잔고 조회 실패: HTTP {status} | rt_cd={rt_cd} | msg_cd={msg_cd} | msg1={msg1}"
+                    )
+                    return {
+                        "cash": self._last_cash,
+                        "total": 0,
+                        "error": msg1,
+                        "status": status,
+                        "rt_cd": rt_cd,
+                        "msg_cd": msg_cd,
+                        "stale": True,
+                    }
 
-                        output = data.get("output", {})
-                        cash = (int(output.get("ord_psbl_cash", 0)) or
-                                int(output.get("dnca_tot_amt", 0)) or
-                                int(output.get("nass_amt", 0)) or
-                                self._last_cash)  # get_positions에서 읽은 잔고 fallback
-                        if cash > 0:
-                            self._last_cash = cash
-                        total = int(output.get("tot_evlu_amt", 0) or 0)
-                        res = {
-                            "cash": cash,
-                            "total": total,
-                        }
-                        self._balance_cache = dict(res)
-                        self._balance_cache_ts = time.time()
-                        return res
+                output = data.get("output", {})
+                cash = (int(output.get("ord_psbl_cash", 0)) or
+                        int(output.get("dnca_tot_amt", 0)) or
+                        int(output.get("nass_amt", 0)) or
+                        self._last_cash)  # get_positions에서 읽은 잔고 fallback
+                if cash > 0:
+                    self._last_cash = cash
+                total = int(output.get("tot_evlu_amt", 0) or 0)
+                res = {
+                    "cash": cash,
+                    "total": total,
+                }
+                self._balance_cache = dict(res)
+                self._balance_cache_ts = time.time()
+                return res
 
             except (asyncio.TimeoutError, TimeoutError):
                 logger.error("❌ KIS 잔고 조회 타임아웃 (10초 초과)")
@@ -306,12 +344,17 @@ class KISTrader:
         }
         tr_id = "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R"
         for attempt in range(2):
+            await self._throttle_kis_call()
             async with self._new_session() as sess:
               async with sess.get(
                 url, headers=self._headers(tr_id), params=params
               ) as resp:
                 data = await resp.json()
                 if attempt == 0 and await self._refresh_token_if_expired(data):
+                    continue
+                if attempt == 0 and self._is_rate_limited(data):
+                    logger.warning("⏳ [get_positions] KIS 속도제한(EGW00201) — 1.5초 후 재시도")
+                    await asyncio.sleep(1.5)
                     continue
                 positions = []
                 for row in data.get("output1", []):
@@ -343,9 +386,14 @@ class KISTrader:
 
     # ── 매수 주문 ───────────────────────────────────────
     async def _refresh_token_if_expired(self, data: dict) -> bool:
-        """토큰 만료 확인 후 자동 재발급, 재발급 성공 시 True"""
+        """토큰 만료 확인 후 자동 재발급, 재발급 성공 시 True.
+        EGW00201(초당 거래건수 초과)은 "EGW00" 접두사가 겹치지만 토큰 문제가 아니라
+        속도제한이므로 여기서 제외한다 — 호출부의 _is_rate_limited() 재시도가 처리한다."""
         msg = data.get("msg1", "")
-        if data.get("rt_cd") == "1" and ("만료" in msg or "token" in msg.lower() or "EGW00" in data.get("msg_cd", "")):
+        msg_cd = data.get("msg_cd", "")
+        if msg_cd == "EGW00201":
+            return False
+        if data.get("rt_cd") == "1" and ("만료" in msg or "token" in msg.lower() or "EGW00" in msg_cd):
             logger.warning("🔄 KIS 토큰 만료 → 자동 재발급")
             try:
                 redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
@@ -388,6 +436,7 @@ class KISTrader:
             "ORD_UNPR": str(price),
         }
         for attempt in range(2):
+            await self._throttle_kis_call()
             async with self._new_session() as sess:
               async with sess.post(
                 url, headers=self._headers(tr_id), json=payload
@@ -397,6 +446,11 @@ class KISTrader:
                 if rt_cd != "0":
                     # 토큰 만료 → 재발급 후 재시도
                     if attempt == 0 and await self._refresh_token_if_expired(data):
+                        continue
+                    # 속도제한(초당 거래건수 초과) → 1.5초 후 1회 자동 재시도
+                    if attempt == 0 and self._is_rate_limited(data):
+                        logger.warning(f"⏳ [{symbol}] 매수 주문 KIS 속도제한(EGW00201) — 1.5초 후 재시도")
+                        await asyncio.sleep(1.5)
                         continue
                     logger.error(f"❌ 매수 주문 접수 실패: {symbol} — {data.get('msg1')}")
                     return {"success": False, "error": data.get("msg1")}
@@ -430,7 +484,11 @@ class KISTrader:
         """시장가 매도 (토큰 만료 시 자동 재시도)
         지정가(00)는 가격이 안 맞으면 미체결/거부될 수 있어 매도는 시장가(01)로 확실히 체결
         주문 접수(rt_cd=0)는 '접수'만 의미하고 실제 체결을 보장하지 않으므로,
-        접수 후 실제 체결 수량을 재조회해 진짜 성공 여부를 판정한다."""
+        접수 후 실제 체결 수량을 재조회해 진짜 성공 여부를 판정한다.
+
+        매도(손절 등 긴급 주문)는 체결 지연이 손실 확대로 이어질 수 있어 KISTrader
+        공용 최소 호출 간격(_throttle_kis_call)을 적용하지 않는다. 다만 속도제한
+        (EGW00201) 응답을 받으면 그 즉시 1.5초 후 1회 자동 재시도한다."""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0801U" if config.KIS_IS_PAPER else "TTTC0801U"
         payload = {
@@ -441,18 +499,26 @@ class KISTrader:
             "ORD_QTY": str(qty),
             "ORD_UNPR": "0",
         }
-        async with self._new_session() as sess:
-          async with sess.post(
-            url, headers=self._headers(tr_id), json=payload
-          ) as resp:
-            data = await resp.json()
-            rt_cd = data.get("rt_cd")
-            if rt_cd != "0":
-                logger.error(f"❌ 매도 주문 접수 실패: {symbol} — {data.get('msg1')}")
-                return {"success": False, "error": data.get("msg1")}
+        for attempt in range(2):
+            async with self._new_session() as sess:
+              async with sess.post(
+                url, headers=self._headers(tr_id), json=payload
+              ) as resp:
+                data = await resp.json()
+                rt_cd = data.get("rt_cd")
+                if rt_cd != "0":
+                    if attempt == 0 and self._is_rate_limited(data):
+                        logger.warning(f"⏳ [{symbol}] 매도 주문 KIS 속도제한(EGW00201) — 1.5초 후 재시도")
+                        await asyncio.sleep(1.5)
+                        continue
+                    logger.error(f"❌ 매도 주문 접수 실패: {symbol} — {data.get('msg1')}")
+                    return {"success": False, "error": data.get("msg1")}
 
-            order_no = data.get("output", {}).get("ODNO")
-            logger.info(f"📝 매도 주문 접수: {symbol} × {qty}주 (주문번호 {order_no}) — 체결 확인 중")
+                order_no = data.get("output", {}).get("ODNO")
+                logger.info(f"📝 매도 주문 접수: {symbol} × {qty}주 (주문번호 {order_no}) — 체결 확인 중")
+            break
+        else:
+            return {"success": False, "error": "매도 실패"}
 
         # 접수 성공 ≠ 체결 성공. 잠시 대기 후 실제 체결 수량을 재조회해 확정한다.
         import asyncio as _aio
@@ -518,6 +584,7 @@ class KISTrader:
                 "INQR_DVSN_3": "00", "INQR_DVSN_1": "",
                 "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
             }
+            await self._throttle_kis_call()
             async with self._new_session() as sess:
               async with sess.get(
                 f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
@@ -553,6 +620,7 @@ class KISTrader:
             "FID_ORG_ADJ_PRC": "0",
         }
         tr_id = "FHKST03010100"
+        await self._throttle_kis_call()
         async with self._new_session() as sess:
           async with sess.get(
             url, headers=self._headers(tr_id), params=params

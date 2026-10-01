@@ -829,13 +829,9 @@ class StockTrader:
                 except Exception:
                     pass
                 try:
+                    # 속도제한(초당 거래건수 초과, EGW00201) 자동 재시도는
+                    # KISTrader.sell() 내부에서 처리된다.
                     result = await self.trader.sell(symbol, cur_price, qty)
-                    # 초당 거래건수 제한 등 일시 오류는 짧은 대기 후 1회 재시도
-                    if not result.get("success") and any(
-                        k in str(result.get("error", "")) for k in ("초당", "거래건수", "rate", "Rate")
-                    ):
-                        await asyncio.sleep(1.2)
-                        result = await self.trader.sell(symbol, cur_price, qty)
                     if result.get("success"):
                         _fq = result.get("filled_qty", qty)
                         _fpnl = int((cur_price - avg_price) * _fq)
@@ -1237,6 +1233,26 @@ class StockTrader:
         except Exception:
             symbols = config.STOCK_SYMBOLS
 
+        # 잔고는 사이클 시작 시 1회만 조회해 재사용한다(종목마다 조회하면 KIS 호출이
+        # 급증해 초당 거래건수 제한에 걸림). 매수 체결 때마다 체결 금액만큼 아래 cash를
+        # 로컬에서 차감해 같은 사이클의 다음 종목 판단에 반영한다(실제 체결가/수량은
+        # dashboard가 최종 사이징하므로 근사치지만, self.positions 등록 값과 동일 기준).
+        available_cash = await self.trader.get_balance()
+        cash = available_cash.get("cash", 0)
+        cash_stale = bool(available_cash.get("stale"))
+        if cash <= 0:
+            try:
+                cached = await cache.client.get("stock:balance")
+                if cached:
+                    bal = json.loads(cached)
+                    cash = int(bal.get("cash", 0))
+            except Exception:
+                pass
+        if cash <= 0:
+            logger.warning("⚠️ 잔고 조회 실패 → 이번 사이클 신규 매수 스킵 (다음 사이클 재시도)")
+            return
+        equity = float(available_cash.get("total") or 0) or float(config.INITIAL_SEED_KRW)
+
         for symbol in symbols:
             if symbol in self.positions:
                 continue
@@ -1287,22 +1303,6 @@ class StockTrader:
             elif cd_reason:
                 logger.info(f"✅ [{symbol}] {cd_reason}")
 
-            # 잔고 조회 (실패 시 매수 스킵 — 가짜 잔고로 판단 금지)
-            available_cash = await self.trader.get_balance()
-            cash = available_cash.get("cash", 0)
-            cash_stale = bool(available_cash.get("stale"))
-            if cash <= 0:
-                try:
-                    cached = await cache.client.get("stock:balance")
-                    if cached:
-                        bal = json.loads(cached)
-                        cash = int(bal.get("cash", 0))
-                except:
-                    pass
-            if cash <= 0:
-                logger.warning(f"⚠️ [{symbol}] 잔고 조회 실패 → 매수 스킵 (다음 사이클 재시도)")
-                continue
-
             if cash < 100000:
                 logger.info(f"💸 잔고 부족 ({cash:,}원) → 매수 스킵")
                 continue
@@ -1318,7 +1318,6 @@ class StockTrader:
             # 리스크 기반 매수 금액 = 기본(자산×위험비율÷손절률) × 변동성배율.
             # 확신도 배율(EXECUTE=1.0/EXECUTE_SMALL=0.5)과 예수금 최종 캡은 AI 판단 이후
             # dashboard/main.py(jarvis_signal)에서 적용한다 — 판단 시점이 다르기 때문.
-            equity = float(available_cash.get("total") or 0) or float(config.INITIAL_SEED_KRW)
             stop_loss_pct = abs(float(s_params.get("stop_loss", self.DEFAULT_STOP_LOSS_PCT)))
             base_amount = self._compute_base_amount(equity, stop_loss_pct, config.RISK_PER_TRADE_PCT)
             atr_pct = self._compute_atr_pct(rows, cur_price)
@@ -1433,6 +1432,8 @@ class StockTrader:
                         "cur_price": cur_price, "avg_price": cur_price,
                         "qty": qty
                     }
+                    # 체결 금액만큼 로컬 잔고를 차감해 같은 사이클의 다음 종목 판단에 반영
+                    cash -= buy_amount_krw
                     # 최대 포지션 체크
                     if len(self.positions) >= max_positions:
                         break

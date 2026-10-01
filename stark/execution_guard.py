@@ -430,6 +430,7 @@ async def _finalize_filled_order(
     strategy: str, reason: str, is_buy: bool, is_small: bool, reply: str,
     pre_avg_price: Optional[float], pool: Any, redis: Any, send_telegram_fn, log_journal_fn,
     save_trade_memory_fn, invalidate_cache_fn, label: str = "완료",
+    send_channel_fn: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """체결이 확인된 주문(정상 성공 또는 응답불명→보유수량 재확인으로 체결 확정)의 공통
     후처리: in-flight 기록, pnl 계산, trade_history/매매일지 기록, 텔레그램 보고, 캐시 무효화."""
@@ -463,6 +464,16 @@ async def _finalize_filled_order(
         f"한강뷰매니저 판단: {reply[:80]}"
     )
     await send_telegram_fn(msg)
+    if send_channel_fn:
+        # 매수·매도 체결 알림(개별)은 개인방+채널 둘 다 — 채널엔 한 줄 요약만(금액 없이
+        # 가격·%만, [AT] feat/telegram-routing)
+        try:
+            channel_line = f"{emoji} {name}({symbol}) {action_kr} {qty:.0f}주 @ {price:,.0f}원"
+            if pnl_rate is not None:
+                channel_line += f" ({pnl_rate:+.1f}%)"
+            await send_channel_fn(channel_line)
+        except Exception as e:
+            logger.warning(f"채널 체결 요약 전송 실패: {e}")
     logger.info(f"✅ Jarvis 자동 {action_kr}({label}): {symbol} {price:,}원 × {qty}주")
     try:
         for k in ("cache:positions:stock", "cache:account:stock"):
@@ -508,6 +519,7 @@ async def execute(
     get_positions_fn: Optional[Any] = None,
     max_positions: Optional[int] = None,
     invalidate_cache_fn: Optional[Any] = None,
+    send_channel_fn: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """decision_engine이 EXECUTE/EXECUTE_SMALL로 승인한 신호를 실제 KIS 주문으로 집행.
     signal["qty"]는 호출부가 이미 EXECUTE_SMALL 절반 수량 보정을 마친 값이어야 한다
@@ -625,7 +637,7 @@ async def execute(
                 is_small=is_small, reply=reply, pre_avg_price=pre_avg_price,
                 pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
                 log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
-                invalidate_cache_fn=invalidate_cache_fn,
+                invalidate_cache_fn=invalidate_cache_fn, send_channel_fn=send_channel_fn,
             )
 
         if order.get("uncertain"):
@@ -643,6 +655,7 @@ async def execute(
                     pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
                     log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
                     invalidate_cache_fn=invalidate_cache_fn, label="체결 확인(응답 지연)",
+                    send_channel_fn=send_channel_fn,
                 )
             reason_text = "주문 결과 불명 — 보유 수량 변화 없음"
             logger.warning(f"⚠️ {reason_text}: {symbol}")

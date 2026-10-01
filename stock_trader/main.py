@@ -961,12 +961,15 @@ class StockTrader:
                         await self._invalidate_position_cache()
                         await cache.client.setex(f"surge_tp:{symbol}", 86400, "1")
                         try:
-                            from common.telegram import send_stock
+                            from common.telegram import fill_summary_line, send_report, send_stock
                             await send_stock(
                                 f"🚀 <b>{pos.get('name', symbol)} 급등 절반 익절</b>\n"
                                 f"1시간 내 {surge_rate:+.1f}% 급등 — {half_qty}주 매도 @ {cur_price:,}원 "
                                 f"(전체 손익 {pnl_rate:+.1f}%, 실현 {half_pnl:+,}원)\n"
                                 f"잔여 {qty - half_qty}주는 트레일링으로 계속 관리합니다.")
+                            await send_report(fill_summary_line(
+                                name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
+                                qty=half_qty, price=cur_price, pnl_rate=pnl_rate))
                         except Exception:
                             pass
                         pos["qty"] = qty - half_qty
@@ -998,13 +1001,16 @@ class StockTrader:
                                 strategy=f"{strat_name}_구간익절_신호소멸", pnl=s_pnl,
                             )
                             await self._invalidate_position_cache()
-                            from common.telegram import send_stock
+                            from common.telegram import fill_summary_line, send_report, send_stock
                             await send_stock(
                                 f"🟡 <b>{pos.get('name', symbol)} 익절(+1~5% 신호소멸 전량매도)</b>\n"
                                 f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
                                 f"사유: {strat_name} 진입 신호 소멸(데드크로스 등)"
                                 + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
                             )
+                            await send_report(fill_summary_line(
+                                name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
+                                qty=sold_qty, price=cur_price, pnl_rate=pnl_rate))
                             if remain > 0:
                                 pos["qty"] = remain
                                 pos["sellable_qty"] = remain
@@ -1075,7 +1081,7 @@ class StockTrader:
                                     strategy=f"{strat_name}_AI익절{decision}", pnl=s_pnl,
                                 )
                                 await self._invalidate_position_cache()
-                                from common.telegram import send_stock
+                                from common.telegram import fill_summary_line, send_report, send_stock
                                 remain = qty - sell_qty
                                 await send_stock(
                                     f"🤖 <b>{pos.get('name', symbol)} 익절(+5%↑ AI판단 {decision})</b>\n"
@@ -1083,6 +1089,9 @@ class StockTrader:
                                     f"근거: {reason}\n"
                                     + (f"잔여 {remain}주는 계속 보유·관찰합니다." if remain > 0 else "전량 매도 완료.")
                                 )
+                                await send_report(fill_summary_line(
+                                    name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
+                                    qty=sell_qty, price=cur_price, pnl_rate=pnl_rate))
                                 if remain > 0:
                                     pos["qty"] = remain
                                     self.positions[symbol] = pos
@@ -1159,13 +1168,16 @@ class StockTrader:
                             await self._invalidate_position_cache()
                             await cache.client.setex(half_lock_key, 30 * 86400, "1")
                             await cache.client.setex(trailing_high_key, 30 * 86400, str(cur_price))
-                            from common.telegram import send_stock
+                            from common.telegram import fill_summary_line, send_report, send_stock
                             await send_stock(
                                 f"🟢 <b>{pos.get('name', symbol)} 익절(+10%↑ 절반확정)</b>\n"
                                 f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
                                 f"잔여 {remain}주는 고점 대비 -{self.TRAILING_STOP_PCT:.0f}% 하락 시 "
                                 f"전량 매도하는 트레일링 스탑으로 관리합니다."
                             )
+                            await send_report(fill_summary_line(
+                                name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
+                                qty=sold_qty, price=cur_price, pnl_rate=pnl_rate))
                             if remain > 0:
                                 pos["qty"] = remain
                                 pos["sellable_qty"] = remain
@@ -1202,7 +1214,7 @@ class StockTrader:
                                     strategy=f"{strat_name}_트레일링스탑", pnl=s_pnl,
                                 )
                                 await self._invalidate_position_cache()
-                                from common.telegram import send_stock
+                                from common.telegram import fill_summary_line, send_report, send_stock
                                 await send_stock(
                                     f"📉 <b>{pos.get('name', symbol)} 트레일링 스탑 발동"
                                     f"(고점 대비 -{self.TRAILING_STOP_PCT:.0f}%)</b>\n"
@@ -1210,6 +1222,9 @@ class StockTrader:
                                     f"고점 {high:,.0f}원 대비 {drop_pct:.1f}% 하락"
                                     + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
                                 )
+                                await send_report(fill_summary_line(
+                                    name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
+                                    qty=sold_qty, price=cur_price, pnl_rate=pnl_rate))
                                 if remain > 0:
                                     pos["qty"] = remain
                                     pos["sellable_qty"] = remain
@@ -1584,7 +1599,10 @@ class StockTrader:
             await asyncio.sleep((next_run - now).total_seconds())
 
             try:
-                from common.telegram import send_report, send_stock
+                # [AT] feat/telegram-routing: 6시간 리포트는 채널 전용("읽는 기록")이다.
+                # 개인방 중복 발송을 없애고, 채널 메시지에서는 예수금·손익 금액 같은 계좌
+                # 잔고 규모를 드러내는 금액을 빼고 수량·%만 쓴다.
+                from common.telegram import send_report
                 async with db.pool.acquire() as conn:
                     trades = await conn.fetch("""
                         SELECT side, symbol, amount, pnl, strategy, created_at
@@ -1596,7 +1614,6 @@ class StockTrader:
 
                 buys = [t for t in trades if t['side'] == 'BUY']
                 sells = [t for t in trades if t['side'] == 'SELL']
-                total_pnl = sum(float(t['pnl'] or 0) for t in trades)
 
                 pos_list = []
                 for sym, pos in self.positions.items():
@@ -1604,32 +1621,24 @@ class StockTrader:
                     pos_list.append(f"{pos.get('name', sym)} {rate:+.1f}%")
 
                 acct = await self.trader.get_balance()
-                cash = acct.get('cash', 0)
                 total_eval = acct.get('total', 0)
-                cash_label = f"{cash:,.0f}원" + (" ⚠️(마지막 확인: 지연됨)" if acct.get('stale') else "")
 
                 report = (
                     f"📊 주식 6시간 리포트 ({now.strftime('%m/%d %H:%M')})\n\n"
-                    f"매수 {len(buys)}건 / 매도 {len(sells)}건\n"
-                    f"손익: {total_pnl:+,.0f}원\n\n"
-                    f"보유: {', '.join(pos_list) if pos_list else '없음'}\n"
-                    f"예수금: {cash_label}"
+                    f"매수 {len(buys)}건 / 매도 {len(sells)}건\n\n"
+                    f"보유: {', '.join(pos_list) if pos_list else '없음'}"
                 )
-                if total_eval > 0:
+                if total_eval > 0 and not acct.get('stale'):
                     cum_pnl, cum_pnl_rate = compute_total_pnl(total_eval)
-                    report += f"\n누적손익(원금대비): {cum_pnl:+,.0f}원 ({cum_pnl_rate:+.2f}%)"
+                    report += f"\n누적손익(원금대비): {cum_pnl_rate:+.2f}%"
 
                 if trades:
-                    report += "\n\n최근 매매:"
-                    for t in list(trades)[:5]:
-                        pnl = float(t['pnl'] or 0)
-                        report += f"\n{'📈매수' if t['side']=='BUY' else '📉매도'} {t['symbol']} {float(t['amount']):,.0f}원"
-                        if pnl:
-                            report += f" ({pnl:+,.0f}원)"
+                    report += "\n\n최근 매매: " + ", ".join(
+                        f"{'매수' if t['side']=='BUY' else '매도'} {t['symbol']}" for t in list(trades)[:5]
+                    )
 
-                await send_stock(report)
-                await send_report(report)  # TELEGRAM_CHANNEL_ID 채널로도 전송 (개인방 전송은 유지)
-                logger.info("📨 6시간 주식 리포트 전송")
+                await send_report(report)
+                logger.info("📨 6시간 주식 리포트 전송(채널)")
             except Exception as e:
                 logger.error(f"주식 리포트 실패: {e}")
 

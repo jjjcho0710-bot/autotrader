@@ -117,6 +117,18 @@ async def send_report(text: str):
         logger.warning(f"보고서 전송 실패: {type(e).__name__}")
 
 
+def fill_summary_line(*, name: str, symbol: str, side_kr: str, qty, price: float,
+                       pnl_rate: float = None) -> str:
+    """매수·매도 체결 알림의 채널용 한 줄 요약 — 금액(평가손익 등) 없이 가격·수량·손익률(%)만
+    ([AT] feat/telegram-routing). 체결가는 종목 단가(공개 시세)라 계좌 잔고 규모를 드러내지
+    않는다."""
+    emoji = "📈" if side_kr == "매수" else "📉"
+    line = f"{emoji} {name}({symbol}) {side_kr} {qty}주 @ {price:,.0f}원"
+    if pnl_rate is not None:
+        line += f" ({pnl_rate:+.1f}%)"
+    return line
+
+
 # ── Jarvis/한강뷰매니저 전송 (STARK_BOT_TOKEN 최우선) ──
 async def send_jarvis(text: str):
     """STARK 한강뷰매니저 봇으로 전송"""

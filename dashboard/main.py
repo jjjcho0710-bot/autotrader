@@ -834,7 +834,7 @@ async def _jarvis_stock_scanner():
         if candidates is None:
             # 스캔 자체 실패 → 기존 watchlist 보존
             logger.error("🔍 스캔 실패 — 기존 watchlist 유지")
-            await _send_telegram(f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n⚠️ 스캔 실패 (기존 감시종목 유지)", broadcast=True)
+            await _send_telegram(f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n⚠️ 스캔 실패 (기존 감시종목 유지)", dest="personal")
             return
 
         if not candidates:
@@ -844,7 +844,7 @@ async def _jarvis_stock_scanner():
             await _send_telegram(
                 f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음"
                 + (f" · 기존 {cleaned}종목 해제" if cleaned else ""),
-                broadcast=True
+                dest="personal"
             )
             return
 
@@ -903,7 +903,7 @@ async def _jarvis_stock_scanner():
             msg += f" · 보유 {len(held_symbols)}종목 유지"
         if added:
             msg += f"\n신규 {len(added)}종목:\n" + "\n".join(added[:10])
-        await _send_telegram(msg, broadcast=True)
+        await _send_telegram(msg, dest="personal")
         logger.info(f"✅ 스캐너 완료: {len(candidates)}종목 선정, 신규 {len(added)}, 해제 {deactivated}")
 
     except Exception as e:
@@ -963,7 +963,7 @@ async def _jarvis_auto_analysis():
             msg += "📉 매도 신호:\n" + "\n".join(sell_list) + "\n\n"
         msg += f"🟡 관망: {len(hold_list)}종목"
 
-        await _send_telegram(msg, broadcast=True)
+        await _send_telegram(msg, dest="personal")
         logger.info(f"✅ Jarvis 자동 분석 완료: BUY {len(buy_list)}, SELL {len(sell_list)}, HOLD {len(hold_list)}")
 
     except Exception as e:
@@ -1003,8 +1003,38 @@ async def _trigger_ohlcv_collect():
         logger.warning(f"OHLCV 수집 트리거 실패: {e}")
 
 
+async def _closing_report_today_profit_line(real_account: dict, valid_today: bool) -> str:
+    """마감 결산 채널 블록의 "오늘 수익" 줄 계산.
+    balance_snapshot에서 "오늘(KST) 이전 날짜 중 가장 최근" 기록의 total_krw와 오늘 총자산을
+    비교한다. 일별 기록 코루틴이 15:35 이후 오늘 치를 먼저 기록할 수 있어 오늘 날짜 행을
+    비교 대상으로 쓰면 항상 0이 되므로 반드시 날짜 < 오늘 조건을 쓴다. 비교할 이전 기록이
+    없거나 오늘 총자산 조회가 stale/0이면 추정값 없이 "집계 시작 전"으로 표시한다."""
+    if not valid_today or not db_pool:
+        return "📅 오늘 수익: 집계 시작 전"
+    try:
+        async with db_pool.acquire() as conn:
+            prev_total = await conn.fetchval("""
+                SELECT total_krw FROM balance_snapshot
+                WHERE bot='stock_trader'
+                  AND (ts AT TIME ZONE 'Asia/Seoul')::date < (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                ORDER BY ts DESC LIMIT 1
+            """)
+    except Exception as e:
+        logger.warning(f"오늘 수익 비교용 이전 총자산 조회 실패: {e}")
+        return "📅 오늘 수익: 집계 시작 전"
+    if not prev_total or float(prev_total) <= 0:
+        return "📅 오늘 수익: 집계 시작 전"
+    prev_total = float(prev_total)
+    today_eval = float(real_account.get("total_eval", 0) or 0)
+    today_profit = today_eval - prev_total
+    today_profit_rate = today_profit / prev_total * 100
+    return f"📅 오늘 수익 {today_profit:+,.0f}원 ({today_profit_rate:+.2f}%)"
+
+
 async def _jarvis_closing_report():
-    """장 마감 후 오늘 거래 결과 텔레그램 리포트 (실제 KIS 계좌 기준)"""
+    """장 마감 후 오늘 거래 결과 텔레그램 리포트 (실제 KIS 계좌 기준) — 채널 전용
+    ([AT] feat/telegram-routing). 본문은 금액 없이 수량·%만 쓰고, 마지막 채널용 블록
+    한 곳에서만 원금·오늘 수익·누적 수익·총자산 금액을 보여준다."""
     try:
         from datetime import timezone, timedelta
         KST = timezone(timedelta(hours=9))
@@ -1026,49 +1056,79 @@ async def _jarvis_closing_report():
         # 보유 현황은 추정치가 아닌 실제 KIS 계좌 조회로 (DB 누적 추정은 부정확할 수 있음)
         real_positions = []
         real_account = {}
+        pos_success = False
+        pos_stale = False
         try:
             pos_res = await get_stock_positions()
-            if pos_res.get("success"):
+            pos_success = bool(pos_res.get("success"))
+            pos_stale = bool(pos_res.get("stale"))
+            if pos_success:
                 real_positions = pos_res.get("data") or []
                 real_account = pos_res.get("account") or {}
         except Exception:
             pass
+        today_eval = float(real_account.get("total_eval", 0) or 0)
+        valid_today = pos_success and not pos_stale and today_eval > 0
 
         buy_trades = [t for t in trades if t["side"] == "BUY"]
         sell_trades = [t for t in trades if t["side"] == "SELL"]
-        total_pnl = sum(float(t["pnl"] or 0) for t in sell_trades)
 
         msg = f"📊 <b>한강뷰매니저 마감 결산</b> [{now_kst.strftime('%m/%d')}]\n"
         msg += f"{'='*25}\n"
 
         if trades:
             msg += f"매수 {len(buy_trades)}건 / 매도 {len(sell_trades)}건\n"
-            if sell_trades:
-                pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-                msg += f"{pnl_emoji} 실현손익: {total_pnl:+,.0f}원\n"
             if buy_trades:
+                # 종목별 수량 합계 + 금액가중평균 체결가로 합산 표시(같은 종목 여러 건이
+                # 흩어져 "매수 N건"과 목록 종목수가 안 맞는 문제 방지). 체결가는 종목당
+                # 단가(공개 시세)라 계좌 잔고 규모를 드러내는 금액이 아니므로 채널에도 표시한다.
+                agg_order = []
+                agg = {}
+                for t in buy_trades:
+                    sym = t["symbol"]
+                    if sym not in agg:
+                        agg[sym] = {"qty": 0.0, "amount": 0.0}
+                        agg_order.append(sym)
+                    q = float(t["quantity"])
+                    agg[sym]["qty"] += q
+                    agg[sym]["amount"] += float(t["price"]) * q
                 buy_list_items = []
-                for t in buy_trades[:5]:
-                    _nm = await _code_to_name(t['symbol'])
-                    buy_list_items.append(f"  🟢 {_nm} {int(t['price']):,}원×{int(t['quantity'])}주")
-                buy_list = "\n".join(buy_list_items)
-                msg += f"신규 매수:\n{buy_list}\n"
+                for sym in agg_order:
+                    a = agg[sym]
+                    avg_price = a["amount"] / a["qty"] if a["qty"] else 0
+                    nm = await _code_to_name(sym)
+                    buy_list_items.append(f"  🟢 {nm} {a['qty']:.0f}주 평균 {avg_price:,.0f}원")
+                msg += "신규 매수:\n" + "\n".join(buy_list_items) + "\n"
         else:
             msg += "오늘 거래 없음\n"
 
         msg += f"\n📋 감시종목 {wl_count}개 | 실보유 {len(real_positions)}종목"
         if real_positions:
+            # 전부 표시(과거엔 8개로 잘려 종목이 안 보이는 문제가 있었다)
             hold_list = "\n".join(
                 f"  · {p.get('name') or p.get('symbol')} {p.get('qty')}주 ({p.get('pnl_rate', 0):+.1f}%)"
-                for p in real_positions[:8])
+                for p in real_positions)
             msg += f"\n{hold_list}"
 
-        if real_account:
+        today_profit_line = await _closing_report_today_profit_line(real_account, valid_today)
+        if valid_today:
             cum_pnl = real_account.get("total_pnl", 0)
             cum_pnl_rate = real_account.get("total_pnl_rate", 0)
-            msg += f"\n💰 누적손익(원금대비): {cum_pnl:+,.0f}원 ({cum_pnl_rate:+.2f}%)"
+            cum_line = f"📈 누적 수익 {cum_pnl:+,.0f}원 ({cum_pnl_rate:+.2f}%)"
+            total_asset_line = f"💰 총자산 {today_eval:,.0f}원"
+        else:
+            cum_line = "📈 누적 수익: 조회 실패"
+            total_asset_line = "💰 총자산: 조회 실패"
 
-        await _send_telegram(msg, broadcast=True)
+        msg += (
+            f"\n{'─'*13}\n"
+            f"💼 원금 {config.INITIAL_SEED_KRW:,.0f}원\n"
+            f"{today_profit_line}\n"
+            f"{cum_line}\n"
+            f"{total_asset_line}"
+        )
+
+        await _send_telegram(msg, dest="channel")
         logger.info("✅ Jarvis 마감 리포트 전송 완료")
 
     except Exception as e:
@@ -1197,7 +1257,7 @@ async def _jarvis_daily_plan():
         if plan and not plan.startswith("❌"):
             await redis_client.setex("jarvis:daily_plan", 60 * 60 * 12, plan)
             logger.info("🧭 오늘의 작전 캐시 완료")
-            await _send_telegram(f"🧭 한강뷰매니저 오늘의 작전 [{now_str}]\n{plan[:900]}", broadcast=True)
+            await _send_telegram(f"🧭 한강뷰매니저 오늘의 작전 [{now_str}]\n{plan[:900]}", dest="channel")
         else:
             logger.warning(f"작전 수립 실패(AI 응답 불가): {str(plan)[:100]}")
     except Exception as e:
@@ -1222,7 +1282,7 @@ async def _score_journal() -> str:
                     WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
                       AND bot='stock_trader'""")
             if not total_today:
-                await _send_telegram("📝 오늘 판단 채점: 기록 0건\n(전략 신호 미발생 — 매수 시도 자체가 없었음)", broadcast=True)
+                await _send_telegram("📝 오늘 판단 채점: 기록 0건\n(전략 신호 미발생 — 매수 시도 자체가 없었음)", dest="channel")
             return ""
         token = await get_kis_token()
         if not token:
@@ -1293,7 +1353,7 @@ async def _score_journal() -> str:
             await redis_client.setex("jarvis:score_today", 3600 * 6, summary)
         except Exception:
             pass
-        await _send_telegram(summary, broadcast=True)
+        await _send_telegram(summary, dest="channel")
         logger.info("📝 판단 채점 완료: %s건", total)
         return summary
     except Exception as e:
@@ -1380,7 +1440,7 @@ async def _jarvis_evening_review(target_date=None):
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)", lesson)
-            await _send_telegram(f"🌙 한강뷰매니저 복기\n{lesson}", broadcast=True)
+            await _send_telegram(f"🌙 한강뷰매니저 복기\n{lesson}", dest="channel")
             logger.info("🌙 복기 교훈 저장 완료")
     except Exception as e:
         logger.error(f"복기 오류: {e}")
@@ -1479,7 +1539,7 @@ async def _jarvis_weekend_study_report():
             pass
 
         msg = "\n".join(parts) + comment
-        await _send_telegram(msg, broadcast=True)
+        await _send_telegram(msg, dest="channel")
         logger.info("📚 주말 학습보고 발송")
     except Exception as e:
         logger.error(f"주말 학습보고 오류: {e}")
@@ -1592,7 +1652,7 @@ async def _jarvis_unified_daily_report():
             pass
 
         msg = (f"📊 <b>한강뷰매니저 일일보고</b> [{today.strftime('%m/%d')}]\n\n{raw}{comment}")
-        await _send_telegram(msg, broadcast=True)
+        await _send_telegram(msg, dest="personal")
         logger.info("📊 통합 일일보고 발송 완료")
     except Exception as e:
         logger.error(f"통합 일일보고 오류: {e}")
@@ -1632,7 +1692,7 @@ async def _priority_watch_check():
                     await _send_telegram(
                         f"⭐ <b>관심종목 알림: {name}({symbol})</b>\n{ana}\n"
                         f"(요청하신 대로 지켜보다가 신호 포착 시 알려드려요. 자동 매수는 하지 않았습니다.)",
-                        broadcast=True)
+                        dest="personal")
             except Exception as e:
                 logger.debug(f"관심종목 확인 오류 [{symbol}]: {e}")
     except Exception as e:
@@ -1686,7 +1746,7 @@ async def _intraday_scan():
                    f"신규 감시 {len(added)}종목:\n" + "\n".join(lines))
             if _last_kis_scan_surge_excluded:
                 msg += f"\n급등 제외 {_last_kis_scan_surge_excluded}종목"
-            await _send_telegram(msg, broadcast=True)
+            await _send_telegram(msg, dest="channel")
             logger.info("🔍 장중 스캔: %d종목 추가(표시), %d종목 등록", len(added), registered)
         else:
             logger.info("🔍 장중 스캔: 전부 기존 감시 중이거나 보유 종목만 등록(%d종목)", registered)
@@ -1758,10 +1818,25 @@ async def _jarvis_weekly_review():
                             "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)",
                             f"[주간] {line[:280]}")
                         saved += 1
-            await _send_telegram(f"📚 한강뷰매니저 주간 복습 완료 — 교훈 {saved}건 저장\n{review[:600]}", broadcast=True)
+            await _send_telegram(f"📚 한강뷰매니저 주간 복습 완료 — 교훈 {saved}건 저장\n{review[:600]}", dest="channel")
         logger.info(f"📚 주간 복습 완료: 교훈 {saved}건")
     except Exception as e:
         logger.error(f"주간 복습 오류: {e}")
+
+
+def _summarize_exec_result(rep: str) -> str:
+    """AI 자동 실행 요약의 결과란용 — 매매 지시 실행 결과를 "체결 완료/실패/결과 불명" 한 줄로
+    압축한다. 체결 상세(가격·수량·손익 등)는 handle_trade_command가 보낸 별도 체결 알림에
+    이미 있으므로 여기서 반복하지 않는다 ([AT] feat/telegram-routing)."""
+    if not rep:
+        return "결과 없음"
+    if "결과 불명" in rep:
+        return "결과 불명"
+    if rep.startswith("✅") or "체결 완료" in rep or "체결 확인" in rep:
+        return "체결 완료"
+    if rep.startswith("❌") or "주문 실패" in rep:
+        return "체결 실패"
+    return rep[:80]  # 차단·보류 등 체결 자체가 아닌 응답은 원문 유지(길이만 제한)
 
 
 async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
@@ -1873,7 +1948,10 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
                     rep = sub.get("reply") or sub.get("error") or "결과 없음"
                 except Exception as ae:
                     rep = f"❌ 실행 오류: {ae}"
-            results.append(f"{i}. <b>{title}</b>\n   근거: {reason_txt}\n   → {cmd}\n   결과: {rep}")
+            # 매도 지시는 handle_trade_command가 이미 자체 체결 알림을 보내므로, 여기 결과란에서
+            # 체결 문구를 반복하지 않고 한 줄로 줄인다(중복 제거, [AT] feat/telegram-routing)
+            rep_disp = _summarize_exec_result(rep) if is_trade else rep
+            results.append(f"{i}. <b>{title}</b>\n   근거: {reason_txt}\n   → {cmd}\n   결과: {rep_disp}")
         try:
             titles = "; ".join(it.get("title", "") for it in items)
             await redis_client.setex("advice:recent_titles", 86400, (prev + "; " + titles)[-600:])
@@ -1881,7 +1959,7 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
             pass
         now = datetime.now(KST).strftime("%H:%M")
         msg = f"🤖 <b>한강뷰매니저 자동 실행 [{now}]</b>\n\n" + "\n\n".join(results)
-        await _send_telegram(msg, broadcast=True)
+        await _send_telegram(msg, dest="personal")
         # 웹 자비스 대화에도 기록
         import re as _rr
         plain = _rr.sub(r"<[^>]+>", "", msg)
@@ -1954,7 +2032,7 @@ async def _jarvis_weekly_preview():
                 await redis_client.setex("jarvis:weekly_plan", 86400 * 7, preview[:800])
             except Exception:
                 pass
-            await _send_telegram(f"🗓️ 한강뷰매니저 다음주 예습 브리핑\n{preview[:900]}", broadcast=True)
+            await _send_telegram(f"🗓️ 한강뷰매니저 다음주 예습 브리핑\n{preview[:900]}", dest="channel")
         logger.info("🗓️ 주간 예습 완료")
     except Exception as e:
         logger.error(f"주간 예습 오류: {e}")
@@ -2192,7 +2270,7 @@ async def _run_advice_queue():
                 logger.warning(f"🚫 장외 예약 매수 command 건너뜀: {cmd}")
                 continue
             sub = await jarvis_chat({"message": cmd, "session_id": "advice", "_no_mirror": True})
-            await _send_telegram(f"⏰ 예약 실행: {cmd}\n{sub.get('reply') or sub.get('error')}", broadcast=True)
+            await _send_telegram(f"⏰ 예약 실행: {cmd}\n{sub.get('reply') or sub.get('error')}", dest="personal")
     except Exception as qe:
         logger.warning(f"예약 실행 오류: {qe}")
 
@@ -2353,7 +2431,7 @@ async def watchlist_cleanup():
         n = await _cleanup_scanner_watchlist()
         async with db_pool.acquire() as conn:
             remain = await conn.fetchval("SELECT COUNT(*) FROM watchlist WHERE is_active=TRUE")
-        await _send_telegram(f"🧹 감시종목 정리: {n}개 해제, 활성 {remain}개 남음", broadcast=True)
+        await _send_telegram(f"🧹 감시종목 정리: {n}개 해제, 활성 {remain}개 남음", dest="personal")
         return {"success": True, "deactivated": n, "remaining": remain}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -2380,7 +2458,7 @@ async def run_scan_now():
                     msg += f"...외 {len(rows)-15}개"
             else:
                 msg = f"📋 수동 스캔 결과 [{now_str}]\n감시종목 없음"
-            await _send_telegram(msg, broadcast=True)
+            await _send_telegram(msg, dest="personal")
         except Exception as te:
             logger.warning(f"수동 스캔 텔레그램 전송 실패: {te}")
         return {"success": True, "count": len(rows),
@@ -4296,7 +4374,7 @@ async def jarvis_chat(body: dict):
             um = (body.get("message") or "")[:600]
             rp = str(res.get("reply"))[:2600]
             asyncio.create_task(_send_telegram(
-                f"🌐 <b>웹 대화</b>\n🧑 {um}\n\n🤖 {rp}", store=False))
+                f"🌐 <b>웹 대화</b>\n🧑 {um}\n\n🤖 {rp}", store=False, dest="personal"))
     except Exception:
         pass
     return res
@@ -4351,7 +4429,7 @@ async def _jarvis_chat_impl(body: dict):
                     result = await _learn_from_url(_learn_url, _learn_hint)
                 except Exception as le:
                     result = f"❌ 학습 실패: {le}"
-                await _send_telegram(f"📚 <b>한강뷰매니저 학습 결과</b>\n{result}", broadcast=True)
+                await _send_telegram(f"📚 <b>한강뷰매니저 학습 결과</b>\n{result}", dest="personal")
                 # 웹 자비스 대화 기록에도 남김 (다음 화면 로드 시 표시)
                 for sid in {_sid_for_learn, os.getenv("JARVIS_ANALYST_CHAT_ID", "jarvis_main"), "pc"}:
                     try:
@@ -4557,7 +4635,7 @@ async def _jarvis_chat_impl(body: dict):
                     applied = await setting_handler.apply_strategy_settings(db_pool, redis_client, valid)
                     desc = ", ".join(f"{k}={v}" for k, v in valid.items())
                     notes.append(f"⚙️ 설정 적용됨 [{desc}] → {', '.join(applied)}")
-                    await _send_telegram(f"⚙️ 전략 설정 변경 (대화 인식)\n{desc}", broadcast=True)
+                    await _send_telegram(f"⚙️ 전략 설정 변경 (대화 인식)\n{desc}", dest="personal")
                 if notes:
                     reply = reply + "\n\n" + "\n".join(notes)
         except Exception as ae:
@@ -4608,7 +4686,7 @@ async def jarvis_analyze():
 
         # 텔레그램 전송
         tg_msg = f"📊 <b>한강뷰매니저 정기 분석</b>\n\n{reply}"
-        await _send_telegram(tg_msg, broadcast=True)
+        await _send_telegram(tg_msg, dest="personal")
 
         return {"success": True, "reply": reply}
     except Exception as e:
@@ -4743,19 +4821,19 @@ async def mark_notifications_read():
 
 
 async def _send_telegram(text: str, chat_id: str = None, token: str = None, reply_markup: dict = None,
-                          store: bool = True, broadcast: bool = False):
-    """텔레그램 메시지 전송 (내부용) + 시스템 알림센터 저장
-    broadcast=True로 명시한 호출만 채널(TELEGRAM_CHANNEL_ID)에도 복제된다 (opt-in, 기본은 개인 채팅에만)"""
-    # 주말 매매 신호 알림 차단 (일일보고·복기·코인은 허용)
-    try:
-        from datetime import datetime as _dt
-        if _dt.now().weekday() >= 5:
-            _signal_keywords = ("매수 신호 건너뜀", "한강뷰매니저 판단: SKIP", "매수 신호 감지",
-                                "익절선 도달", "손절선 도달", "급락", "급등")
-            if any(kw in (text or "") for kw in _signal_keywords):
-                return  # 주말엔 매매 신호 알림 무음
-    except Exception:
-        pass
+                          store: bool = True, broadcast: bool = False, dest: str = None):
+    """텔레그램 메시지 전송 (내부용) + 시스템 알림센터 저장.
+
+    dest: "personal"(개인방만) | "channel"(채널만) | "both"(개인방+채널). 미지정 시 broadcast로
+    하위호환(broadcast=True → "both", False → "personal") — 새 호출은 dest를 명시해야 한다.
+    개인방(한강뷰매니저 봇) = 지금 보고 반응할 운영 알림. 채널(한강뷰 운영일지) = 읽는 기록
+    ([AT] feat/telegram-routing).
+    4096자를 넘는 메시지는 여러 건으로 나눠 보낸다(각 전송 대상마다 독립적으로 분할)."""
+    if dest is None:
+        dest = "both" if broadcast else "personal"
+    if dest not in ("personal", "channel", "both"):
+        dest = "personal"
+
     try:
         _acts = None
         if not store:
@@ -4768,35 +4846,44 @@ async def _send_telegram(text: str, chat_id: str = None, token: str = None, repl
         pass
     except Exception:
         pass
-    _token = token or config.STARK_BOT_TOKEN or config.TELEGRAM_TOKEN
-    cid = chat_id or config.TELEGRAM_CHAT_ID
-    if not _token or not cid:
-        return
-    try:
-        import aiohttp as http
-        async with http.ClientSession() as session:
-            await session.post(
-                f"https://api.telegram.org/bot{_token}/sendMessage",
-                json={"chat_id": cid, "text": text, "parse_mode": "HTML",
-                      **({"reply_markup": reply_markup} if reply_markup else {})},
-                timeout=http.ClientTimeout(total=10),
-            )
-    except Exception as e:
-        logger.warning(f"텔레그램 전송 실패: {e}")
 
-    # 채널 동시 발송: broadcast=True로 명시한 호출만 (opt-in) — 개인 대화·질문답변은 절대 채널에 안 감
-    channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
-    if channel_id and broadcast and not chat_id:
-        try:
-            import aiohttp as http
-            async with http.ClientSession() as session:
-                await session.post(
-                    f"https://api.telegram.org/bot{_token}/sendMessage",
-                    json={"chat_id": channel_id, "text": text, "parse_mode": "HTML"},
-                    timeout=http.ClientTimeout(total=10),
-                )
-        except Exception as e:
-            logger.warning(f"텔레그램 채널 전송 실패: {e}")
+    from common.telegram import split_text
+    chunks = split_text(text or "", limit=4000)
+
+    if dest in ("personal", "both"):
+        _token = token or config.STARK_BOT_TOKEN or config.TELEGRAM_TOKEN
+        cid = chat_id or config.TELEGRAM_CHAT_ID
+        if _token and cid:
+            try:
+                import aiohttp as http
+                async with http.ClientSession() as session:
+                    for i, chunk in enumerate(chunks):
+                        await session.post(
+                            f"https://api.telegram.org/bot{_token}/sendMessage",
+                            json={"chat_id": cid, "text": chunk, "parse_mode": "HTML",
+                                  **({"reply_markup": reply_markup} if reply_markup and i == 0 else {})},
+                            timeout=http.ClientTimeout(total=10),
+                        )
+            except Exception as e:
+                logger.warning(f"텔레그램 전송 실패: {e}")
+
+    # 채널 발송: 커스텀 chat_id/token과 무관하게 항상 기본 봇 토큰 + TELEGRAM_CHANNEL_ID를 쓴다
+    # (개인방 전송에 쓰인 커스텀 토큰이 채널에 유효하지 않을 수 있으므로 분리)
+    if dest in ("channel", "both"):
+        channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+        _ch_token = config.STARK_BOT_TOKEN or config.TELEGRAM_TOKEN
+        if channel_id and _ch_token:
+            try:
+                import aiohttp as http
+                async with http.ClientSession() as session:
+                    for chunk in chunks:
+                        await session.post(
+                            f"https://api.telegram.org/bot{_ch_token}/sendMessage",
+                            json={"chat_id": channel_id, "text": chunk, "parse_mode": "HTML"},
+                            timeout=http.ClientTimeout(total=10),
+                        )
+            except Exception as e:
+                logger.warning(f"텔레그램 채널 전송 실패: {e}")
 
 
 def _kb(rows: list) -> dict:
@@ -6167,7 +6254,7 @@ async def jarvis_signal(request: Request):
                             f"전략: {strategy}\n"
                             f"한강뷰매니저: {jarvis_reply[:80]}"
                         )
-                        await _send_telegram(msg, chat_id, token)
+                        await _send_telegram(msg, chat_id, token, dest="personal")
                         logger.info(f"✅ Jarvis 코인 {action_kr}: {symbol} {amount:,.0f}원")
 
                         # Jarvis 메모리에 매매 기록 저장
@@ -6192,7 +6279,7 @@ async def jarvis_signal(request: Request):
 
                         return {"success": True, "executed": True, "jarvis_reply": jarvis_reply}
                     else:
-                        await _send_telegram(f"❌ {name} 코인 {action_kr} 실패\n{result.get('error')}", chat_id, token)
+                        await _send_telegram(f"❌ {name} 코인 {action_kr} 실패\n{result.get('error')}", chat_id, token, dest="personal")
                         return {"success": False, "executed": False, "error": result.get("error")}
 
                 else:
@@ -6201,7 +6288,8 @@ async def jarvis_signal(request: Request):
                     return await execution_guard.execute(
                         signal, decision, pool=db_pool, redis=redis_client,
                         kis_order_fn=_kis_stock_order,
-                        send_telegram_fn=lambda text: _send_telegram(text, chat_id, token),
+                        send_telegram_fn=lambda text: _send_telegram(text, chat_id, token, dest="personal"),
+                        send_channel_fn=lambda text: _send_telegram(text, dest="channel"),
                         log_journal_fn=_log_journal,
                         save_trade_memory_fn=_save_trade_memory,
                         code_to_name_fn=_code_to_name,
@@ -6275,7 +6363,7 @@ async def _run_historical_fetch(symbols: list, start_date: str, end_date: str):
     from pykrx import stock as pykrx_stock
 
     logger.info(f"🚀 과거 데이터 적재 시작: {start_date}~{end_date} / {len(symbols)}종목")
-    await _send_telegram(f"📥 과거 데이터 적재 시작\n기간: {start_date[:4]}.{start_date[4:6]}.{start_date[6:]} ~ {end_date[:4]}.{end_date[4:6]}.{end_date[6:]}\n종목: {len(symbols)}개", broadcast=True)
+    await _send_telegram(f"📥 과거 데이터 적재 시작\n기간: {start_date[:4]}.{start_date[4:6]}.{start_date[6:]} ~ {end_date[:4]}.{end_date[4:6]}.{end_date[6:]}\n종목: {len(symbols)}개", dest="personal")
 
     total_saved = 0
     failed = []
@@ -6337,7 +6425,7 @@ async def _run_historical_fetch(symbols: list, start_date: str, end_date: str):
     if failed:
         msg += f"\n실패: {len(failed)}종목 ({', '.join(failed[:5])})"
     msg += "\n\n이제 자동매매 시작 가능! 🚀"
-    await _send_telegram(msg, broadcast=True)
+    await _send_telegram(msg, dest="personal")
     logger.info(f"🎉 과거 데이터 적재 완료: {total_saved}개 저장, 실패 {len(failed)}종목")
 
 

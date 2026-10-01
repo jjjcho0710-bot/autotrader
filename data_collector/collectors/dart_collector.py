@@ -147,6 +147,11 @@ class DARTCollector:
             for d in important[:5]:
                 msg += f"🔔 {d['corp_name']}({d['symbol']})\n"
                 msg += f"   {d['report_name']}\n\n"
+            # telegram_func는 호출부에 따라 common.telegram.send_stock(dest 인자 없음,
+            # [AT] data_collector/main.py) 또는 dashboard._send_telegram(dest 지원)이 주입된다.
+            # dest를 넘기면 send_stock이 TypeError를 던지므로 kwarg 없이 호출하고, 목적지는
+            # 각 주입 함수의 기본값에 맡긴다 — send_stock은 항상 개인방, _send_telegram은
+            # dest 미지정 시 기본값이 개인방(personal)이라 결과는 동일하다.
             await telegram_func(msg)
 
         logger.info(f"✅ 공시 수집 완료: 전체 {len(all_disclosures)}건, 중요 {len(important)}건")

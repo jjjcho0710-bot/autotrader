@@ -129,14 +129,17 @@ class _Acquire:
 
 
 class _FakeConn:
-    def __init__(self, trades, wl_count=0):
+    def __init__(self, trades, wl_count=0, prev_total_krw=None):
         self._trades = trades
         self._wl_count = wl_count
+        self._prev_total_krw = prev_total_krw
 
     async def fetch(self, query, *args):
         return self._trades
 
     async def fetchval(self, query, *args):
+        if "balance_snapshot" in query:
+            return self._prev_total_krw
         return self._wl_count
 
 
@@ -191,7 +194,8 @@ class TestDashboardAccountTotalPnl(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"total_pnl_rate": acct.get("total_pnl_rate"', body)
 
     async def test_closing_report_includes_cumulative_pnl_line(self):
-        """마감 결산 메시지에 '누적손익(원금대비)' 한 줄이 포함돼야 함"""
+        """마감 결산 채널용 마지막 블록에 '누적 수익' 한 줄이 포함돼야 함
+        ([AT] feat/telegram-routing — 본문은 금액 없이 마지막 블록만 금액 허용)"""
         import dashboard.main as dm
 
         trades = [
@@ -205,9 +209,11 @@ class TestDashboardAccountTotalPnl(unittest.IsolatedAsyncioTestCase):
         }
 
         sent = []
+        dests = []
 
         async def _fake_send_telegram(msg, *a, **kw):
             sent.append(msg)
+            dests.append(kw.get("dest"))
 
         with mock.patch.object(dm, "db_pool", _FakePool(_FakeConn(trades, wl_count=3)), create=True), \
              patch("dashboard.main.get_stock_positions", AsyncMock(return_value=mock_positions)), \
@@ -216,9 +222,13 @@ class TestDashboardAccountTotalPnl(unittest.IsolatedAsyncioTestCase):
             await dm._jarvis_closing_report()
 
         self.assertEqual(len(sent), 1)
-        self.assertIn("누적손익(원금대비)", sent[0])
+        self.assertEqual(dests, ["channel"])  # 마감 결산은 채널 전용
+        self.assertIn("누적 수익", sent[0])
         self.assertIn("+500,000원", sent[0])
         self.assertIn("+5.00%", sent[0])
+        self.assertIn("총자산 10,500,000원", sent[0])
+        # 이전 balance_snapshot 기록이 없으므로(prev_total_krw 미지정) 추정값 없이 집계 시작 전 표시
+        self.assertIn("오늘 수익: 집계 시작 전", sent[0])
 
 
 def _stub_stock_trader_deps():
@@ -232,6 +242,8 @@ from main import StockTrader  # noqa: E402
 
 
 def _run_one_report(trades, total_eval, send_stock, send_report):
+    """6시간 리포트는 채널 전용이다([AT] feat/telegram-routing) — send_report 호출 직후
+    루프를 멈춘다. send_stock은 더 이상 호출되지 않아야 한다."""
     trader = StockTrader.__new__(StockTrader)
     trader.running = True
     trader.positions = {}
@@ -248,14 +260,14 @@ def _run_one_report(trades, total_eval, send_stock, send_report):
     real_report = StockTrader._six_hour_report
 
     async def _drive():
-        async def _send_stock_and_stop(text):
-            await send_stock(text)
+        async def _send_report_and_stop(text):
+            await send_report(text)
             trader.running = False
 
         with mock.patch.object(stock_main.db, "pool", _FakePool(_FakeConn(trades)), create=True), \
              mock.patch.object(stock_main.asyncio, "sleep", _fake_sleep), \
-             mock.patch("common.telegram.send_stock", _send_stock_and_stop), \
-             mock.patch("common.telegram.send_report", send_report), \
+             mock.patch("common.telegram.send_stock", send_stock), \
+             mock.patch("common.telegram.send_report", _send_report_and_stop), \
              mock.patch.object(config, "INITIAL_SEED_KRW", 10_000_000):
             await real_report(trader)
 
@@ -263,36 +275,37 @@ def _run_one_report(trades, total_eval, send_stock, send_report):
 
 
 class TestSixHourReportTotalPnl(unittest.TestCase):
-    def test_report_includes_cumulative_pnl_when_total_eval_available(self):
-        stock_calls = []
+    def test_report_includes_cumulative_pnl_rate_when_total_eval_available(self):
+        """채널 메시지는 금액 없이 누적손익률(%)만 보여준다(계좌 규모를 드러내는 금액 제외)."""
+        report_calls = []
 
         async def _send_stock(text):
-            stock_calls.append(text)
+            pass
 
         async def _send_report(text):
-            pass
+            report_calls.append(text)
 
         _run_one_report([], total_eval=11_000_000, send_stock=_send_stock, send_report=_send_report)
 
-        self.assertEqual(len(stock_calls), 1)
-        self.assertIn("누적손익(원금대비)", stock_calls[0])
-        self.assertIn("+1,000,000원", stock_calls[0])
-        self.assertIn("+10.00%", stock_calls[0])
+        self.assertEqual(len(report_calls), 1)
+        self.assertIn("누적손익(원금대비)", report_calls[0])
+        self.assertIn("+10.00%", report_calls[0])
+        self.assertNotIn("1,000,000원", report_calls[0])
 
     def test_report_omits_cumulative_pnl_when_balance_unavailable(self):
         """total_eval이 0(조회 실패 등)이면 잘못된 -100% 표시 대신 줄을 생략해야 함"""
-        stock_calls = []
+        report_calls = []
 
         async def _send_stock(text):
-            stock_calls.append(text)
+            pass
 
         async def _send_report(text):
-            pass
+            report_calls.append(text)
 
         _run_one_report([], total_eval=0, send_stock=_send_stock, send_report=_send_report)
 
-        self.assertEqual(len(stock_calls), 1)
-        self.assertNotIn("누적손익(원금대비)", stock_calls[0])
+        self.assertEqual(len(report_calls), 1)
+        self.assertNotIn("누적손익(원금대비)", report_calls[0])
 
 
 class TestHomeHtmlMarkup(unittest.TestCase):

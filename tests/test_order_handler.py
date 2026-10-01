@@ -216,7 +216,9 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=send_telegram)
         self.assertIn("매수 체결", reply)
         self.assertEqual(len(logged), 1)
-        self.assertEqual(len(sent), 1)
+        # 매수 체결은 개인방(전체 메시지) + 채널(한 줄 요약) 둘 다 보낸다
+        # ([AT] feat/telegram-routing)
+        self.assertEqual(len(sent), 2)
 
     async def test_approve_order_failure_reports_error(self):
         redis = FakeRedis({

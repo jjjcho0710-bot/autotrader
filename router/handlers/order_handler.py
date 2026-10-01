@@ -231,8 +231,12 @@ async def handle_trade_command(
                     get_recent_ohlcv_fn=get_recent_ohlcv_fn, symbol=symbol, cur_price=price,
                 )
             except Exception as e:
+                # get_balance_fn 미주입(테스트 전용 분기)과 달리, 운영 경로에서 한도 계산이
+                # 예외로 실패하면 한도 없이 조용히 주문이 나가면 안 되므로 알려야 한다.
                 logger.warning(f"수동주문 사이징 한도 계산 실패 [{symbol}]: {e}")
+                await send_telegram_fn(f"⚠️ [{name}] 사이징 한도 계산 실패 — 한도 미적용 ({e})")
                 max_amount = None
+                sizing_note = "\n⚠️ 사이징 한도 계산 실패 — 한도 미적용"
             if max_amount is not None and price * qty > max_amount:
                 qty = int(max_amount // price)
                 if qty <= 0:

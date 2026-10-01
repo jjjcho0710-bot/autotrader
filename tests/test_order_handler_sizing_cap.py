@@ -107,6 +107,27 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         self.assertIn("5주 매수 완료", reply)
         self.assertNotIn("사이징", reply)
 
+    async def test_sizing_cap_exception_notifies_and_does_not_block_buy(self):
+        # 한도 계산이 예외로 실패해도(get_balance_fn 미주입과 달리 운영 경로의 실제 실패)
+        # 주문은 그대로 진행하되, 조용히 한도 없이 나가면 안 되므로 텔레그램 알림과
+        # 응답 표시를 남겨야 한다([AT] fix/chat-sizing-cap-wiring).
+        telegram_msgs = []
+
+        async def send_telegram(text, **kw):
+            telegram_msgs.append(text)
+
+        async def get_balance():
+            raise RuntimeError("DB 연결 끊김")
+
+        kwargs = self._kwargs(get_balance_fn=get_balance)
+        kwargs["send_telegram_fn"] = send_telegram
+        with patch("aiohttp.ClientSession", return_value=_price_session(50_000)):
+            reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수", **kwargs)
+
+        self.assertIn("5주 매수 완료", reply)
+        self.assertIn("사이징 한도 계산 실패 — 한도 미적용", reply)
+        self.assertTrue(any("사이징 한도 계산 실패" in m for m in telegram_msgs))
+
     async def test_sell_path_never_calls_sizing(self):
         # 매도는 보유수량만큼 파는 것이라 사이징과 무관해야 한다(요구사항: 매도 경로는 건드리지 않음).
         async def get_balance():

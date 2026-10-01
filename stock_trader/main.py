@@ -1663,17 +1663,20 @@ class StockTrader:
             )
         return bool(has_intraday)
 
-    async def _try_record_balance_snapshot(self) -> bool:
-        """오늘 치 일별 총자산 기록을 1회 시도한다.
-        get_balance()가 stale이거나 total=0(조회 실패)이면 기록하지 않고 False를 반환해 다음 시도로 넘긴다."""
+    async def _try_record_balance_snapshot(self) -> tuple:
+        """오늘 치 일별 총자산 기록을 1회 시도한다. 반환: (기록 성공 여부, 실패 시 사유).
+        get_balance()가 stale이거나 total=0(조회 실패)이면 기록하지 않고 (False, 사유)를
+        반환해 다음 시도로 넘긴다(기존 규칙 유지). get_balance()의 total은 180초 이내
+        신선한 캐시가 없으면 이 호출 안에서 직접 재조회된다([AT] fix/balance-total-source)."""
         acct = await self.trader.get_balance()
         total = acct.get("total", 0) or 0
         cash = acct.get("cash", 0) or 0
         if acct.get("stale") or total <= 0:
-            return False
+            reason = acct.get("error") or ("total=0" if total <= 0 else "stale")
+            return False, reason
         eval_krw = total - cash
         await db.insert_balance_snapshot("stock_trader", total, cash, eval_krw)
-        return True
+        return True, ""
 
     async def _daily_balance_snapshot(self):
         """평일 15:35~16:30 KST 사이, 매매 사이클(_run_cycle)과 독립적으로 일별 총자산을 1회 기록한다.
@@ -1701,8 +1704,9 @@ class StockTrader:
                     await asyncio.sleep((window_start - now).total_seconds())
                     continue
                 if now > window_end:
+                    # 창 안에서 이미 5분마다 실패 사유를 남겼으므로(아래) 여기선 상태만 기록한다
+                    # ([AT] fix/balance-total-source).
                     if getattr(self, "_balance_snapshot_handled_for", None) != now.date():
-                        logger.warning("일별 총자산 기록 실패: 창(15:35~16:30) 안에 유효한 잔고를 얻지 못함")
                         self._balance_snapshot_handled_for = now.date()
                     await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
                     continue
@@ -1721,15 +1725,22 @@ class StockTrader:
                     continue
 
                 try:
-                    recorded = await self._try_record_balance_snapshot()
+                    recorded, fail_reason = await self._try_record_balance_snapshot()
                 except Exception as e:
                     logger.warning(f"일별 총자산 기록 시도 실패(무시): {e}")
-                    recorded = False
+                    recorded, fail_reason = False, str(e)
 
                 if recorded:
                     self._balance_snapshot_handled_for = now.date()
                     await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
                 else:
+                    # 원인을 알 수 있도록 5분마다 한 번만 WARNING을 남긴다(스팸 방지,
+                    # [AT] fix/balance-total-source — 예전엔 창이 끝날 때만 사유 없이 남겼음)
+                    last_warn_ts = getattr(self, "_balance_snapshot_last_warn_ts", 0.0)
+                    now_ts = _time.time()
+                    if now_ts - last_warn_ts >= 300:
+                        logger.warning(f"일별 총자산 조회 실패({fail_reason or '사유 미상'}) — 재시도 중")
+                        self._balance_snapshot_last_warn_ts = now_ts
                     await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
             except Exception as e:
                 logger.warning(f"일별 총자산 기록 코루틴 예외(무시): {e}")

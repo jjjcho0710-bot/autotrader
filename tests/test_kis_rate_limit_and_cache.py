@@ -10,6 +10,7 @@ tests/test_kis_rate_limit_and_cache.py - KIS 잔고/포지션 동시 호출 직�
 import asyncio
 import logging
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -125,7 +126,12 @@ class TestKISTraderBalanceRateLimitAndCache(unittest.IsolatedAsyncioTestCase):
         self.call_count = 0
 
     async def test_concurrent_10_calls_triggers_single_kis_request(self):
-        """동시 10건 잔고 조회 호출 시 실제 KIS HTTP 요청은 1회만 발생하고 결과는 모두 동일해야 함"""
+        """동시 10건 잔고 조회 호출 시 실제 KIS HTTP 요청은 1회만 발생하고 결과는 모두 동일해야 함.
+        총평가금액(tot_evlu_amt)은 inquire-psbl-order 응답에 없는 필드라([AT]
+        fix/balance-total-source) get_positions()가 이미 채워 둔 신선한 캐시를 쓴다고 가정한다."""
+        self.trader._last_total = 3_500_000
+        self.trader._last_total_ts = time.time()
+
         def fake_get(url, *args, **kwargs):
             self.call_count += 1
             return FakeResponse({
@@ -134,7 +140,6 @@ class TestKISTraderBalanceRateLimitAndCache(unittest.IsolatedAsyncioTestCase):
                 "msg1": "정상조회",
                 "output": {
                     "ord_psbl_cash": "1500000",
-                    "tot_evlu_amt": "3500000",
                 }
             }, delay=0.05)
 
@@ -153,6 +158,9 @@ class TestKISTraderBalanceRateLimitAndCache(unittest.IsolatedAsyncioTestCase):
 
     async def test_cache_invalidation_on_order_fill(self):
         """주문 체결 성공 시 잔고 캐시가 무효화되어 다음 get_balance 시 KIS를 재호출해야 함"""
+        self.trader._last_total = 5_000_000
+        self.trader._last_total_ts = time.time()
+
         def fake_get(url, *args, **kwargs):
             self.call_count += 1
             return FakeResponse({
@@ -161,7 +169,6 @@ class TestKISTraderBalanceRateLimitAndCache(unittest.IsolatedAsyncioTestCase):
                 "msg1": "정상조회",
                 "output": {
                     "ord_psbl_cash": "2000000",
-                    "tot_evlu_amt": "5000000",
                 }
             })
 

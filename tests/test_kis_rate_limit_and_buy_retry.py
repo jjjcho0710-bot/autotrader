@@ -21,6 +21,7 @@ tests/test_kis_rate_limit_and_buy_retry.py - [AT] fix/kis-rate-limit-and-buy-ret
    (fix/kis-rate-limit-http500 — status==200 조건에 걸려 재시도가 발동하지 않던 버그 수정).
 """
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -181,10 +182,15 @@ class TestGetBalanceRateLimitRetry(unittest.IsolatedAsyncioTestCase):
     @patch("asyncio.sleep", new_callable=AsyncMock)
     async def test_get_balance_retries_once_on_rate_limit_then_succeeds(self, mock_sleep):
         trader = KISTrader()
+        # 총평가금액(tot_evlu_amt)은 inquire-psbl-order 응답에 없는 필드다(실제 KIS 키 목록
+        # — [AT] fix/balance-total-source). get_positions()가 이미 채워 둔 신선한 캐시가
+        # 있다고 가정해 get_balance()가 추가 KIS 호출 없이 재사용하도록 한다.
+        trader._last_total = 2_000_000
+        trader._last_total_ts = time.time()
         limited_resp = {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"}
         success_resp = {
             "rt_cd": "0",
-            "output": {"ord_psbl_cash": "1000000", "tot_evlu_amt": "2000000"},
+            "output": {"ord_psbl_cash": "1000000"},
         }
         session = _QueueSession([limited_resp, success_resp])
         trader._new_session = lambda: session
@@ -192,6 +198,7 @@ class TestGetBalanceRateLimitRetry(unittest.IsolatedAsyncioTestCase):
         res = await trader.get_balance()
 
         self.assertEqual(res["cash"], 1000000)
+        self.assertEqual(res["total"], 2_000_000)
         self.assertNotIn("stale", res)
         self.assertEqual(session.call_count, 2)
 
@@ -201,10 +208,12 @@ class TestGetBalanceRateLimitRetry(unittest.IsolatedAsyncioTestCase):
         9/30 11:18:20 로그). status==200 조건에 걸려 재시도가 발동하지 않던 버그
         회귀 테스트."""
         trader = KISTrader()
+        trader._last_total = 2_000_000
+        trader._last_total_ts = time.time()
         limited_resp = ({"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"}, 500)
         success_resp = ({
             "rt_cd": "0",
-            "output": {"ord_psbl_cash": "1000000", "tot_evlu_amt": "2000000"},
+            "output": {"ord_psbl_cash": "1000000"},
         }, 200)
         session = _QueueSession([limited_resp, success_resp])
         trader._new_session = lambda: session

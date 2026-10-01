@@ -8,7 +8,7 @@ stock_trader/kis_trader.py의 get_market_warning() (투자경고/VI 상태 조�
 4. HTTP status != 200 이면 None을 반환한다.
 5. 응답 output이 비어있으면 None을 반환한다.
 6. 네트워크 예외 발생 시 None을 반환한다.
-7. 연속 호출 시 최소 호출 간격(MARKET_WARNING_MIN_INTERVAL_SEC)만큼 대기한다(속도제한 방지).
+7. 연속 호출 시 KISTrader 공용 최소 호출 간격(KIS_MIN_CALL_INTERVAL_SEC)만큼 대기한다(속도제한 방지).
 """
 import sys
 import types
@@ -163,20 +163,22 @@ class TestGetMarketWarning(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
 
     async def test_enforces_min_interval_between_calls(self):
-        """연속 호출 시 최소 호출 간격만큼 sleep으로 대기한다(속도제한 회피)"""
+        """연속 호출 시 최소 호출 간격만큼 sleep으로 대기한다(속도제한 회피).
+        get_market_warning 전용이던 간격 제어가 KISTrader 공용(_throttle_kis_call,
+        KIS_MIN_CALL_INTERVAL_SEC)으로 일반화되었다."""
         resp = {"rt_cd": "0", "output": {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}}
         self.trader._new_session = lambda: DummySession(resp)
-        self.trader._last_market_warning_call_ts = 0.0
 
         with patch("time.time", return_value=100.2), \
              patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            # 직전 호출 시각을 100.0으로 세팅한 뒤 100.2초에 재호출 → 0.3초 대기 필요
-            self.trader._last_market_warning_call_ts = 100.0
+            # 직전 호출 시각을 100.0으로 세팅한 뒤 100.2초에 재호출
+            # → KIS_MIN_CALL_INTERVAL_SEC(0.55) - 0.2 = 0.35초 대기 필요
+            self.trader._last_kis_call_ts = 100.0
             await self.trader.get_market_warning("005930")
 
             mock_sleep.assert_awaited_once()
             waited = mock_sleep.await_args.args[0]
-            self.assertAlmostEqual(waited, 0.3, places=3)
+            self.assertAlmostEqual(waited, 0.35, places=3)
 
 
 if __name__ == "__main__":

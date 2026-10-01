@@ -85,12 +85,14 @@ class FakeRedis:
     def __init__(self, store=None):
         self.store = store or {}
         self.deleted = []
+        self.ttls = {}
 
     async def get(self, key):
         return self.store.get(key)
 
     async def setex(self, key, ttl, value):
         self.store[key] = value
+        self.ttls[key] = ttl
 
     async def delete(self, key):
         self.deleted.append(key)
@@ -204,7 +206,10 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(len(journaled), 1)
         self.assertEqual(len(memory_saved), 1)
-        self.assertEqual(redis.deleted, ["cache:positions:stock", "cache:account:stock"])
+        self.assertEqual(
+            redis.deleted,
+            ["cache:positions:stock", "cache:account:stock", "buy_fail_streak:005930"],
+        )
 
     async def test_no_balance_failure_sets_suppress_key_once(self):
         pool = FakePool()
@@ -279,6 +284,151 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result2["success"])
         self.assertEqual(len(sent), 1)
+
+    async def test_buy_rate_limit_failure_uses_short_suppress_not_30min(self):
+        """[AT] fix/kis-rate-limit-and-buy-retry: 초당 거래건수 등 속도제한 실패는 30분이
+        아니라 60~90초만 억제해 다음 사이클에 바로 재시도되게 한다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": False, "error": "초당 거래건수를 초과하였습니다"}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(redis.ttls["buy_fail_suppress:005930"], 90)
+        # _format_suppress_sec()는 60초 이상이면 분 단위로 표시한다(기존 손절 억제 표기와 동일 규칙)
+        self.assertIn("1분간 재시도 억제", sent[0])
+
+    async def test_buy_non_transient_failure_keeps_30min_suppress(self):
+        """[AT] fix/kis-rate-limit-and-buy-retry: 잔고 부족 등 비일시적 사유는 기존대로
+        30분(1800초) 억제를 유지한다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": False, "error": "매수가능 금액 부족"}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(redis.ttls["buy_fail_suppress:005930"], 1800)
+        self.assertIn("30분간 재시도 억제", sent[0])
+
+    async def test_buy_failure_streak_escalates_suppress_tiers(self):
+        """[AT] fix/kis-rate-limit-and-buy-retry: 같은 사유로 3회 이상 연속 실패하면
+        억제 시간이 5분→15분→30분으로 점진 확대된다(매 억제 시간이 지나 execute()가
+        다시 호출되는 상황을 가정 — 억제 키만 제거하고 스트릭 키는 유지)."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            # alert_throttle._MEMORY_CAUSE_CACHE는 모듈 전역이라 다른 테스트와 동일한
+            # 사유 문구를 쓰면 1시간 스로틀이 테스트 간에 누수된다 — 이 테스트 전용 문구 사용.
+            return {"success": False, "error": "지정가 주문 거부(스트릭테스트)"}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        expected_tiers = [1800, 1800, 300, 900, 1800]  # 1~2회차는 기존 30분, 3회차부터 확대
+        for i, expected in enumerate(expected_tiers, start=1):
+            result = await execution_guard.execute(
+                make_signal(), make_decision(), pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, save_trade_memory_fn=None,
+                code_to_name_fn=code_to_name,
+            )
+            self.assertFalse(result["success"])
+            self.assertEqual(
+                redis.ttls["buy_fail_suppress:005930"], expected, f"{i}회차 억제시간 불일치"
+            )
+            # 억제 시간이 지나 다음 재시도가 가능해졌다고 가정하고 억제 키만 제거
+            # (스트릭 키는 1시간 TTL로 유지되어 연속 실패 횟수가 이어짐)
+            redis.store.pop("buy_fail_suppress:005930", None)
+
+        # 같은 사유(cause) 반복은 1시간 스로틀로 묶이므로 최초 1건만 발송된다 —
+        # 텔레그램 발송 억제 여부와 무관하게 suppress_sec 티어 확대 자체가 이 테스트의 핵심.
+        self.assertEqual(len(sent), 1)
+        self.assertIn("30분간 재시도 억제, 연속 1회", sent[0])
+
+    async def test_buy_success_resets_fail_streak(self):
+        """[AT] fix/kis-rate-limit-and-buy-retry: 매수 성공 시 buy_fail_streak가 초기화되어
+        다음 실패는 다시 1회차부터 집계된다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+        attempts = {"n": 0}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            attempts["n"] += 1
+            if attempts["n"] <= 2:
+                return {"success": False, "error": "지정가 주문 거부"}
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        for _ in range(2):
+            await execution_guard.execute(
+                make_signal(), make_decision(), pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, save_trade_memory_fn=None,
+                code_to_name_fn=code_to_name,
+            )
+            redis.store.pop("buy_fail_suppress:005930", None)
+
+        self.assertIn("buy_fail_streak:005930", redis.store)
+
+        result = await execution_guard.execute(
+            make_signal(), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+        self.assertTrue(result["executed"])
+        self.assertNotIn("buy_fail_streak:005930", redis.store)
 
     async def test_buy_fail_suppress_blocks_precheck(self):
         redis = FakeRedis({"buy_fail_suppress:005930": "1"})

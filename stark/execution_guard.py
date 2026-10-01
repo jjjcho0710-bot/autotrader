@@ -143,6 +143,58 @@ async def _check_averaging_down_guard(pool: Any, bot: str, symbol: str, price: f
     return None
 
 
+# 매수 실패 사유 중 몇 초~몇 분이면 풀리는 일시적 오류로 보고 짧게 재시도할 키워드
+# (stock_trader/main.py._STOP_LOSS_TRANSIENT_MARKERS와 동일 원칙을 매수 쪽에도 적용)
+BUY_FAIL_TRANSIENT_MARKERS = ("초당", "거래건수", "체결 0주", "체결수량 0", "미체결", "rate", "Rate")
+
+
+def _format_suppress_sec(sec: int) -> str:
+    if sec < 60:
+        return f"{sec}초간"
+    return f"{sec // 60}분간"
+
+
+async def _compute_buy_fail_suppress_sec(symbol: str, err_msg: str, redis: Any) -> tuple:
+    """매수 실패 사유별 재시도 억제 시간 계산.
+    stock_trader/main.py._compute_stop_loss_suppress_sec()과 동일한 원칙:
+    - "초당 거래건수" 등 속도제한/일시 오류로 보이는 사유: 60~90초 뒤 재시도
+    - 같은 사유로 3회 이상 연속 실패: 5분 → 15분 → 30분으로 점진 확대(그 이상은 30분 고정)
+    - 그 외 사유(잔고 부족 등): 기존과 동일하게 30분 억제
+    반환: (suppress_sec, 연속 실패 횟수)"""
+    from common.alert_throttle import normalize_cause
+    norm_reason = normalize_cause(err_msg)
+    streak_key = f"buy_fail_streak:{symbol}"
+    streak = None
+    try:
+        raw = await redis.get(streak_key)
+        if raw:
+            streak = json.loads(raw)
+    except Exception:
+        pass
+
+    fail_count = 1
+    if streak and streak.get("reason") == norm_reason:
+        fail_count = int(streak.get("count", 0)) + 1
+
+    try:
+        await redis.setex(
+            streak_key, 3600,
+            json.dumps({"reason": norm_reason, "count": fail_count}),
+        )
+    except Exception:
+        pass
+
+    if fail_count >= 3:
+        tier = min(fail_count - 2, 3)
+        suppress_sec = {1: 300, 2: 900, 3: 1800}[tier]
+    elif any(marker in err_msg for marker in BUY_FAIL_TRANSIENT_MARKERS):
+        suppress_sec = 90
+    else:
+        suppress_sec = 1800
+
+    return suppress_sec, fail_count
+
+
 async def precheck(symbol: str, action: str, bot: str, *, pool: Any, redis: Any) -> Optional[Dict[str, str]]:
     """AI 판단 호출 전 룰 기반 사전 차단.
 
@@ -453,6 +505,8 @@ async def execute(
             try:
                 for k in ("cache:positions:stock", "cache:account:stock"):
                     await redis.delete(k)
+                if is_buy:
+                    await redis.delete(f"buy_fail_streak:{symbol}")
             except Exception:
                 pass
 
@@ -510,7 +564,9 @@ async def execute(
                 await send_telegram_fn(
                     f"❌ {summary_disp} {action_kr} 실패 (30분간 재시도 억제)\n{err}")
     else:
-        # 매수 실패: 30분 억제 키 설정 및 원인 기준 스로틀(1시간 1건 묶음, N종목 요약)
+        # 매수 실패: 사유별 억제 시간 차등 적용(속도제한은 짧게, 연속 실패는 점진 확대) +
+        # 원인 기준 스로틀(1시간 1건 묶음, N종목 요약)
+        suppress_sec, fail_count = await _compute_buy_fail_suppress_sec(symbol, err, redis)
         suppress_key = f"buy_fail_suppress:{symbol}"
         try:
             already = await redis.get(suppress_key)
@@ -518,13 +574,14 @@ async def execute(
             already = None
         if not already:
             try:
-                await redis.setex(suppress_key, 1800, "1")
+                await redis.setex(suppress_key, suppress_sec, "1")
             except Exception:
                 pass
 
         if should_send:
             await send_telegram_fn(
-                f"❌ {summary_disp} {action_kr} 실패 (30분간 재시도 억제)\n{err}")
+                f"❌ {summary_disp} {action_kr} 실패 "
+                f"({_format_suppress_sec(suppress_sec)} 재시도 억제, 연속 {fail_count}회)\n{err}")
 
     await log_journal_fn(bot, symbol, name, action, strategy, reason,
                           "EXECUTE_SMALL" if is_small else "EXECUTE",

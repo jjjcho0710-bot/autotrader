@@ -891,6 +891,149 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(d[2], "SKIP")
             self.assertEqual(d[4], "보유 종목수 확인 불가")
 
+    async def test_sell_success_computes_and_records_pnl(self):
+        """매도 체결 성공 시 get_positions_fn()의 avg_price로 pnl을 계산해 trade_history에
+        저장하고 텔레그램 메시지·반환값에 손익을 포함해야 한다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        signal = make_signal(action="sell", price=75000, qty=10)
+        result = await execution_guard.execute(
+            signal, make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+        )
+
+        self.assertTrue(result["executed"])
+        self.assertEqual(result["pnl"], 50000)
+        self.assertAlmostEqual(result["pnl_rate"], (75000 - 70000) / 70000 * 100, places=5)
+
+        # trade_history INSERT 마지막 인자가 pnl 컬럼
+        self.assertEqual(len(pool._conn.inserted), 1)
+        self.assertEqual(pool._conn.inserted[0][-1], 50000)
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("손익 +50,000원 (+7.1%)", sent[0])
+
+    async def test_buy_insert_leaves_pnl_column_none(self):
+        """매수는 손익 개념이 없으므로 trade_history.pnl 컬럼을 None으로 저장하고
+        반환값/메시지에 손익을 표시하지 않는다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+
+        self.assertTrue(result["executed"])
+        self.assertNotIn("pnl", result)
+        self.assertEqual(pool._conn.inserted[0][-1], None)
+        self.assertNotIn("손익", sent[0])
+
+    async def test_sell_pnl_skipped_when_positions_lookup_fails(self):
+        """avg_price 조회가 예외를 던져도 매도 체결 자체는 정상 진행되고 pnl=None으로 저장된다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def get_positions():
+            raise RuntimeError("KIS network timeout")
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(action="sell", price=75000, qty=10), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["executed"])
+        self.assertNotIn("pnl", result)
+        self.assertEqual(pool._conn.inserted[0][-1], None)
+        self.assertNotIn("손익", sent[0])
+
+    async def test_sell_pnl_skipped_when_symbol_not_held(self):
+        """get_positions_fn()에 해당 종목이 없으면(미보유) pnl=None으로 두고 매도는 정상 진행된다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(action="sell", price=75000, qty=10), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+            get_positions_fn=get_positions,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["executed"])
+        self.assertNotIn("pnl", result)
+        self.assertEqual(pool._conn.inserted[0][-1], None)
+        self.assertNotIn("손익", sent[0])
+
 
 if __name__ == "__main__":
     unittest.main()

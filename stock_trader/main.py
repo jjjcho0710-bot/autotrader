@@ -538,23 +538,42 @@ class StockTrader:
                                             f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
                                             f"시스템이 즉시 자동 손절 매도 처리 중입니다."
                                         )
+                                    from common.alert_throttle import should_send_symbol_alert
+                                    should_send = await should_send_symbol_alert(
+                                        symbol, "price_monitor", new_state,
+                                        min_interval_sec=3600, redis_client=cache.client,
+                                        now_ts=now_ts
+                                    )
+                                    if should_send:
+                                        from common.telegram import send_stock
+                                        await send_stock(msg)
                                 else:
                                     new_state = "DROP"
-                                    msg = (
-                                        f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
-                                        f"-7% 도달 시 즉시 자동 손절 집행 예정(현재 손절선 근접 감시 중)\n"
-                                        f"즉시 매도를 원하시면 '{nm} 전량 매도' 지시해주세요."
+                                    from common.alert_throttle import (
+                                        should_send_symbol_alert,
+                                        should_send_drop_alert,
                                     )
-
-                                from common.alert_throttle import should_send_symbol_alert
-                                should_send = await should_send_symbol_alert(
-                                    symbol, "price_monitor", new_state,
-                                    min_interval_sec=3600, redis_client=cache.client,
-                                    now_ts=now_ts
-                                )
-                                if should_send:
-                                    from common.telegram import send_stock
-                                    await send_stock(msg)
+                                    # 일반 상태(STOP_LOSS 전이 감지용) 기록은 그대로 유지
+                                    await should_send_symbol_alert(
+                                        symbol, "price_monitor", new_state,
+                                        min_interval_sec=3600, redis_client=cache.client,
+                                        now_ts=now_ts
+                                    )
+                                    should_send, prev_pnl = await should_send_drop_alert(
+                                        symbol, pnl_rate, redis_client=cache.client
+                                    )
+                                    if should_send:
+                                        extra = ""
+                                        if prev_pnl is not None:
+                                            extra = f"\n(직전 알림 대비 {prev_pnl - pnl_rate:.1f}%p 추가 하락)"
+                                        msg = (
+                                            f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
+                                            f"-7% 도달 시 즉시 자동 손절 집행 예정(현재 손절선 근접 감시 중)\n"
+                                            f"즉시 매도를 원하시면 '{nm} 전량 매도' 지시해주세요."
+                                            f"{extra}"
+                                        )
+                                        from common.telegram import send_stock
+                                        await send_stock(msg)
                             except Exception as se:
                                 logger.warning(f"가격 모니터 알림 발송 실패 [{symbol}]: {se}")
                             continue

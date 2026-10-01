@@ -525,6 +525,12 @@ async def _get_price_ceiling() -> int:
         return 0
 
 
+SCAN_MAX_CHANGE_PCT = 15.0  # 당일 등락률이 이 값(%) 초과면 감시 편입 제외 — 상한가 근접 급등 추격 방지
+
+# _kis_scan_candidates가 최근 호출에서 당일 등락률 초과로 제외한 종목 수(_intraday_scan 텔레그램 요약용)
+_last_kis_scan_surge_excluded = 0
+
+
 async def _kis_scan_candidates() -> list:
     """KRX(pykrx) 차단 시 폴백: KIS 거래량순위 → KIS 일봉으로 스코어링"""
     import asyncio as _asyncio
@@ -584,6 +590,7 @@ async def _kis_scan_candidates() -> list:
         end = datetime.now(KST).strftime("%Y%m%d")
         start = (datetime.now(KST) - _td(days=60)).strftime("%Y%m%d")
         results = []
+        excluded_surge = []
         for symbol, name in universe:
             try:
                 # 특수증권 제외: 6자리 숫자 보통주(끝 0)만, 스팩 제외
@@ -617,6 +624,11 @@ async def _kis_scan_candidates() -> list:
                     if closes[k] != closes[-1]:
                         change = (closes[-1] / closes[k] - 1) * 100
                         break
+                # 당일 급등주 제외 (상한가 근접 추격 방지)
+                if change > SCAN_MAX_CHANGE_PCT:
+                    logger.info(f"🔍 급등 제외: {name or symbol}({symbol}) {change:+.1f}%")
+                    excluded_surge.append((symbol, name, change))
+                    continue
                 ma5 = sum(closes[-5:]) / 5; ma20 = sum(closes[-20:]) / 20
                 ma5p = sum(closes[-6:-1]) / 5; ma20p = sum(closes[-21:-1]) / 20
                 golden_cross = ma5p < ma20p and ma5 > ma20
@@ -644,7 +656,9 @@ async def _kis_scan_candidates() -> list:
                 pass
             await _asyncio.sleep(0.5)  # 모의투자 rate limit (초당 2건)
 
-    logger.info(f"🔍 KIS 폴백 스캔 완료: {len(results)}종목 통과")
+    global _last_kis_scan_surge_excluded
+    _last_kis_scan_surge_excluded = len(excluded_surge)
+    logger.info(f"🔍 KIS 폴백 스캔 완료: {len(results)}종목 통과, 급등 제외 {len(excluded_surge)}종목")
     # 종목명 캐시 보강 (pykrx 실패 시에도 이름 표시 가능)
     try:
         for r_ in results:
@@ -1635,7 +1649,18 @@ async def _intraday_scan():
         if not candidates:
             logger.info("🔍 장중 스캔: 신규 후보 없음")
             return
-        added = []
+
+        # 이미 보유 중인 종목은 "신규 감시" 표시에서만 제외 (watchlist 등록은 유지 — 손절 감시 필요)
+        held_symbols = set()
+        try:
+            pos_res = await get_stock_positions()
+            if pos_res.get("success"):
+                held_symbols = {p["symbol"] for p in pos_res.get("data", []) if p.get("symbol")}
+        except Exception as e:
+            logger.warning(f"보유 종목 조회 실패(무시, 제외 없이 표시): {e}")
+
+        added = []  # 텔레그램 표시용 (보유 종목 제외)
+        registered = 0  # watchlist 신규 등록 수 (보유 종목 포함)
         async with db_pool.acquire() as conn:
             existing = {r["symbol"] for r in await conn.fetch(
                 "SELECT symbol FROM watchlist WHERE is_active=TRUE")}
@@ -1650,15 +1675,21 @@ async def _intraday_scan():
                     ON CONFLICT (symbol) DO UPDATE
                     SET is_active=TRUE, added_by='jarvis_scanner', reason=$3, updated_at=NOW()
                 """, c["symbol"], c["name"], reason)
-                added.append(f"· {c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%")
+                registered += 1
+                if c["symbol"] not in held_symbols:
+                    added.append(f"· {c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%")
         if added:
-            await _send_telegram(
-                f"🔍 장중 보충 스캔 [{now_kst.strftime('%H:%M')}]\n"
-                f"신규 감시 {len(added)}종목:\n" + "\n".join(added[:8]),
-                broadcast=True)
-            logger.info("🔍 장중 스캔: %d종목 추가", len(added))
+            lines = added[:8]
+            if len(added) > 8:
+                lines.append(f"외 {len(added) - 8}종목 더 있음")
+            msg = (f"🔍 장중 보충 스캔 [{now_kst.strftime('%H:%M')}]\n"
+                   f"신규 감시 {len(added)}종목:\n" + "\n".join(lines))
+            if _last_kis_scan_surge_excluded:
+                msg += f"\n급등 제외 {_last_kis_scan_surge_excluded}종목"
+            await _send_telegram(msg, broadcast=True)
+            logger.info("🔍 장중 스캔: %d종목 추가(표시), %d종목 등록", len(added), registered)
         else:
-            logger.info("🔍 장중 스캔: 전부 기존 감시 중")
+            logger.info("🔍 장중 스캔: 전부 기존 감시 중이거나 보유 종목만 등록(%d종목)", registered)
     except Exception as e:
         logger.error(f"장중 스캔 오류: {e}")
 

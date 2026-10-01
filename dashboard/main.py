@@ -4144,17 +4144,6 @@ async def _get_recent_daily_ohlcv_for_sizing(symbol: str, limit: int = 100):
         """, symbol, limit)
 
 
-async def _handle_trade_command(user_msg: str):
-    """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None
-    (router/handlers/order_handler.py 이관)"""
-    return await order_handler.handle_trade_command(
-        user_msg, pool=db_pool, redis=redis_client, universe=universe,
-        get_kis_token_fn=get_kis_token, config=config, kis_order_fn=_kis_stock_order,
-        get_stock_positions_fn=get_stock_positions, send_telegram_fn=_send_telegram,
-        log_journal_fn=_log_journal, get_balance_fn=_get_balance_for_sizing,
-        get_recent_ohlcv_fn=_get_recent_daily_ohlcv_for_sizing)
-
-
 async def _stamp_plan_change(note: str):
     """지시 변경 시 오늘의 작전 상단에 변경 메모 삽입 → 이후 판단에서 옛 규칙 무력화
     (router/handlers/directive_handler.py 이관)"""
@@ -4280,6 +4269,8 @@ async def _jarvis_chat_impl(body: dict):
         web_research=_web_research_stock,
         jarvis_chat=jarvis_chat,
         channel=channel,
+        get_balance_fn=_get_balance_for_sizing,
+        get_recent_ohlcv_fn=_get_recent_daily_ohlcv_for_sizing,
     )
 
     try:

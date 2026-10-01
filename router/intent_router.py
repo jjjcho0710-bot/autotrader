@@ -51,6 +51,11 @@ class RouterContext:
     web_research: Callable[..., Any]
     jarvis_chat: Callable[..., Any]
     channel: str = "web"
+    # 채팅 직접 매수 사이징 한도(order_handler._compute_buy_sizing_cap) 계산용 — 운영 ctx는
+    # 반드시 주입해야 한다. None이면 사이징 한도를 건너뛰므로(fail-open), 테스트 등 사이징
+    # 의존성이 없는 호출에서만 비워둔다.
+    get_balance_fn: Optional[Callable[..., Any]] = None
+    get_recent_ohlcv_fn: Optional[Callable[..., Any]] = None
 
 
 async def route_early(user_msg: str, ctx: RouterContext) -> Optional[str]:
@@ -121,7 +126,8 @@ async def route_late(user_msg: str, ctx: RouterContext) -> Optional[str]:
         user_msg, pool=ctx.pool, redis=ctx.redis, universe=ctx.universe,
         get_kis_token_fn=ctx.get_kis_token, config=ctx.config, kis_order_fn=ctx.kis_order,
         get_stock_positions_fn=ctx.get_stock_positions, send_telegram_fn=ctx.send_telegram,
-        log_journal_fn=ctx.log_journal)
+        log_journal_fn=ctx.log_journal, get_balance_fn=ctx.get_balance_fn,
+        get_recent_ohlcv_fn=ctx.get_recent_ohlcv_fn)
     if reply is not None:
         return reply
 

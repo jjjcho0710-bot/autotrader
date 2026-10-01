@@ -106,6 +106,69 @@ class _FakeRedis:
     async def setex(self, key, ttl, value):
         self.store[key] = value
 
+    async def delete(self, key):
+        self.store.pop(key, None)
+
+
+class TestRouteLateSizingWiring(unittest.IsolatedAsyncioTestCase):
+    """route_late(라인 120)가 ctx.get_balance_fn/get_recent_ohlcv_fn을 실제로
+    order_handler.handle_trade_command에 전달하는지 검증한다([AT] fix/chat-sizing-cap-wiring).
+    기존 사이징 한도 테스트(test_order_handler_sizing_cap.py)는 handle_trade_command를
+    직접 호출해 인자를 넘겼기 때문에, RouterContext에 필드가 빠져 있었던 배선 문제를
+    잡지 못했다 — 이 테스트는 route_late를 통해서만 호출한다."""
+
+    async def test_buy_command_through_route_late_applies_sizing_cap(self):
+        from unittest.mock import patch
+
+        from tests.test_order_handler import FakePriceSession
+
+        universe = Universe(None)
+        universe.replace_cache({"삼성바이오로직스": "207940"})
+
+        class FakeSizingConfig:
+            RISK_PER_TRADE_PCT = 0.75
+            INITIAL_SEED_KRW = 10_000_000
+            kis_base_url = "https://example.invalid"
+            kis_app_key = "key"
+            kis_app_secret = "secret"
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def kis_order(symbol, price_, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        balance_calls = []
+
+        async def get_balance():
+            balance_calls.append(1)
+            return {"total": 10_000_000}
+
+        ctx = make_ctx(
+            universe=universe, pool=_FakePool(), redis=_FakeRedis(), config=FakeSizingConfig(),
+            get_kis_token=get_kis_token, kis_order=kis_order, send_telegram=send_telegram,
+            log_journal=log_journal, get_balance_fn=get_balance, get_recent_ohlcv_fn=None,
+        )
+
+        def _price_session(price: int):
+            return FakePriceSession({"output": {"stck_prpr": str(price), "hts_kor_isnm": "삼성바이오로직스"}})
+
+        # equity 1000만 × 위험 0.75% ÷ 손절 7%(기본값) ≈ 107.1만원 기본금액.
+        # ATR 조회 없음 → 보수적 폴백 배율 0.75배 → 한도 ≈80.36만원.
+        # 40만원 × 3주 = 120만원이 한도를 넘으므로 floor(80.36만/40만) = 2주로 줄어야 한다.
+        with patch("aiohttp.ClientSession", return_value=_price_session(400_000)):
+            reply = await intent_router.route_late("삼성바이오로직스 3주 매수", ctx)
+
+        self.assertIn("요청 3주 → 사이징 한도로 2주로 조정", reply)
+        self.assertIn("2주 매수 완료", reply)
+        self.assertTrue(balance_calls, "ctx.get_balance_fn이 route_late를 통해 실제로 호출되지 않았다")
+
 
 if __name__ == "__main__":
     unittest.main()

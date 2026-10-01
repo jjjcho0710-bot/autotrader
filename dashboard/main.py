@@ -1806,11 +1806,13 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
 {prev or '(없음)'}
 
 허용되는 command 형식 (정확히 이 형태만):
-- "{{종목명}} 전량 매도"  /  "{{종목명}} {{N}}주 매도"  /  "{{종목명}} {{N}}주 매수"
+- "{{종목명}} 전량 매도"  /  "{{종목명}} {{N}}주 매도"
 - "손절 {{-N}}%로 변경해줘"  /  "익절 {{N}}%로 변경해줘"
 - "지시: {{한 줄 지시}}"
 보유 종목명은 다음 중 하나여야 한다: {names}
 규칙: 매도/익절/손절 제안은 보유 종목에만. 금액(원) 단위 금지 — 반드시 주 수량. 매매는 command로만(지시: 안에 매매 문구 금지).
+신규·추가 매수는 절대 제안하지 마라(PM 정책 — 매수는 주인이 채팅에 직접 지시할 때만 안전장치를
+거쳐 실행된다). "매수"가 들어간 command는 전부 거부된다.
 
 출력은 JSON 배열만 (다른 말 금지). 제안 없으면 [] 만 출력.
 [{{"title":"제안 제목(20자)","reason":"근거 1~2문장, 적용 원칙 K번호 포함","command":"허용 형식 명령"}}]"""
@@ -1828,28 +1830,21 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
         valid = []
         for it in items:
             cmd = str(it.get("command", "")).strip()
+            # AI 자동 실행은 매수를 하지 않는다(PM 정책, [AT] buy-gate-unification) — 근거 없는
+            # "ML 100%" 문구로 신규 매수를 시도한 10/1 사고 이후. "N원 매수" 변환 등 매수로
+            # 이어질 수 있는 어떤 경로도 열어두지 않도록 원문 command 단계에서 즉시 거부한다.
+            if "매수" in cmd:
+                logger.warning(f"🚫 AI 자동 실행 매수 command 거부(매도/익절/손절/지시만 허용): {cmd}")
+                continue
             ok = False
-            # "종목 N원 매수" → N주 변환
-            mw = _r.match(r"^(\S+)\s+([\d,]+)\s*원\s*매수$", cmd)
-            if mw:
-                nm, amt = mw.group(1), int(mw.group(2).replace(",", ""))
-                sym, _n = await universe.resolve_symbol(nm)
-                pr = 0
-                try:
-                    pc = await redis_client.get(f"stock:price:{sym}")
-                    pr = int(json.loads(pc if isinstance(pc, str) else pc.decode()).get("price", 0)) if pc else 0
-                except Exception:
-                    pass
-                if sym and pr > 0 and amt // pr >= 1:
-                    cmd = f"{nm} {amt // pr}주 매수"
-            if _r.match(r"^\S+\s+(\d+주\s*(매수|매도)|전량\s*매도)$", cmd):
+            if _r.match(r"^\S+\s+(\d+주\s*매도|전량\s*매도)$", cmd):
                 nm = cmd.split()[0]
-                if "매도" in cmd and nm not in held:
+                if nm not in held:
                     continue  # 미보유 매도 제외
                 ok = True
             elif _r.match(r"^(손절|익절)\s*-?\d+(\.\d+)?%로\s*변경해줘$", cmd):
                 ok = True
-            elif cmd.startswith("지시:") and "매도" not in cmd and "매수" not in cmd:
+            elif cmd.startswith("지시:") and "매도" not in cmd:
                 ok = True
             if ok:
                 it["command"] = cmd
@@ -2181,6 +2176,27 @@ async def _daily_gate(name: str, today) -> bool:
         return True
 
 
+async def _run_advice_queue():
+    """장외 승인 예약(advice:queue) 재생 — 09:01 자동 실행(_jarvis_scheduler)에서 호출.
+    AI 자동 실행은 매수를 하지 않는다(PM 정책, [AT] buy-gate-unification) — 이 fix 이전에
+    이미 쌓여 있던 매수 command도 건너뛴다. 독립 함수로 뺀 이유: 스케줄러의 09:01~09:06
+    시각 게이트/무한루프와 분리해 단위 테스트로 검증하기 위해서다."""
+    try:
+        while True:
+            raw = await redis_client.lpop("advice:queue")
+            if not raw:
+                break
+            q = json.loads(raw if isinstance(raw, str) else raw.decode())
+            cmd = q.get("command", "")
+            if "매수" in cmd:
+                logger.warning(f"🚫 장외 예약 매수 command 건너뜀: {cmd}")
+                continue
+            sub = await jarvis_chat({"message": cmd, "session_id": "advice", "_no_mirror": True})
+            await _send_telegram(f"⏰ 예약 실행: {cmd}\n{sub.get('reply') or sub.get('error')}", broadcast=True)
+    except Exception as qe:
+        logger.warning(f"예약 실행 오류: {qe}")
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -2219,18 +2235,7 @@ async def _jarvis_scheduler():
 
         # 장외 승인 예약 실행 (09:01)
         if dtime(9, 1) <= cur_time <= dtime(9, 6) and await _daily_gate("queue_run", today):
-            async def _run_queue():
-                try:
-                    while True:
-                        raw = await redis_client.lpop("advice:queue")
-                        if not raw:
-                            break
-                        q = json.loads(raw if isinstance(raw, str) else raw.decode())
-                        sub = await jarvis_chat({"message": q["command"], "session_id": "advice", "_no_mirror": True})
-                        await _send_telegram(f"⏰ 예약 실행: {q['command']}\n{sub.get('reply') or sub.get('error')}", broadcast=True)
-                except Exception as qe:
-                    logger.warning(f"예약 실행 오류: {qe}")
-            asyncio.create_task(_run_queue())
+            asyncio.create_task(_run_advice_queue())
 
         # 자비스 능동 제안 (11:00 / 14:00)
         if dtime(11, 0) <= cur_time <= dtime(11, 5) and await _daily_gate("adv_11", today):
@@ -4175,6 +4180,21 @@ async def _get_recent_daily_ohlcv_for_sizing(symbol: str, limit: int = 100):
         """, symbol, limit)
 
 
+async def _get_market_warning_for_gate(symbol: str) -> Optional[dict]:
+    """채팅 직접 매수 안전장치(stark.execution_guard.buy_gate)용 투자경고/VI 상태 조회.
+    기존 속도제한 대응 시세 조회(_fetch_kis_inquire_price → _kis_quote_get)를 재사용한다 —
+    같은 KIS API(FHKST01010100, inquire-price)의 output에 mrkt_warn_cls_code/vi_cls_code가
+    이미 포함돼 있어 추가 호출 없이 그대로 꺼내 쓴다. 조회 실패/빈 응답이면 None
+    (호출부가 fail-closed로 매수를 차단해야 한다)."""
+    out = await _fetch_kis_inquire_price(symbol)
+    if not out:
+        return None
+    return {
+        "mrkt_warn_cls_code": out.get("mrkt_warn_cls_code", ""),
+        "vi_cls_code": out.get("vi_cls_code", ""),
+    }
+
+
 async def _stamp_plan_change(note: str):
     """지시 변경 시 오늘의 작전 상단에 변경 메모 삽입 → 이후 판단에서 옛 규칙 무력화
     (router/handlers/directive_handler.py 이관)"""
@@ -4302,6 +4322,7 @@ async def _jarvis_chat_impl(body: dict):
         channel=channel,
         get_balance_fn=_get_balance_for_sizing,
         get_recent_ohlcv_fn=_get_recent_daily_ohlcv_for_sizing,
+        get_market_warning_fn=_get_market_warning_for_gate,
     )
 
     try:

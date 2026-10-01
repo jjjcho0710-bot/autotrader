@@ -28,8 +28,16 @@ def _price_session(price: int, name: str = "삼성바이오로직스"):
     return FakePriceSession({"output": {"stck_prpr": str(price), "hts_kor_isnm": name}})
 
 
+async def _default_get_positions():
+    return {"success": True, "data": []}
+
+
+async def _default_get_market_warning(symbol):
+    return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
+
+
 class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
-    def _kwargs(self, *, get_balance_fn=None, get_stock_positions_fn=None):
+    def _kwargs(self, *, get_balance_fn=None, get_stock_positions_fn=None, get_market_warning_fn=None):
         universe = Universe(None)
         universe.replace_cache({"삼성바이오로직스": "207940"})
 
@@ -48,8 +56,13 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         return dict(
             pool=FakePool(), redis=FakeRedis(), universe=universe, get_kis_token_fn=get_kis_token,
             config=FakeSizingConfig(), kis_order_fn=kis_order,
-            get_stock_positions_fn=get_stock_positions_fn, send_telegram_fn=send_telegram,
+            # 사이징 한도 계산 자체는 이 파일의 관심사이므로, 매수 안전장치 관문(buy_gate,
+            # [AT] buy-gate-unification)은 기본값(보유 없음·정상 종목)으로 통과시켜
+            # 사이징 로직만 분리해서 검증한다.
+            get_stock_positions_fn=get_stock_positions_fn or _default_get_positions,
+            send_telegram_fn=send_telegram,
             log_journal_fn=log_journal, get_balance_fn=get_balance_fn, get_recent_ohlcv_fn=None,
+            get_market_warning_fn=get_market_warning_fn or _default_get_market_warning,
         )
 
     async def test_qty_reduced_when_exceeding_cap(self):

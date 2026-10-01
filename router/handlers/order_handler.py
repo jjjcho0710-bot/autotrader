@@ -22,6 +22,7 @@ from common.position_sizing import (
     compute_base_amount,
     volatility_multiplier,
 )
+from stark.execution_guard import buy_gate
 
 logger = logging.getLogger("router.handlers.order")
 
@@ -145,7 +146,7 @@ async def _compute_buy_sizing_cap(
 async def handle_trade_command(
     user_msg: str, *, pool: Any, redis: Any, universe: Any, get_kis_token_fn, config: Any,
     kis_order_fn, get_stock_positions_fn, send_telegram_fn, log_journal_fn,
-    get_balance_fn=None, get_recent_ohlcv_fn=None,
+    get_balance_fn=None, get_recent_ohlcv_fn=None, get_market_warning_fn=None,
 ) -> Optional[str]:
     """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
     msg = user_msg.strip()
@@ -191,6 +192,19 @@ async def handle_trade_command(
         logger.warning(f"수동주문 현재가 조회 실패 [{symbol}]: {e}")
     if price <= 0:
         return f"⚠️ {name}({symbol}) 현재가 조회 실패 — 주문 불가"
+
+    # 매수 안전장치 관문 — 신호 경로(stark/execution_guard.precheck + execute())와 동일한
+    # 악재공시·당일 손절 2회·실패 억제·물타기·보유종목수 한도·투자경고/VI 차단을 채팅 직접
+    # 매수에도 적용한다(PM 지시, [AT] buy-gate-unification). "한도무시"는 사이징 금액
+    # 한도만 무시할 뿐 이 안전 차단은 넘지 못한다 — 사이징보다 먼저 검사한다.
+    if is_buy:
+        gate_blocked = await buy_gate(
+            symbol, price, pool=pool, redis=redis, bot="stock_trader",
+            get_positions_fn=get_stock_positions_fn, get_market_warning_fn=get_market_warning_fn,
+        )
+        if gate_blocked:
+            logger.info(f"⛔ 채팅 매수 차단 [{symbol}] {gate_blocked['blocked']}: {gate_blocked['reason']}")
+            return f"⛔ {gate_blocked['reason']}"
 
     # 수량 (+ 매도 시 손익 계산용 평단가 조회)
     avg_price = 0.0

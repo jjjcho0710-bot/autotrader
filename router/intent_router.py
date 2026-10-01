@@ -56,6 +56,10 @@ class RouterContext:
     # 의존성이 없는 호출에서만 비워둔다.
     get_balance_fn: Optional[Callable[..., Any]] = None
     get_recent_ohlcv_fn: Optional[Callable[..., Any]] = None
+    # 채팅 직접 매수 안전장치 관문(stark.execution_guard.buy_gate)의 투자경고/VI 조회용 —
+    # 사이징 한도와 달리 이건 안전 차단이라 운영 ctx에서 None이면 buy_gate가 fail-closed로
+    # 매수를 차단한다(조용히 건너뛰지 않음). 테스트 등에서만 비워둔다.
+    get_market_warning_fn: Optional[Callable[..., Any]] = None
 
 
 async def route_early(user_msg: str, ctx: RouterContext) -> Optional[str]:
@@ -127,7 +131,8 @@ async def route_late(user_msg: str, ctx: RouterContext) -> Optional[str]:
         get_kis_token_fn=ctx.get_kis_token, config=ctx.config, kis_order_fn=ctx.kis_order,
         get_stock_positions_fn=ctx.get_stock_positions, send_telegram_fn=ctx.send_telegram,
         log_journal_fn=ctx.log_journal, get_balance_fn=ctx.get_balance_fn,
-        get_recent_ohlcv_fn=ctx.get_recent_ohlcv_fn)
+        get_recent_ohlcv_fn=ctx.get_recent_ohlcv_fn,
+        get_market_warning_fn=ctx.get_market_warning_fn)
     if reply is not None:
         return reply
 

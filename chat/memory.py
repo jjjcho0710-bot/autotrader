@@ -244,12 +244,12 @@ async def summarize_old_chats(pool=None, ask_llm_fn=None):
             return
 
         convo = "\n".join(
-            f"{'주인' if r['role'] == 'user' else '자비스'}: {r['content'][:200]}"
+            f"{'주인' if r['role'] == 'user' else '한강뷰매니저'}: {r['content'][:200]}"
             for r in rows
         )[:6000]
 
         summary_prompt = (
-            f"다음은 {day} 하루의 주인-자비스 대화다. 나중에 참조할 핵심(결정사항, 지시, 전략 논의, 중요 사실)만 "
+            f"다음은 {day} 하루의 주인-한강뷰매니저 대화다. 나중에 참조할 핵심(결정사항, 지시, 전략 논의, 중요 사실)만 "
             f"500자 이내로 요약하라. 잡담은 제외.\n\n{convo}"
         )
 

@@ -4125,6 +4125,25 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
 import re as _re_mod
 
 
+async def _get_balance_for_sizing() -> dict:
+    """채팅 직접 매수 사이징(기본금액) 계산용 잔고 조회 — get_stock_balance()의 data를
+    stock_trader(KISTrader.get_balance)와 동일한 평평한 형태({"total":...,"cash":...})로 반환."""
+    res = await get_stock_balance()
+    return res.get("data", {}) if isinstance(res, dict) else {}
+
+
+async def _get_recent_daily_ohlcv_for_sizing(symbol: str, limit: int = 100):
+    """채팅 직접 매수 사이징(ATR) 계산용 일봉 조회 — common/database.py의
+    Database.get_recent_ohlcv(daily=True)와 동일 쿼리이나, dashboard 프로세스는 stock_trader와
+    별도의 db_pool을 쓰므로 여기서 직접 조회한다."""
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("""
+            SELECT * FROM (
+                SELECT * FROM stock_daily_ohlcv WHERE symbol=$1 ORDER BY ts DESC LIMIT $2
+            ) sub ORDER BY ts ASC
+        """, symbol, limit)
+
+
 async def _handle_trade_command(user_msg: str):
     """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None
     (router/handlers/order_handler.py 이관)"""
@@ -4132,7 +4151,8 @@ async def _handle_trade_command(user_msg: str):
         user_msg, pool=db_pool, redis=redis_client, universe=universe,
         get_kis_token_fn=get_kis_token, config=config, kis_order_fn=_kis_stock_order,
         get_stock_positions_fn=get_stock_positions, send_telegram_fn=_send_telegram,
-        log_journal_fn=_log_journal)
+        log_journal_fn=_log_journal, get_balance_fn=_get_balance_for_sizing,
+        get_recent_ohlcv_fn=_get_recent_daily_ohlcv_for_sizing)
 
 
 async def _stamp_plan_change(note: str):

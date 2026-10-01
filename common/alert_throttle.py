@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # 인메모리 폴백 캐시
 _MEMORY_CACHE = {}
 _MEMORY_CAUSE_CACHE = {}
+_MEMORY_DROP_CACHE = {}
 
 
 def _make_key(symbol: str, alert_type: str) -> str:
@@ -140,6 +141,66 @@ async def reset_symbol_alert(symbol: str, alert_type: Optional[str] = None, redi
                 await redis_client.delete(k)
             except Exception:
                 pass
+
+    if not alert_type:
+        drop_key = _make_drop_key(symbol)
+        _MEMORY_DROP_CACHE.pop(drop_key, None)
+        if redis_client is not None:
+            try:
+                await redis_client.delete(drop_key)
+            except Exception:
+                pass
+
+
+def _make_drop_key(symbol: str) -> str:
+    return f"drop_alert_last:{symbol}"
+
+
+async def should_send_drop_alert(
+    symbol: str,
+    pnl_rate: float,
+    min_drop_delta: float = 1.0,
+    redis_client: Optional[Any] = None,
+) -> Tuple[bool, Optional[float]]:
+    """급락(DROP) 알림 전용 스로틀: 직전에 알린 손익률보다 min_drop_delta(%p) 이상
+    추가로 하락했을 때만 재알림.
+
+    - 처음 알리는 경우(직전 기록 없음): 즉시 발송 허용
+    - 정상 범위로 복귀했다가 다시 급락에 진입해도 이 기록은 초기화되지 않음
+      (복귀만으로 즉시 재알림하지 않음 — 호출부에서 NORMAL 구간에 이 함수를 호출하지 않으면 됨)
+    - STOP_LOSS 알림/손절 실패 알림에는 사용하지 않음(별도 스로틀 유지)
+
+    반환: (should_send: bool, 직전에 알린 손익률 또는 None)
+    """
+    key = _make_drop_key(symbol)
+    prev: Optional[float] = None
+
+    raw = None
+    if redis_client is not None:
+        try:
+            raw = await redis_client.get(key)
+        except Exception as e:
+            logger.debug(f"Redis drop-alert get 실패, 인메모리 폴백 사용: {e}")
+
+    if raw is not None:
+        try:
+            prev = float(raw)
+        except Exception:
+            prev = None
+    else:
+        prev = _MEMORY_DROP_CACHE.get(key)
+
+    should_send = prev is None or pnl_rate <= prev - min_drop_delta
+
+    if should_send:
+        _MEMORY_DROP_CACHE[key] = pnl_rate
+        if redis_client is not None:
+            try:
+                await redis_client.setex(key, 86400, str(pnl_rate))
+            except Exception as e:
+                logger.debug(f"Redis drop-alert setex 실패: {e}")
+
+    return should_send, prev
 
 
 # ── 원인(에러 메시지) 기준 실패 알림 스로틀 ────────────────────────

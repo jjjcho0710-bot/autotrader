@@ -4143,6 +4143,7 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
                 data = await resp.json()
         if data.get("rt_cd") == "0":
             return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
+        # KIS가 명확히 거절한 경우(rt_cd != "0" + msg1) — 확정 실패
         err = data.get("msg1", "주문 실패")
         if "모의투자" in err and ("불가" in err or "아닌" in err):
             if config.KIS_IS_PAPER:
@@ -4155,7 +4156,12 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
             return await _kis_stock_order(symbol, price, qty, is_buy, _retry=True)
         return {"success": False, "error": err}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        # 요청을 보낸 뒤에 생긴 예외(타임아웃·연결 끊김·응답 JSON 파싱 실패 등) — KIS가
+        # 실제로 주문을 접수/체결했는지 알 수 없으므로 "실패"로 단정하지 않고 uncertain으로
+        # 돌려준다. 호출부가 보유 수량 변화를 재조회해 체결 여부를 판정해야 한다.
+        err_msg = str(e) or type(e).__name__
+        logger.warning(f"⚠️ KIS 주문 응답 불명(요청 후 예외) [{symbol}] {type(e).__name__}: {err_msg}")
+        return {"success": False, "uncertain": True, "error": err_msg}
 
 
 import re as _re_mod
@@ -4323,6 +4329,7 @@ async def _jarvis_chat_impl(body: dict):
         get_balance_fn=_get_balance_for_sizing,
         get_recent_ohlcv_fn=_get_recent_daily_ohlcv_for_sizing,
         get_market_warning_fn=_get_market_warning_for_gate,
+        invalidate_positions_cache_fn=invalidate_stock_positions_cache,
     )
 
     try:

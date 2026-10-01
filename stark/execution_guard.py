@@ -228,6 +228,91 @@ async def check_buy_position_limits(
     return None
 
 
+# 주문 응답이 불명(uncertain)일 때 재확인 대기로 같은 종목·방향 중복 주문을 막는 TTL(초)
+ORDER_UNCERTAIN_BLOCK_TTL = 180
+
+
+async def check_order_uncertain_block(symbol: str, is_buy: bool, redis: Any) -> bool:
+    """직전 같은 종목·같은 방향 주문이 결과 불명(uncertain)으로 끝나 재확인 대기 중인지 확인.
+    True면 호출부가 신규 주문을 보류해야 한다(중복 주문 방지)."""
+    if redis is None:
+        return False
+    side = "buy" if is_buy else "sell"
+    try:
+        return bool(await redis.get(f"order_uncertain:{symbol}:{side}"))
+    except Exception:
+        return False
+
+
+async def get_held_qty(symbol: str, get_positions_fn) -> Optional[float]:
+    """get_positions_fn() 결과에서 특정 종목의 보유 수량을 조회. 조회 실패/stale이면
+    None(호출부는 판단 불가 상태로 처리해야 한다 — fail-closed)."""
+    if get_positions_fn is None:
+        return None
+    try:
+        pos_res = await get_positions_fn()
+    except Exception as e:
+        logger.warning(f"보유 수량 조회 실패(fail-closed) [{symbol}]: {e}")
+        return None
+    if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
+        return None
+    pos_row = next(
+        (p for p in (pos_res.get("data") or [])
+         if isinstance(p, dict) and p.get("symbol") == symbol),
+        None,
+    )
+    return float(pos_row.get("qty", 0) or 0) if pos_row else 0.0
+
+
+async def reconcile_uncertain_order(
+    symbol: str, is_buy: bool, *, pre_qty: Optional[float],
+    get_positions_fn=None, invalidate_cache_fn=None, redis: Any = None,
+    wait_sec: float = 4.0,
+) -> Dict[str, Any]:
+    """_kis_stock_order가 uncertain(응답 불명) 결과를 반환했을 때, 주문 전 보유 수량(pre_qty)과
+    wait_sec 후 재조회한 보유 수량을 비교해 실제 체결 여부를 판정한다. 캐시(메모리+redis)를
+    무효화한 뒤 조회하므로 반드시 최신 KIS 잔고를 기준으로 판정한다.
+
+    반환: {"status": "filled", "qty_diff": 변동 수량} 또는 {"status": "unknown"}
+    (조회 자체가 실패해도 "unknown"으로 묶는다 — 호출부는 재시도하지 말고 사람에게 확인을 요청해야 한다).
+    status != "filled"이면 같은 종목·방향 중복 주문 차단 키를 ORDER_UNCERTAIN_BLOCK_TTL초 동안 건다."""
+    post_qty = None
+    if get_positions_fn is not None and pre_qty is not None:
+        await asyncio.sleep(wait_sec)
+        if invalidate_cache_fn:
+            try:
+                if asyncio.iscoroutinefunction(invalidate_cache_fn):
+                    await invalidate_cache_fn()
+                else:
+                    invalidate_cache_fn()
+            except Exception:
+                pass
+        if redis is not None:
+            try:
+                await redis.delete("cache:positions:stock")
+            except Exception:
+                pass
+        post_qty = await get_held_qty(symbol, get_positions_fn)
+
+    if pre_qty is None or post_qty is None:
+        status = "unknown"
+    else:
+        diff = post_qty - pre_qty
+        status = "filled" if (diff > 0 if is_buy else diff < 0) else "unknown"
+
+    side = "buy" if is_buy else "sell"
+    if status != "filled" and redis is not None:
+        try:
+            await redis.setex(f"order_uncertain:{symbol}:{side}", ORDER_UNCERTAIN_BLOCK_TTL, "1")
+        except Exception:
+            pass
+
+    result: Dict[str, Any] = {"status": status}
+    if status == "filled":
+        result["qty_diff"] = abs(post_qty - pre_qty)
+    return result
+
+
 # 매수 실패 사유 중 몇 초~몇 분이면 풀리는 일시적 오류로 보고 짧게 재시도할 키워드
 # (stock_trader/main.py._STOP_LOSS_TRANSIENT_MARKERS와 동일 원칙을 매수 쪽에도 적용)
 BUY_FAIL_TRANSIENT_MARKERS = ("초당", "거래건수", "체결 0주", "체결수량 0", "미체결", "rate", "Rate")
@@ -340,6 +425,75 @@ async def precheck(symbol: str, action: str, bot: str, *, pool: Any, redis: Any)
     return None
 
 
+async def _finalize_filled_order(
+    *, symbol: str, name: str, bot: str, action: str, action_kr: str, price: float, qty: float,
+    strategy: str, reason: str, is_buy: bool, is_small: bool, reply: str,
+    pre_avg_price: Optional[float], pool: Any, redis: Any, send_telegram_fn, log_journal_fn,
+    save_trade_memory_fn, invalidate_cache_fn, label: str = "완료",
+) -> Dict[str, Any]:
+    """체결이 확인된 주문(정상 성공 또는 응답불명→보유수량 재확인으로 체결 확정)의 공통
+    후처리: in-flight 기록, pnl 계산, trade_history/매매일지 기록, 텔레그램 보고, 캐시 무효화."""
+    if is_buy and bot == "stock_trader" and redis is not None:
+        try:
+            await redis.setex(f"stark:inflight_buy:{symbol}", 120, "1")
+        except Exception as e:
+            logger.warning(f"inflight_buy 등록 실패: {e}")
+
+    pnl = None
+    pnl_rate = None
+    pnl_text = ""
+    if not is_buy and bot == "stock_trader" and pre_avg_price:
+        pnl = (price - pre_avg_price) * qty
+        pnl_rate = (price - pre_avg_price) / pre_avg_price * 100
+        pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
+
+    if pool:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy, pnl)
+
+    emoji = "📈" if action == "buy" else "📉"
+    msg = (
+        f"{emoji} <b>{name} {action_kr} {label}</b>\n"
+        f"가격: {price:,}원 × {qty:.0f}주\n"
+        f"금액: {price*qty:,.0f}원{pnl_text}\n"
+        f"전략: {strategy}\n"
+        f"한강뷰매니저 판단: {reply[:80]}"
+    )
+    await send_telegram_fn(msg)
+    logger.info(f"✅ Jarvis 자동 {action_kr}({label}): {symbol} {price:,}원 × {qty}주")
+    try:
+        for k in ("cache:positions:stock", "cache:account:stock"):
+            await redis.delete(k)
+        if is_buy:
+            await redis.delete(f"buy_fail_streak:{symbol}")
+    except Exception:
+        pass
+
+    if invalidate_cache_fn:
+        try:
+            if asyncio.iscoroutinefunction(invalidate_cache_fn):
+                await invalidate_cache_fn()
+            else:
+                invalidate_cache_fn()
+        except Exception:
+            pass
+
+    if save_trade_memory_fn:
+        await save_trade_memory_fn(symbol=symbol, action=action_kr, price=float(price),
+                                    amount=float(price * qty), result="성공", reason=reason)
+    await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                          "EXECUTE_SMALL" if is_small else "EXECUTE",
+                          reply, True, True, price, qty)
+    result = {"success": True, "executed": True, "jarvis_reply": reply}
+    if pnl is not None:
+        result["pnl"] = pnl
+        result["pnl_rate"] = pnl_rate
+    return result
+
+
 async def execute(
     signal: Dict[str, Any],
     decision: Dict[str, Any],
@@ -373,6 +527,23 @@ async def execute(
 
     # (2) 매수 판단과 주문을 하나의 Lock으로 직렬화
     async with get_buy_lock():
+        # (0) 직전 같은 종목·같은 방향 주문이 응답불명(uncertain) 상태로 끝나 재확인 대기
+        # 중이면 중복 주문을 막는다 ([AT] order-result-reconcile)
+        if redis is not None and await check_order_uncertain_block(symbol, is_buy, redis):
+            reason_text = "직전 주문 결과 확인 중"
+            logger.info(f"⏸️ {reason_text} — 주문 보류: {symbol}")
+            if log_journal_fn:
+                await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                                     "SKIP", reason_text, False, False, price, qty)
+            return {
+                "success": True,
+                "executed": False,
+                "skipped": True,
+                "blocked": "order_uncertain_pending",
+                "reason": reason_text,
+                "jarvis_reply": reply,
+            }
+
         # (1) 매수 경로에서 주문 직전에 보유 종목수 한도(fail-closed) + 물타기 정책을
         # 한 곳에서 검사 (check_buy_position_limits — buy_gate()와 공용)
         if is_buy and bot == "stock_trader" and get_positions_fn is not None:
@@ -423,12 +594,14 @@ async def execute(
                     "jarvis_reply": reply,
                 }
 
-        # 매도 손익(pnl) 계산용 평단가 사전 조회 — 주문 성공 후에 조회하면 전량 매도 시
-        # 이미 보유 목록에서 빠져 avg_price를 못 구해 pnl=None이 되므로, 주문 전에
-        # get_positions_fn()(기존 max_positions 체크용) 결과에서 미리 조회해 둔다.
-        # 조회 실패/미보유 시 None으로 두고 매도 자체는 그대로 진행(안전 우선 원칙).
+        # 주문 전 보유 현황 사전 조회 — (a) 매도 손익(pnl) 계산용 평단가: 주문 성공 후에
+        # 조회하면 전량 매도 시 이미 보유 목록에서 빠져 avg_price를 못 구해 pnl=None이 되므로
+        # 주문 전에 미리 조회해 둔다. (b) 보유 수량(pre_qty): 주문 응답이 불명(uncertain)일 때
+        # 체결 여부를 판정할 기준값([AT] order-result-reconcile). 조회 실패/미보유 시 None으로
+        # 두고 주문 자체는 그대로 진행(안전 우선 원칙).
         pre_avg_price = None
-        if not is_buy and bot == "stock_trader" and get_positions_fn is not None:
+        pre_qty = None
+        if bot == "stock_trader" and get_positions_fn is not None:
             try:
                 pos_res = await get_positions_fn()
                 if isinstance(pos_res, dict) and pos_res.get("success", False):
@@ -437,74 +610,52 @@ async def execute(
                          if isinstance(p, dict) and p.get("symbol") == symbol),
                         None,
                     )
-                    pre_avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
+                    pre_qty = float(pos_row.get("qty", 0) or 0) if pos_row else 0.0
+                    if not is_buy:
+                        pre_avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
             except Exception as e:
-                logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
+                logger.warning(f"주문 전 보유 현황 조회 실패 [{symbol}]: {e}")
 
         order = await kis_order_fn(symbol, int(price), int(qty), is_buy)
 
         if order.get("success"):
-            # (2) 주문 접수 성공 즉시 해당 종목을 Redis(TTL 120초)에 in-flight buy로 기록
-            if is_buy and bot == "stock_trader" and redis is not None:
-                try:
-                    await redis.setex(f"stark:inflight_buy:{symbol}", 120, "1")
-                except Exception as e:
-                    logger.warning(f"inflight_buy 등록 실패: {e}")
-
-            # 매도 손익(pnl) 계산 — 주문 전에 조회해 둔 pre_avg_price 사용.
-            pnl = None
-            pnl_rate = None
-            pnl_text = ""
-            if not is_buy and bot == "stock_trader" and pre_avg_price:
-                pnl = (price - pre_avg_price) * qty
-                pnl_rate = (price - pre_avg_price) / pre_avg_price * 100
-                pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
-
-            if pool:
-                async with pool.acquire() as conn:
-                    await conn.execute("""
-                        INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                    """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy, pnl)
-
-            emoji = "📈" if action == "buy" else "📉"
-            msg = (
-                f"{emoji} <b>{name} {action_kr} 완료</b>\n"
-                f"가격: {price:,}원 × {qty}주\n"
-                f"금액: {price*qty:,}원{pnl_text}\n"
-                f"전략: {strategy}\n"
-                f"한강뷰매니저 판단: {reply[:80]}"
+            return await _finalize_filled_order(
+                symbol=symbol, name=name, bot=bot, action=action, action_kr=action_kr,
+                price=price, qty=qty, strategy=strategy, reason=reason, is_buy=is_buy,
+                is_small=is_small, reply=reply, pre_avg_price=pre_avg_price,
+                pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
+                log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
+                invalidate_cache_fn=invalidate_cache_fn,
             )
-            await send_telegram_fn(msg)
-            logger.info(f"✅ Jarvis 자동 {action_kr}: {symbol} {price:,}원 × {qty}주")
-            try:
-                for k in ("cache:positions:stock", "cache:account:stock"):
-                    await redis.delete(k)
-                if is_buy:
-                    await redis.delete(f"buy_fail_streak:{symbol}")
-            except Exception:
-                pass
 
-            if invalidate_cache_fn:
-                try:
-                    if asyncio.iscoroutinefunction(invalidate_cache_fn):
-                        await invalidate_cache_fn()
-                    else:
-                        invalidate_cache_fn()
-                except Exception:
-                    pass
-
-            if save_trade_memory_fn:
-                await save_trade_memory_fn(symbol=symbol, action=action_kr, price=float(price),
-                                            amount=float(price * qty), result="성공", reason=reason)
+        if order.get("uncertain"):
+            logger.warning(f"⚠️ 주문 응답 불명 [{symbol}] — 보유 수량 재확인 시작: {order.get('error')}")
+            recon = await reconcile_uncertain_order(
+                symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_positions_fn,
+                invalidate_cache_fn=invalidate_cache_fn, redis=redis,
+            )
+            if recon["status"] == "filled":
+                diff_qty = recon.get("qty_diff") or qty
+                return await _finalize_filled_order(
+                    symbol=symbol, name=name, bot=bot, action=action, action_kr=action_kr,
+                    price=price, qty=diff_qty, strategy=strategy, reason=reason, is_buy=is_buy,
+                    is_small=is_small, reply=reply, pre_avg_price=pre_avg_price,
+                    pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
+                    log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
+                    invalidate_cache_fn=invalidate_cache_fn, label="체결 확인(응답 지연)",
+                )
+            reason_text = "주문 결과 불명 — 보유 수량 변화 없음"
+            logger.warning(f"⚠️ {reason_text}: {symbol}")
+            await send_telegram_fn(
+                f"⚠️ {name} {action_kr} 결과 불명 — 보유 수량 변화 없음. "
+                f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
             await log_journal_fn(bot, symbol, name, action, strategy, reason,
                                   "EXECUTE_SMALL" if is_small else "EXECUTE",
-                                  reply, True, True, price, qty)
-            result = {"success": True, "executed": True, "jarvis_reply": reply}
-            if pnl is not None:
-                result["pnl"] = pnl
-                result["pnl_rate"] = pnl_rate
-            return result
+                                  reply, True, False, price, qty)
+            # 실패 억제(buy_fail_suppress 등)는 걸지 않는다 — 결과가 불명확할 뿐 실패가
+            # 확정된 게 아니므로, 재지시가 들어오면 바로 다시 시도할 수 있어야 한다
+            # (중복 주문 자체는 reconcile_uncertain_order가 건 order_uncertain 키가 막는다).
+            return {"success": False, "executed": False, "uncertain": True, "reason": reason_text}
 
     err = str(order.get("error") or "")
     disp = await code_to_name_fn(symbol)

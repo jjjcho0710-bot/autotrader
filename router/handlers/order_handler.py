@@ -22,7 +22,12 @@ from common.position_sizing import (
     compute_base_amount,
     volatility_multiplier,
 )
-from stark.execution_guard import buy_gate
+from stark.execution_guard import (
+    buy_gate,
+    check_order_uncertain_block,
+    get_held_qty,
+    reconcile_uncertain_order,
+)
 
 logger = logging.getLogger("router.handlers.order")
 
@@ -69,6 +74,8 @@ async def handle_advice_response(
 
 async def handle_proposal_response(
     user_msg: str, *, redis: Any, kis_order_fn, log_journal_fn, send_telegram_fn,
+    get_positions_fn: Optional[Any] = None, pool: Any = None,
+    invalidate_cache_fn: Optional[Any] = None,
 ) -> Optional[str]:
     """매수 제안(proposal:{symbol}) 승인/거절 처리"""
     um = user_msg.strip()
@@ -93,15 +100,22 @@ async def handle_proposal_response(
         if not target:
             return None  # 대기 제안 없음 → 일반 대화로 진행
 
+        symbol = target["symbol"]
+
         if _RE_REJECT.search(um):
-            await redis.delete(f"proposal:{target['symbol']}")
+            await redis.delete(f"proposal:{symbol}")
             return f"❌ {target['name']} 매수 제안 거절 처리했어요."
 
-        # 승인 → 실제 매수
-        order = await kis_order_fn(target["symbol"], int(target["price"]), int(target["qty"]), True)
-        await redis.delete(f"proposal:{target['symbol']}")
+        # 직전 같은 종목 매수 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
+        if await check_order_uncertain_block(symbol, True, redis):
+            return f"⏳ {target['name']} 직전 주문 결과 확인 중 — 잠시 후 다시 시도해주세요"
+
+        # 승인 → 실제 매수 (주문 전 보유 수량을 응답불명 시 체결 재확인용으로 미리 조회)
+        pre_qty = await get_held_qty(symbol, get_positions_fn) if get_positions_fn else None
+        order = await kis_order_fn(symbol, int(target["price"]), int(target["qty"]), True)
+        await redis.delete(f"proposal:{symbol}")
         if order.get("success"):
-            await log_journal_fn("stock_trader", target["symbol"], target["name"], "buy",
+            await log_journal_fn("stock_trader", symbol, target["name"], "buy",
                                   target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
                                   target.get("reason", ""), True, True,
                                   int(target["price"]), int(target["qty"]))
@@ -109,7 +123,36 @@ async def handle_proposal_response(
                    f"{target['qty']}주 @ {int(target['price']):,}원")
             await send_telegram_fn(msg, broadcast=True)
             return msg.replace("<b>", "").replace("</b>", "")
-        return f"❌ 매수 실패: {order.get('error')}"
+
+        if order.get("uncertain") and get_positions_fn is not None:
+            recon = await reconcile_uncertain_order(
+                symbol, True, pre_qty=pre_qty, get_positions_fn=get_positions_fn, redis=redis,
+                invalidate_cache_fn=invalidate_cache_fn)
+            if recon["status"] == "filled":
+                diff_qty = int(round(recon.get("qty_diff") or target["qty"]))
+                if pool:
+                    try:
+                        async with pool.acquire() as conn:
+                            await conn.execute("""
+                                INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                                VALUES ('stock_trader','stock',$1,'BUY',$2,$3,$4,$5,NULL)
+                            """, symbol, float(target["price"]), float(diff_qty),
+                                float(target["price"]) * diff_qty, target.get("strategy", "제안"))
+                    except Exception:
+                        pass
+                await log_journal_fn("stock_trader", symbol, target["name"], "buy",
+                                      target.get("strategy", "제안"), "주인 승인(응답지연)",
+                                      "PROPOSE_APPROVED_UNCERTAIN_FILLED",
+                                      target.get("reason", ""), True, True,
+                                      int(target["price"]), diff_qty)
+                msg = (f"✅ <b>{target['name']} 매수 체결 확인 (응답 지연, 주인 승인)</b>\n"
+                       f"{diff_qty}주 @ {int(target['price']):,}원")
+                await send_telegram_fn(msg, broadcast=True)
+                return msg.replace("<b>", "").replace("</b>", "")
+            return (f"⚠️ {target['name']} 주문 결과 불명 — 보유 수량 변화 없음. "
+                    f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
+
+        return f"❌ 매수 실패: {order.get('error') or '사유 미확인'}"
     except Exception as pe:
         logger.warning(f"제안 승인 처리 오류: {pe}")
         return None
@@ -147,6 +190,7 @@ async def handle_trade_command(
     user_msg: str, *, pool: Any, redis: Any, universe: Any, get_kis_token_fn, config: Any,
     kis_order_fn, get_stock_positions_fn, send_telegram_fn, log_journal_fn,
     get_balance_fn=None, get_recent_ohlcv_fn=None, get_market_warning_fn=None,
+    invalidate_cache_fn=None,
 ) -> Optional[str]:
     """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
     msg = user_msg.strip()
@@ -258,6 +302,13 @@ async def handle_trade_command(
                             f"1주도 매수 불가 — 고가 종목")
                 sizing_note = f"\n요청 {requested_qty}주 → 사이징 한도로 {qty}주로 조정"
 
+    # 직전 같은 종목·같은 방향 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
+    if redis is not None and await check_order_uncertain_block(symbol, is_buy, redis):
+        return f"⏳ {name}({symbol}) 직전 주문 결과 확인 중 — 잠시 후 다시 시도해주세요"
+
+    # 응답불명 시 체결 재확인용 — 주문 전 보유 수량을 미리 조회해 둔다
+    pre_qty = await get_held_qty(symbol, get_stock_positions_fn) if get_stock_positions_fn else None
+
     result = await kis_order_fn(symbol, price, qty, is_buy)
 
     if result.get("success"):
@@ -291,5 +342,43 @@ async def handle_trade_command(
                               True, True, price, qty, source="chat")
         return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
                 f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}")
-    else:
-        return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error', '알 수 없음')}"
+
+    if result.get("uncertain") and get_stock_positions_fn is not None:
+        recon = await reconcile_uncertain_order(
+            symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_stock_positions_fn, redis=redis,
+            invalidate_cache_fn=invalidate_cache_fn)
+        if recon["status"] == "filled":
+            diff_qty = int(round(recon.get("qty_diff") or qty))
+            pnl = None
+            pnl_text = ""
+            if is_sell and avg_price > 0:
+                pnl = (price - avg_price) * diff_qty
+                pnl_rate = (price - avg_price) / avg_price * 100
+                pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                        VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,'수동지시(응답지연)',$6)
+                    """, symbol, action.upper(), float(price), float(diff_qty),
+                        float(price) * diff_qty, pnl)
+            except Exception:
+                pass
+            try:
+                for k in ("cache:positions:stock", "cache:account:stock"):
+                    await redis.delete(k)
+            except Exception:
+                pass
+            await send_telegram_fn(
+                f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 확인 (응답 지연)</b>\n"
+                f"가격: {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}",
+                broadcast=True)
+            await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
+                                  user_msg[:200], "MANUAL_UNCERTAIN_FILLED", "사용자 직접 지시(응답지연 체결확인)",
+                                  True, True, price, diff_qty, source="chat")
+            return (f"✅ 체결 확인(응답 지연) — {name}({symbol}) {diff_qty}주 {action_kr} "
+                    f"— {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}")
+        return (f"⚠️ {name}({symbol}) 주문 결과 불명 — 보유 수량 변화 없음. "
+                f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
+
+    return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error') or '사유 미확인'}"

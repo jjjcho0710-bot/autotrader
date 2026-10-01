@@ -5060,6 +5060,7 @@ _stock_positions_lock: Optional[asyncio.Lock] = None
 _stock_positions_cache: Optional[dict] = None
 _stock_positions_cache_ts: float = 0.0
 _STOCK_POSITIONS_CACHE_TTL: float = 10.0
+_last_cash_source: Optional[str] = None  # 예수금 계산에 쓰인 필드 — 바뀔 때만 로그
 
 
 def invalidate_stock_positions_cache() -> None:
@@ -5076,7 +5077,7 @@ async def get_stock_positions():
 
 async def _get_stock_positions_raw():
     """KIS API - 주식 보유 포지션 실시간 조회 (동시 호출 직렬화 + 10초 캐시 + 10초 타임아웃)"""
-    global _stock_positions_lock, _stock_positions_cache, _stock_positions_cache_ts
+    global _stock_positions_lock, _stock_positions_cache, _stock_positions_cache_ts, _last_cash_source
     import time
 
     now_ts = time.time()
@@ -5183,16 +5184,27 @@ async def _get_stock_positions_raw():
                     return {"success": False, "error": err_msg, "data": []}
 
                 total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
-                stock_eval = int(summary.get("evlu_amt_smtl_amt", 0) or 0)  # 평가금액합계
-                # 예수금: D+2 정산 예수금(실제 가용) 우선 — 매수해도 dnca_tot_amt는
-                # D+2 결제 전까지 안 줄어 혼동 유발
-                cash_val = int(summary.get("prvs_rcdl_excc_amt", 0) or 0)   # D+2 예수금
-                if cash_val == 0:
-                    cash_val = int(summary.get("nxdy_excc_amt", 0) or 0)    # D+1 예수금
-                if cash_val == 0:
-                    cash_val = int(summary.get("dnca_tot_amt", 0) or 0)     # 예수금총액
-                if cash_val == 0:
-                    cash_val = total_eval - stock_eval
+                stock_eval = int(summary.get("scts_evlu_amt", 0) or 0)  # 유가증권평가금액(주식평가)
+                # 예수금: 총평가-주식평가가 총자산과 항상 일관되는 값이라 최우선 —
+                # prvs_rcdl_excc_amt(D+2)/nxdy_excc_amt(D+1)는 모의투자 등에서 한동안 0으로
+                # 비어 있을 수 있고, dnca_tot_amt는 매수해도 D+2 결제 전까지 안 줄어 혼동
+                # 유발이라 위 값들이 모두 없을 때의 최후 폴백으로만 쓴다
+                derived_cash = total_eval - stock_eval
+                if 0 < derived_cash < total_eval:
+                    cash_val = derived_cash
+                    cash_source = "total_eval-stock_eval"
+                else:
+                    cash_val = int(summary.get("prvs_rcdl_excc_amt", 0) or 0)   # D+2 예수금
+                    cash_source = "prvs_rcdl_excc_amt"
+                    if cash_val == 0:
+                        cash_val = int(summary.get("nxdy_excc_amt", 0) or 0)    # D+1 예수금
+                        cash_source = "nxdy_excc_amt"
+                    if cash_val == 0:
+                        cash_val = int(summary.get("dnca_tot_amt", 0) or 0)     # 예수금총액
+                        cash_source = "dnca_tot_amt"
+                if cash_source != _last_cash_source:
+                    logger.info(f"💰 예수금 계산 소스 변경: {cash_source} (cash={cash_val:,}원)")
+                    _last_cash_source = cash_source
 
                 total_pnl, total_pnl_rate = compute_total_pnl(total_eval)
                 account = {

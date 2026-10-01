@@ -60,6 +60,10 @@ class RouterContext:
     # 사이징 한도와 달리 이건 안전 차단이라 운영 ctx에서 None이면 buy_gate가 fail-closed로
     # 매수를 차단한다(조용히 건너뛰지 않음). 테스트 등에서만 비워둔다.
     get_market_warning_fn: Optional[Callable[..., Any]] = None
+    # 주문 응답불명(uncertain) 재확인 시 보유 포지션 메모리 캐시까지 무효화하기 위한 콜러블
+    # (dashboard/main.py.invalidate_stock_positions_cache — [AT] order-result-reconcile).
+    # None이면 redis 캐시만 지우고 재조회한다(메모리 캐시 TTL 10초 이내엔 옛 값일 수 있음).
+    invalidate_positions_cache_fn: Optional[Callable[..., Any]] = None
 
 
 async def route_early(user_msg: str, ctx: RouterContext) -> Optional[str]:
@@ -121,7 +125,9 @@ async def route_late(user_msg: str, ctx: RouterContext) -> Optional[str]:
     # 매수 제안(proposal) 승인/거절
     reply = await order_handler.handle_proposal_response(
         user_msg, redis=ctx.redis, kis_order_fn=ctx.kis_order,
-        log_journal_fn=ctx.log_journal, send_telegram_fn=ctx.send_telegram)
+        log_journal_fn=ctx.log_journal, send_telegram_fn=ctx.send_telegram,
+        get_positions_fn=ctx.get_stock_positions, pool=ctx.pool,
+        invalidate_cache_fn=ctx.invalidate_positions_cache_fn)
     if reply is not None:
         return reply
 
@@ -132,7 +138,8 @@ async def route_late(user_msg: str, ctx: RouterContext) -> Optional[str]:
         get_stock_positions_fn=ctx.get_stock_positions, send_telegram_fn=ctx.send_telegram,
         log_journal_fn=ctx.log_journal, get_balance_fn=ctx.get_balance_fn,
         get_recent_ohlcv_fn=ctx.get_recent_ohlcv_fn,
-        get_market_warning_fn=ctx.get_market_warning_fn)
+        get_market_warning_fn=ctx.get_market_warning_fn,
+        invalidate_cache_fn=ctx.invalidate_positions_cache_fn)
     if reply is not None:
         return reply
 

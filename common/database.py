@@ -56,6 +56,25 @@ class Database:
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
             """, bot, asset_type, symbol, side, price, quantity, amount, strategy, pnl)
 
+    async def insert_balance_snapshot(self, bot, total_krw, cash_krw, eval_krw) -> bool:
+        """일별 총자산 기록. pnl_today는 오해 소지가 있어 항상 NULL로 둔다.
+        같은 날(KST) 같은 bot 기록이 이미 있으면 INSERT하지 않고 건너뛴다(재시작·재배포 중복 방지).
+        반환값: 새로 기록했으면 True, 이미 있어서 건너뛰었으면 False."""
+        async with self.pool.acquire() as conn:
+            exists = await conn.fetchval("""
+                SELECT EXISTS(
+                    SELECT 1 FROM balance_snapshot
+                    WHERE bot=$1 AND (ts AT TIME ZONE 'Asia/Seoul')::date = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                )
+            """, bot)
+            if exists:
+                return False
+            await conn.execute("""
+                INSERT INTO balance_snapshot (bot, total_krw, cash_krw, eval_krw, pnl_today)
+                VALUES ($1, $2, $3, $4, NULL)
+            """, bot, total_krw, cash_krw, eval_krw)
+            return True
+
     async def get_recent_ohlcv(self, symbol, limit=60, asset="stock", daily=False):
         if daily:
             table = "stock_daily_ohlcv"

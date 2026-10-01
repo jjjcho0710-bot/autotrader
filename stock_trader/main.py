@@ -37,6 +37,9 @@ MARKET_OPEN   = time(9, 0)
 MARKET_CLOSE  = time(15, 30)
 ML_TRAIN_TIME = time(15, 40)
 ML_TRAINED_KEY_TTL_SEC = 3 * 86400  # ml:trained:{KST날짜} 키 만료 (3일)
+BALANCE_SNAPSHOT_WINDOW_START = time(15, 35)
+BALANCE_SNAPSHOT_WINDOW_END   = time(16, 30)
+BALANCE_SNAPSHOT_RETRY_SEC = 60
 
 KST = timezone(timedelta(hours=9))
 
@@ -230,6 +233,7 @@ class StockTrader:
             self.subscribe_strategy_updates(),
             self._price_monitor(),
             self._six_hour_report(),
+            self._daily_balance_snapshot(),
         )
 
     # ── 메인 루프 ─────────────────────────────────────────
@@ -1628,6 +1632,99 @@ class StockTrader:
                 logger.info("📨 6시간 주식 리포트 전송")
             except Exception as e:
                 logger.error(f"주식 리포트 실패: {e}")
+
+    @staticmethod
+    def _next_balance_snapshot_window_start(now: datetime) -> datetime:
+        """다음 날의 기록 창(15:35) 시작 시각. 주말/휴장일 여부는 루프가 다시 돌 때 재확인한다."""
+        tomorrow = now + timedelta(days=1)
+        return tomorrow.replace(
+            hour=BALANCE_SNAPSHOT_WINDOW_START.hour, minute=BALANCE_SNAPSHOT_WINDOW_START.minute,
+            second=0, microsecond=0,
+        )
+
+    async def _has_trading_activity_today(self, now: datetime) -> bool:
+        """오늘(KST) 장이 실제로 열렸는지를 1분봉(stock_ohlcv) 갱신 여부로 확인한다.
+        stock_daily_ohlcv는 16:00 이후에만 채워지므로 15:35~16:30 판단 창에는 항상 비어
+        있어 기준으로 쓸 수 없다. 조회 자체가 실패하면 예외를 그대로 전파해 호출부가
+        휴장일로 단정하지 않고 재시도하게 한다."""
+        today = now.date()
+        async with db.pool.acquire() as conn:
+            has_intraday = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM stock_ohlcv WHERE ts::date = $1)", today
+            )
+        return bool(has_intraday)
+
+    async def _try_record_balance_snapshot(self) -> bool:
+        """오늘 치 일별 총자산 기록을 1회 시도한다.
+        get_balance()가 stale이거나 total=0(조회 실패)이면 기록하지 않고 False를 반환해 다음 시도로 넘긴다."""
+        acct = await self.trader.get_balance()
+        total = acct.get("total", 0) or 0
+        cash = acct.get("cash", 0) or 0
+        if acct.get("stale") or total <= 0:
+            return False
+        eval_krw = total - cash
+        await db.insert_balance_snapshot("stock_trader", total, cash, eval_krw)
+        return True
+
+    async def _daily_balance_snapshot(self):
+        """평일 15:35~16:30 KST 사이, 매매 사이클(_run_cycle)과 독립적으로 일별 총자산을 1회 기록한다.
+        주말은 기록하지 않는다. 평일이라도 오늘 1분봉(stock_ohlcv) 갱신이 창이 끝날 때까지 전혀
+        없으면 휴장일로 보수적으로 판단해 기록을 생략한다. 조회 예외는 휴장일로 단정하지 않고
+        1분 뒤 재시도한다."""
+        while self.running:
+            try:
+                now = datetime.now(KST)
+
+                if now.weekday() >= 5:
+                    await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
+                    continue
+
+                window_start = now.replace(
+                    hour=BALANCE_SNAPSHOT_WINDOW_START.hour, minute=BALANCE_SNAPSHOT_WINDOW_START.minute,
+                    second=0, microsecond=0,
+                )
+                window_end = now.replace(
+                    hour=BALANCE_SNAPSHOT_WINDOW_END.hour, minute=BALANCE_SNAPSHOT_WINDOW_END.minute,
+                    second=0, microsecond=0,
+                )
+
+                if now < window_start:
+                    await asyncio.sleep((window_start - now).total_seconds())
+                    continue
+                if now > window_end:
+                    if getattr(self, "_balance_snapshot_handled_for", None) != now.date():
+                        logger.warning("일별 총자산 기록 실패: 창(15:35~16:30) 안에 유효한 잔고를 얻지 못함")
+                        self._balance_snapshot_handled_for = now.date()
+                    await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
+                    continue
+
+                try:
+                    has_activity = await self._has_trading_activity_today(now)
+                except Exception as e:
+                    logger.warning(f"거래일 판단 조회 실패(무시, 재시도): {e}")
+                    await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
+                    continue
+
+                if not has_activity:
+                    # 아직 창(~16:30) 안이므로 포기하지 않고 다음 시도로 넘긴다.
+                    # 창이 끝날 때까지 계속 없으면 위 window_end 분기에서 그날 기록을 생략한다.
+                    await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
+                    continue
+
+                try:
+                    recorded = await self._try_record_balance_snapshot()
+                except Exception as e:
+                    logger.warning(f"일별 총자산 기록 시도 실패(무시): {e}")
+                    recorded = False
+
+                if recorded:
+                    self._balance_snapshot_handled_for = now.date()
+                    await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
+                else:
+                    await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
+            except Exception as e:
+                logger.warning(f"일별 총자산 기록 코루틴 예외(무시): {e}")
+                await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
 
     async def _notify_error(self, error: str):
         try:

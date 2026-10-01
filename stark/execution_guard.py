@@ -143,6 +143,91 @@ async def _check_averaging_down_guard(pool: Any, bot: str, symbol: str, price: f
     return None
 
 
+# 물타기(추가매수) 정책 위반 사유 코드 → 사람이 읽을 문구. execute()의 신호 경로와 채팅
+# 직접매수 경로(buy_gate)가 동일 문구를 쓰도록 공용으로 둔다.
+_AVERAGING_DOWN_REASON_TEXT = {
+    "averaging_down_already_used": "물타기 정책: 종목당 평생 1회 한도 이미 사용",
+    "averaging_down_price_drop_exceeded": "물타기 정책: 최초 매수가 대비 -3% 초과 하락",
+    "averaging_down_no_entry_history": "물타기 정책: 최초 매수 이력 확인 불가",
+    "averaging_down_check_failed": "물타기 정책 확인 실패로 매수 보류",
+}
+
+
+async def _resolve_held_and_inflight_symbols(redis: Any, get_positions_fn) -> tuple:
+    """KIS 실제 보유 종목 + 접수됐지만 잔고에 아직 안 나타난 in-flight 매수 기록의 합집합을
+    구한다. 반환: (합집합 set 또는 None, 조회실패 여부). 조회 자체가 실패/예외/stale이면
+    (None, True)로 fail-closed를 알린다(호출부는 이 경우 매수를 차단해야 한다)."""
+    try:
+        pos_res = await get_positions_fn()
+        if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
+            return None, True
+        positions = pos_res.get("data") or []
+    except Exception as e:
+        logger.error(f"보유 종목수 조회 예외(fail-closed 적용): {e}")
+        return None, True
+
+    kis_held_symbols = {
+        p.get("symbol") for p in positions
+        if isinstance(p, dict) and p.get("symbol")
+    }
+
+    inflight_symbols = set()
+    if redis is not None:
+        try:
+            keys = await redis.keys("stark:inflight_buy:*")
+            for k in (keys or []):
+                k_str = k.decode() if isinstance(k, bytes) else str(k)
+                inflight_symbols.add(k_str.split(":")[-1])
+        except Exception as e:
+            logger.warning(f"inflight buy keys 조회 실패: {e}")
+
+    # KIS 잔고에 나타나면 in-flight 기록 삭제
+    if redis is not None and inflight_symbols and kis_held_symbols:
+        resolved = inflight_symbols & kis_held_symbols
+        for s in resolved:
+            try:
+                await redis.delete(f"stark:inflight_buy:{s}")
+            except Exception:
+                pass
+            inflight_symbols.discard(s)
+
+    return kis_held_symbols | inflight_symbols, False
+
+
+async def check_buy_position_limits(
+    symbol: str, price: float, *, pool: Any, redis: Any, bot: str,
+    get_positions_fn, max_positions: Optional[int] = None,
+) -> Optional[Dict[str, str]]:
+    """보유 종목수 한도(fail-closed) + 이미 보유 중인 종목의 추가매수(물타기) 정책을 한
+    곳에서 검사한다. 신호 경로(execute())와 채팅 직접매수 경로(buy_gate())가 공용으로 쓴다
+    (PM 지시: 코드를 복사하지 말고 기존 함수를 재사용·추출). 반환: 통과 시 None. 차단 시
+    {"blocked": 사유코드, "reason": 사람이 읽을 문구}(max_positions_limit은 "limit" 키도 포함)."""
+    total_held_symbols, check_failed = await _resolve_held_and_inflight_symbols(redis, get_positions_fn)
+    if check_failed:
+        return {"blocked": "positions_check_failed", "reason": "보유 종목수 확인 불가"}
+
+    is_already_held = symbol in total_held_symbols
+
+    # 이미 보유 중인 종목에 대한 추가매수(물타기) 정책 강제 — (a) 종목당 평생 1회 한도,
+    # (b) 최초 매수가 대비 -3% 이내 조건 중 하나라도 위반하면 차단한다.
+    if is_already_held:
+        block_reason = await _check_averaging_down_guard(pool, bot, symbol, price)
+        if block_reason:
+            reason_text = _AVERAGING_DOWN_REASON_TEXT.get(block_reason, "물타기 정책 위반")
+            return {"blocked": block_reason, "reason": reason_text}
+
+    limit = max_positions
+    if limit is None:
+        limit = await _get_max_positions(pool, default=5)
+
+    # 신규 종목 매수인데 합집합이 max_positions 이상이면 차단
+    if not is_already_held and len(total_held_symbols) >= limit:
+        reason_text = f"최대 보유 종목수 한도 초과 ({len(total_held_symbols)}/{limit})"
+        return {"blocked": "max_positions_limit", "reason": reason_text, "limit": limit}
+
+    return None
+
+
 # 매수 실패 사유 중 몇 초~몇 분이면 풀리는 일시적 오류로 보고 짧게 재시도할 키워드
 # (stock_trader/main.py._STOP_LOSS_TRANSIENT_MARKERS와 동일 원칙을 매수 쪽에도 적용)
 BUY_FAIL_TRANSIENT_MARKERS = ("초당", "거래건수", "체결 0주", "체결수량 0", "미체결", "rate", "Rate")
@@ -288,144 +373,35 @@ async def execute(
 
     # (2) 매수 판단과 주문을 하나의 Lock으로 직렬화
     async with get_buy_lock():
-        # (1) 매수 경로에서 주문 직전에 KIS 실제 보유 종목 수를 다시 조회 (실패 시 fail-closed)
+        # (1) 매수 경로에서 주문 직전에 보유 종목수 한도(fail-closed) + 물타기 정책을
+        # 한 곳에서 검사 (check_buy_position_limits — buy_gate()와 공용)
         if is_buy and bot == "stock_trader" and get_positions_fn is not None:
-            is_check_failed = False
-            positions = []
-            try:
-                pos_res = await get_positions_fn()
-                if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
-                    is_check_failed = True
-                else:
-                    positions = pos_res.get("data") or []
-            except Exception as e:
-                logger.error(f"보유 종목수 조회 예외(fail-closed 적용): {e}")
-                is_check_failed = True
-
-            # (1) fail-closed: 확인 불가 시 주문하지 않고 SKIP 처리
-            if is_check_failed:
-                skip_reason = "보유 종목수 확인 불가"
-                logger.info(f"⏭️ {skip_reason} — 매수 SKIP: {symbol} ({name})")
-
-                from stark.decision_logger import log_decision
-                await log_decision(
-                    pool, symbol, "SKIP",
-                    name=name,
-                    confidence=decision.get("confidence", 0.0),
-                    reason=skip_reason,
-                    rationale="실행 레이어 안전장치: KIS 보유 종목수 확인 실패/예외/stale 상태로 매수 차단(fail-closed)",
-                    strategy=strategy,
-                    source="execution_guard",
-                    executed=False,
-                    order_success=None,
-                    price=float(price),
-                    quantity=float(qty),
-                )
-
-                if log_journal_fn:
-                    await log_journal_fn(bot, symbol, name, action, strategy, reason,
-                                         "SKIP", skip_reason, False, False, price, qty)
-
-                return {
-                    "success": True,
-                    "executed": False,
-                    "skipped": True,
-                    "blocked": "positions_check_failed",
-                    "reason": skip_reason,
-                    "jarvis_reply": reply,
-                }
-
-            # (2) 접수됐지만 잔고에 아직 안 나타난 in-flight 매수 추적 및 합집합 계산
-            kis_held_symbols = {
-                p.get("symbol") for p in positions
-                if isinstance(p, dict) and p.get("symbol")
-            }
-
-            inflight_symbols = set()
-            if redis is not None:
-                try:
-                    keys = await redis.keys("stark:inflight_buy:*")
-                    for k in (keys or []):
-                        k_str = k.decode() if isinstance(k, bytes) else str(k)
-                        inflight_symbols.add(k_str.split(":")[-1])
-                except Exception as e:
-                    logger.warning(f"inflight buy keys 조회 실패: {e}")
-
-            # KIS 잔고에 나타나면 in-flight 기록 삭제
-            if redis is not None and inflight_symbols and kis_held_symbols:
-                resolved = inflight_symbols & kis_held_symbols
-                for s in resolved:
-                    try:
-                        await redis.delete(f"stark:inflight_buy:{s}")
-                    except Exception:
-                        pass
-                    inflight_symbols.discard(s)
-
-            # 한도 계산: KIS 보유 종목과 in-flight 기록의 합집합
-            total_held_symbols = kis_held_symbols | inflight_symbols
-            is_already_held = symbol in total_held_symbols
-
-            # 이미 보유 중인 종목에 대한 추가매수(물타기) 정책 강제 — AI가 EXECUTE/EXECUTE_SMALL로
-            # 판단했더라도 (a) 종목당 평생 1회 한도, (b) 최초 매수가 대비 -3% 이내 조건 중
-            # 하나라도 위반하면 코드 레벨에서 SKIP 처리한다.
-            if is_already_held:
-                block_reason = await _check_averaging_down_guard(pool, bot, symbol, price)
-                if block_reason:
-                    reason_text = {
-                        "averaging_down_already_used": "물타기 정책: 종목당 평생 1회 한도 이미 사용",
-                        "averaging_down_price_drop_exceeded": "물타기 정책: 최초 매수가 대비 -3% 초과 하락",
-                        "averaging_down_no_entry_history": "물타기 정책: 최초 매수 이력 확인 불가",
-                        "averaging_down_check_failed": "물타기 정책 확인 실패로 매수 보류",
-                    }.get(block_reason, "물타기 정책 위반")
-                    logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
-
-                    from stark.decision_logger import log_decision
-                    await log_decision(
-                        pool, symbol, "SKIP",
-                        name=name,
-                        confidence=decision.get("confidence", 0.0),
-                        reason=reason_text,
-                        rationale=f"실행 레이어 안전장치: 보유중 종목 추가매수(물타기) 정책 위반({block_reason})",
-                        strategy=strategy,
-                        source="execution_guard",
-                        executed=False,
-                        order_success=None,
-                        price=float(price),
-                        quantity=float(qty),
-                    )
-
-                    if log_journal_fn:
-                        await log_journal_fn(bot, symbol, name, action, strategy, reason,
-                                             "SKIP", reason_text, False, False, price, qty)
-
-                    return {
-                        "success": True,
-                        "executed": False,
-                        "skipped": True,
-                        "blocked": block_reason,
-                        "reason": reason_text,
-                        "jarvis_reply": reply,
-                    }
-
             limit = max_positions
             if limit is None:
                 limit = signal.get("max_positions")
-            if limit is None:
-                limit = await _get_max_positions(pool, default=5)
+            blocked = await check_buy_position_limits(
+                symbol, price, pool=pool, redis=redis, bot=bot,
+                get_positions_fn=get_positions_fn, max_positions=limit,
+            )
+            if blocked:
+                block_code = blocked["blocked"]
+                reason_text = blocked["reason"]
+                logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
 
-            # 신규 종목 매수인데 합집합이 max_positions 이상이면 SKIP
-            if not is_already_held and len(total_held_symbols) >= limit:
-                skip_reason = f"최대 보유 종목수 한도 초과 ({len(total_held_symbols)}/{limit})"
-                logger.info(f"⏭️ {skip_reason} — 매수 SKIP: {symbol} ({name})")
+                if block_code == "positions_check_failed":
+                    rationale = "실행 레이어 안전장치: KIS 보유 종목수 확인 실패/예외/stale 상태로 매수 차단(fail-closed)"
+                elif block_code == "max_positions_limit":
+                    rationale = f"실행 레이어 안전장치: 최대 보유 종목수({blocked.get('limit')}) 도달로 인한 매수 차단"
+                else:
+                    rationale = f"실행 레이어 안전장치: 보유중 종목 추가매수(물타기) 정책 위반({block_code})"
 
-                # (3) stark_decisions에 SKIP과 사유로 기록 (텔레그램 알림은 보내지 않음)
                 from stark.decision_logger import log_decision
                 await log_decision(
                     pool, symbol, "SKIP",
                     name=name,
                     confidence=decision.get("confidence", 0.0),
-                    reason=skip_reason,
-                    rationale=f"실행 레이어 안전장치: 최대 보유 종목수({limit}) 도달로 인한 매수 차단",
+                    reason=reason_text,
+                    rationale=rationale,
                     strategy=strategy,
                     source="execution_guard",
                     executed=False,
@@ -434,17 +410,16 @@ async def execute(
                     quantity=float(qty),
                 )
 
-                # 매매일지 기록 (텔레그램 알림은 호출하지 않음)
                 if log_journal_fn:
                     await log_journal_fn(bot, symbol, name, action, strategy, reason,
-                                         "SKIP", skip_reason, False, False, price, qty)
+                                         "SKIP", reason_text, False, False, price, qty)
 
                 return {
                     "success": True,
                     "executed": False,
                     "skipped": True,
-                    "blocked": "max_positions_limit",
-                    "reason": skip_reason,
+                    "blocked": block_code,
+                    "reason": reason_text,
                     "jarvis_reply": reply,
                 }
 
@@ -587,3 +562,80 @@ async def execute(
                           "EXECUTE_SMALL" if is_small else "EXECUTE",
                           reply, True, False, price, qty)
     return {"success": False, "executed": False, "error": order.get("error")}
+
+
+# 투자경고/VI 미발동(정상) 기준값. mrkt_warn_cls_code는 stock_trader/main.py(1316행)와 동일하게
+# "00"만 정상으로 본다. vi_cls_code는 코드베이스 내 실측 응답(tests/test_kis_market_warning.py)에서
+# 정상 종목이 "N"으로 관측된 값만 확인되어 있어("확인 필요": 그 외 "발동" 코드 전체 목록은 KIS
+# 공식 문서로 교차검증 필요) 그 외 값(빈 문자열 포함)은 보수적으로 차단한다.
+_MRKT_WARN_OK_CODE = "00"
+_VI_OK_CODE = "N"
+
+# buy_gate()가 반환하는 차단 사유 코드 → 채팅 응답에 노출할 문구.
+_PRECHECK_REASON_TEXT = {
+    "buy_fail_suppress": "최근 매수 실패로 재시도가 잠시 제한돼 있어요",
+    "bad_disclosure": "악재성 공시 종목이라 매수할 수 없습니다",
+    "daily_stop_loss_limit": "당일 손절 2회 이상으로 오늘 신규 매수가 차단됐습니다",
+}
+
+
+async def buy_gate(
+    symbol: str, price: float, *, pool: Any, redis: Any, bot: str = "stock_trader",
+    get_positions_fn: Optional[Any] = None, get_market_warning_fn: Optional[Any] = None,
+    max_positions: Optional[int] = None, allow_missing_deps: bool = False,
+) -> Optional[Dict[str, str]]:
+    """채팅 직접 매수(router/handlers/order_handler.handle_trade_command) 전용 매수 관문.
+    신호 경로(stark/execution_guard.precheck + execute() 내 보유종목수/물타기 체크)와 동일한
+    안전장치를 한 곳에서 검사한다(PM 지시, [AT] buy-gate-unification — router/handlers/
+    order_handler.py가 execution_guard를 전혀 거치지 않아 신규·추가매수 안전장치가 채팅
+    경로에서는 한 번도 적용되지 않았던 문제를 고친다).
+
+    검사 순서: (1) precheck — 매수 실패 억제/악재성 공시/당일 손절 2회, (2) 보유 종목수
+    한도(fail-closed)·물타기 정책(check_buy_position_limits), (3) 투자경고/VI 상태
+    (fail-closed — 조회 실패 시 차단).
+
+    get_positions_fn/get_market_warning_fn은 운영 ctx에서 반드시 주입해야 한다. 둘 중
+    하나라도 None이면 조용히 건너뛰는 fail-open이 되지 않도록 기본적으로 매수를 차단한다
+    (allow_missing_deps=True는 두 의존성과 무관한 분기만 검증하는 테스트 전용 플래그).
+
+    반환: 통과 시 None. 차단 시 {"blocked": 사유코드, "reason": 사람이 읽을 문구}."""
+    blocked = await precheck(symbol, "buy", bot, pool=pool, redis=redis)
+    if blocked:
+        if "error" in blocked:
+            return {"blocked": "precheck_error", "reason": blocked["error"]}
+        code = blocked.get("blocked", "precheck_blocked")
+        return {"blocked": code, "reason": _PRECHECK_REASON_TEXT.get(code, "안전장치에 의해 매수가 차단됐습니다")}
+
+    if get_positions_fn is None or get_market_warning_fn is None:
+        if not allow_missing_deps:
+            logger.error(
+                f"buy_gate 의존성 누락(fail-closed) [{symbol}]: "
+                f"get_positions_fn={'O' if get_positions_fn else 'X'}, "
+                f"get_market_warning_fn={'O' if get_market_warning_fn else 'X'}"
+            )
+            return {"blocked": "gate_dependency_missing", "reason": "종목 상태 확인 실패 — 잠시 후 다시 시도"}
+
+    if get_positions_fn is not None:
+        position_blocked = await check_buy_position_limits(
+            symbol, price, pool=pool, redis=redis, bot=bot,
+            get_positions_fn=get_positions_fn, max_positions=max_positions,
+        )
+        if position_blocked:
+            return position_blocked
+
+    if get_market_warning_fn is not None:
+        try:
+            warning = await get_market_warning_fn(symbol)
+        except Exception as e:
+            logger.warning(f"투자경고/VI 조회 예외(안전을 위해 매수 차단) [{symbol}]: {e}")
+            warning = None
+        if not warning:
+            return {"blocked": "market_warning_check_failed", "reason": "종목 상태 확인 실패 — 잠시 후 다시 시도"}
+        warn_code = warning.get("mrkt_warn_cls_code", "")
+        if warn_code != _MRKT_WARN_OK_CODE:
+            return {"blocked": "investment_warning", "reason": "투자경고 종목이라 매수할 수 없습니다"}
+        vi_code = warning.get("vi_cls_code", "")
+        if vi_code != _VI_OK_CODE:
+            return {"blocked": "vi_triggered", "reason": "VI(변동성완화장치) 발동 종목이라 매수할 수 없습니다"}
+
+    return None

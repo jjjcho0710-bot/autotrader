@@ -70,6 +70,10 @@ class TestChatSizingCapWiring(unittest.IsolatedAsyncioTestCase):
             patch.object(dm, "_log_journal", new=AsyncMock()),
             patch.object(dm, "_get_balance_for_sizing", new=fake_get_balance),
             patch.object(dm, "_get_recent_daily_ohlcv_for_sizing", new=AsyncMock(return_value=[])),
+            # 매수 안전장치 관문(stark.execution_guard.buy_gate, [AT] buy-gate-unification)이
+            # 투자경고/VI 조회에 쓰는 의존성 — 정상 종목으로 통과시켜 사이징 한도만 검증한다.
+            patch.object(dm, "_get_market_warning_for_gate",
+                         new=AsyncMock(return_value={"mrkt_warn_cls_code": "00", "vi_cls_code": "N"})),
             patch.object(dm.intent_router, "route_early", new=AsyncMock(return_value=None)),
             patch("aiohttp.ClientSession", return_value=_price_session(400_000)),
         ]

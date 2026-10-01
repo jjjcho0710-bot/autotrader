@@ -93,8 +93,29 @@ class _AcquireCtx:
 
 
 class FakeTradeConnection:
-    def __init__(self):
+    """trade_history INSERT 기록에 더해, stark.execution_guard.precheck/buy_gate가 매수 전에
+    조회하는 공시(stock_disclosure)·당일 손절 횟수 쿼리에도 안전한 기본값(공시 없음, 손절 0회)
+    으로 응답한다([AT] buy-gate-unification — 채팅 매수가 이 안전장치를 거치게 되면서 필요)."""
+
+    def __init__(self, stop_loss_count=0, disclosures=None, buy_history=None):
         self.inserted = []
+        self.stop_loss_count = stop_loss_count
+        self.disclosures = disclosures if disclosures is not None else []
+        # symbol -> [{"price": ...}, ...] 매수 이력(물타기 정책 검사용, side='BUY' 쿼리)
+        self.buy_history = buy_history or {}
+
+    async def fetch(self, query, *args):
+        if "stock_disclosure" in query:
+            return list(self.disclosures)
+        if "trade_history" in query and "side='BUY'" in query:
+            symbol = args[1]
+            return list(self.buy_history.get(symbol, []))
+        return []
+
+    async def fetchval(self, query, *args):
+        if "trade_history" in query:
+            return self.stop_loss_count
+        return None
 
     async def execute(self, query, *args):
         assert "trade_history" in query
@@ -103,8 +124,9 @@ class FakeTradeConnection:
 
 
 class FakePool:
-    def __init__(self):
-        self._conn = FakeTradeConnection()
+    def __init__(self, stop_loss_count=0, disclosures=None, buy_history=None):
+        self._conn = FakeTradeConnection(
+            stop_loss_count=stop_loss_count, disclosures=disclosures, buy_history=buy_history)
 
     def acquire(self):
         return _AcquireCtx(self._conn)
@@ -367,7 +389,11 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inserted_args[-1], 110000.0)
 
     async def test_buy_success_has_no_pnl_display(self):
-        """매수는 평단가 조회·손익 계산·표시를 하지 않는다(기존 동작 유지)."""
+        """매수는 평단가 조회·손익 계산·표시를 하지 않는다(기존 동작 유지). 매수 안전장치
+        관문(stark.execution_guard.buy_gate, [AT] buy-gate-unification)이 보유 종목수 한도
+        확인을 위해 get_stock_positions_fn을 호출하지만, 그 결과를 pnl/평단가 계산에는
+        쓰지 않는다 — 이전엔 매수 시 보유 조회 자체를 하지 않았지만 이제는 안전장치 때문에
+        호출되므로, 호출 자체를 금지하던 예전 단언은 더 이상 유효하지 않다."""
         universe = Universe(None)
         universe.replace_cache({"삼성전자": "005930"})
         pool = FakePool()
@@ -377,7 +403,10 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            raise AssertionError("매수 시엔 보유 조회를 호출하면 안 된다")
+            return {"success": True, "data": []}
+
+        async def get_market_warning(symbol):
+            return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
 
         async def kis_order(symbol, price, qty, is_buy):
             return {"success": True}
@@ -394,7 +423,8 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
                 "삼성전자 2주 매수", pool=pool, redis=redis, universe=universe,
                 get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
                 get_stock_positions_fn=get_stock_positions,
-                send_telegram_fn=send_telegram, log_journal_fn=log_journal)
+                send_telegram_fn=send_telegram, log_journal_fn=log_journal,
+                get_market_warning_fn=get_market_warning)
 
         self.assertNotIn("손익", reply)
         inserted_args = pool._conn.inserted[0]

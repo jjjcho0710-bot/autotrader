@@ -120,6 +120,7 @@ class TestRouteLateSizingWiring(unittest.IsolatedAsyncioTestCase):
     async def test_buy_command_through_route_late_applies_sizing_cap(self):
         from unittest.mock import patch
 
+        from tests.test_order_handler import FakePool as OrderFakePool
         from tests.test_order_handler import FakePriceSession
 
         universe = Universe(None)
@@ -150,10 +151,21 @@ class TestRouteLateSizingWiring(unittest.IsolatedAsyncioTestCase):
             balance_calls.append(1)
             return {"total": 10_000_000}
 
+        async def get_stock_positions():
+            return {"success": True, "data": []}
+
+        async def get_market_warning(symbol):
+            return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
+
+        # pool은 매수 안전장치 관문(stark.execution_guard.buy_gate, [AT] buy-gate-unification)이
+        # 조회하는 공시/당일 손절 횟수 쿼리에 안전한 기본값으로 응답해야 하므로, 이 파일의 범용
+        # _FakePool(모든 쿼리에 증가 id를 반환하는 fetchval이라 손절횟수로 오인될 수 있음) 대신
+        # tests/test_order_handler.py의 FakePool(공시 없음·손절 0회 기본값)을 쓴다.
         ctx = make_ctx(
-            universe=universe, pool=_FakePool(), redis=_FakeRedis(), config=FakeSizingConfig(),
+            universe=universe, pool=OrderFakePool(), redis=_FakeRedis(), config=FakeSizingConfig(),
             get_kis_token=get_kis_token, kis_order=kis_order, send_telegram=send_telegram,
             log_journal=log_journal, get_balance_fn=get_balance, get_recent_ohlcv_fn=None,
+            get_stock_positions=get_stock_positions, get_market_warning_fn=get_market_warning,
         )
 
         def _price_session(price: int):
@@ -168,6 +180,70 @@ class TestRouteLateSizingWiring(unittest.IsolatedAsyncioTestCase):
         self.assertIn("요청 3주 → 사이징 한도로 2주로 조정", reply)
         self.assertIn("2주 매수 완료", reply)
         self.assertTrue(balance_calls, "ctx.get_balance_fn이 route_late를 통해 실제로 호출되지 않았다")
+
+
+class TestRouteLateBuyGateWiring(unittest.IsolatedAsyncioTestCase):
+    """route_late(125행)가 ctx.get_market_warning_fn/ctx.get_stock_positions을 실제로
+    order_handler.handle_trade_command → stark.execution_guard.buy_gate에 전달하는지
+    검증한다([AT] buy-gate-unification). buy_gate는 의존성이 빠지면 fail-closed(차단)로
+    동작하므로, "정상 통과"가 아니라 "투자경고 상태의 종목일 때 실제로 차단되고
+    ctx.get_market_warning_fn이 호출됐는지"로 배선을 검증한다 — 그래야 배선이 빠져도
+    우연히 같은 결과(차단)가 나오는 함정을 피하고, 호출 여부로 배선 자체를 증명할 수 있다."""
+
+    async def test_route_late_wires_market_warning_fn_and_blocks_on_investment_warning(self):
+        from unittest.mock import patch
+
+        from tests.test_order_handler import FakeConfig as OrderFakeConfig
+        from tests.test_order_handler import FakePool as OrderFakePool
+        from tests.test_order_handler import FakePriceSession
+
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        order_calls = []
+
+        async def kis_order(symbol, price_, qty, is_buy):
+            order_calls.append((symbol, price_, qty, is_buy))
+            return {"success": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        warning_calls = []
+
+        async def get_market_warning(symbol):
+            warning_calls.append(symbol)
+            return {"mrkt_warn_cls_code": "02", "vi_cls_code": "N"}  # 투자경고 종목
+
+        ctx = make_ctx(
+            universe=universe, pool=OrderFakePool(), redis=_FakeRedis(), config=OrderFakeConfig(),
+            get_kis_token=get_kis_token, kis_order=kis_order, send_telegram=send_telegram,
+            log_journal=log_journal, get_stock_positions=get_positions,
+            get_market_warning_fn=get_market_warning,
+        )
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
+            reply = await intent_router.route_late("삼성전자 2주 매수", ctx)
+
+        self.assertIsNotNone(reply)
+        self.assertIn("⛔", reply)
+        self.assertIn("투자경고", reply)
+        self.assertEqual(order_calls, [], "투자경고 종목인데 주문이 실행됨 — buy_gate가 적용되지 않음")
+        self.assertEqual(
+            warning_calls, ["005930"],
+            "ctx.get_market_warning_fn이 route_late를 통해 실제로 호출되지 않았다"
+            " — RouterContext/route_late 배선이 빠졌을 가능성",
+        )
 
 
 if __name__ == "__main__":

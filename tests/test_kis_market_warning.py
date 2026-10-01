@@ -9,6 +9,8 @@ stock_trader/kis_trader.py의 get_market_warning() (투자경고/VI 상태 조�
 5. 응답 output이 비어있으면 None을 반환한다.
 6. 네트워크 예외 발생 시 None을 반환한다.
 7. 연속 호출 시 KISTrader 공용 최소 호출 간격(KIS_MIN_CALL_INTERVAL_SEC)만큼 대기한다(속도제한 방지).
+8. 실제 KIS는 속도제한(EGW00201)을 HTTP 500으로 반환한다(10/1 10:58:48 로그 실측).
+   status==200 조건에 걸려 재시도가 발동하지 않던 버그 회귀 테스트(fix/kis-rate-limit-http500).
 """
 import sys
 import types
@@ -92,6 +94,28 @@ class DummySession:
         pass
 
 
+class QueueDummySession:
+    """호출될 때마다 큐에서 다음 (data, status) 응답을 꺼내는 세션 더블(순차 재시도 시나리오 검증용)."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.call_count = 0
+
+    def get(self, url, headers=None, params=None):
+        self.call_count += 1
+        data, status = self._responses.pop(0)
+        return DummyResponse(data, status=status)
+
+    async def close(self):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
 class TestGetMarketWarning(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.trader = KISTrader()
@@ -142,6 +166,20 @@ class TestGetMarketWarning(unittest.IsolatedAsyncioTestCase):
         result = await self.trader.get_market_warning("147760")
 
         self.assertIsNone(result)
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_rate_limit_http_500_retries_then_succeeds(self, mock_sleep):
+        """실제 KIS는 속도제한(EGW00201)을 HTTP 500으로 반환한다(10/1 10:58:48 로그 실측).
+        status==200 조건에 걸려 재시도가 발동하지 않던 버그 회귀 테스트."""
+        limited = ({"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"}, 500)
+        success = ({"rt_cd": "0", "output": {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}}, 200)
+        session = QueueDummySession([limited, success])
+        self.trader._new_session = lambda: session
+
+        result = await self.trader.get_market_warning("005930")
+
+        self.assertEqual(result, {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"})
+        self.assertEqual(session.call_count, 2)
 
     @patch("asyncio.sleep", new_callable=AsyncMock)
     async def test_empty_output_returns_none(self, mock_sleep):

@@ -16,6 +16,9 @@ tests/test_kis_rate_limit_and_buy_retry.py - [AT] fix/kis-rate-limit-and-buy-ret
    1.5초 후 1회 자동 재시도해 성공을 반환한다.
 4. sell()은 공용 최소 호출 간격 적용에서는 제외되지만(체결 지연이 손실 확대로
    이어질 수 있어서), 속도제한(EGW00201) 응답은 buy()와 동일하게 1회 자동 재시도한다.
+5. get_balance()는 실제 KIS가 속도제한(EGW00201)을 HTTP 500으로 반환하는 경우에도
+   (10/1 10:58:48, 9/30 11:18:20 로그 실측) status==200 여부와 무관하게 재시도한다
+   (fix/kis-rate-limit-http500 — status==200 조건에 걸려 재시도가 발동하지 않던 버그 수정).
 """
 import sys
 import types
@@ -89,7 +92,12 @@ class _QueueSession:
 
     def _next(self):
         self.call_count += 1
-        return _Resp(self._responses.pop(0))
+        item = self._responses.pop(0)
+        if isinstance(item, tuple):
+            data, status = item
+        else:
+            data, status = item, 200
+        return _Resp(data, status=status)
 
     def get(self, url, *args, **kwargs):
         return self._next()
@@ -178,6 +186,26 @@ class TestGetBalanceRateLimitRetry(unittest.IsolatedAsyncioTestCase):
             "rt_cd": "0",
             "output": {"ord_psbl_cash": "1000000", "tot_evlu_amt": "2000000"},
         }
+        session = _QueueSession([limited_resp, success_resp])
+        trader._new_session = lambda: session
+
+        res = await trader.get_balance()
+
+        self.assertEqual(res["cash"], 1000000)
+        self.assertNotIn("stale", res)
+        self.assertEqual(session.call_count, 2)
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_get_balance_retries_on_http_500_rate_limit_then_succeeds(self, mock_sleep):
+        """실제 KIS는 속도제한(EGW00201)을 HTTP 500으로 반환한다(10/1 10:58:48,
+        9/30 11:18:20 로그). status==200 조건에 걸려 재시도가 발동하지 않던 버그
+        회귀 테스트."""
+        trader = KISTrader()
+        limited_resp = ({"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"}, 500)
+        success_resp = ({
+            "rt_cd": "0",
+            "output": {"ord_psbl_cash": "1000000", "tot_evlu_amt": "2000000"},
+        }, 200)
         session = _QueueSession([limited_resp, success_resp])
         trader._new_session = lambda: session
 

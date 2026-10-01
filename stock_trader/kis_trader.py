@@ -211,7 +211,7 @@ class KISTrader:
                 ) as resp:
                     status = resp.status
                     data = await resp.json()
-            if status == 200 and self._is_rate_limited(data):
+            if self._is_rate_limited(data):
                 logger.warning(f"⏳ [{symbol}] 종목상태 조회 KIS 속도제한(EGW00201) — 1.5초 후 재시도")
                 await asyncio.sleep(1.5)
                 async with self._new_session() as sess:
@@ -278,7 +278,7 @@ class KISTrader:
                         ) as resp:
                             status = resp.status
                             data = await resp.json()
-                    if attempt == 0 and status == 200 and self._is_rate_limited(data):
+                    if attempt == 0 and self._is_rate_limited(data):
                         logger.warning("⏳ KIS 잔고 조회 속도제한(EGW00201) — 1.5초 후 재시도")
                         await asyncio.sleep(1.5)
                         continue

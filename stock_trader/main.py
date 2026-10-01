@@ -1643,20 +1643,16 @@ class StockTrader:
         )
 
     async def _has_trading_activity_today(self, now: datetime) -> bool:
-        """오늘(KST) 거래 이력 또는 일봉 갱신이 있는지 확인한다.
-        둘 다 없으면 휴장일(평일이라도)일 가능성이 있어 기록을 보수적으로 생략한다."""
+        """오늘(KST) 장이 실제로 열렸는지를 1분봉(stock_ohlcv) 갱신 여부로 확인한다.
+        stock_daily_ohlcv는 16:00 이후에만 채워지므로 15:35~16:30 판단 창에는 항상 비어
+        있어 기준으로 쓸 수 없다. 조회 자체가 실패하면 예외를 그대로 전파해 호출부가
+        휴장일로 단정하지 않고 재시도하게 한다."""
         today = now.date()
         async with db.pool.acquire() as conn:
-            has_trade = await conn.fetchval("""
-                SELECT EXISTS(
-                    SELECT 1 FROM trade_history
-                    WHERE (created_at AT TIME ZONE 'Asia/Seoul')::date = $1
-                )
-            """, today)
-            has_ohlcv = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM stock_daily_ohlcv WHERE ts = $1)", today
+            has_intraday = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM stock_ohlcv WHERE ts::date = $1)", today
             )
-        return bool(has_trade or has_ohlcv)
+        return bool(has_intraday)
 
     async def _try_record_balance_snapshot(self) -> bool:
         """오늘 치 일별 총자산 기록을 1회 시도한다.
@@ -1672,8 +1668,9 @@ class StockTrader:
 
     async def _daily_balance_snapshot(self):
         """평일 15:35~16:30 KST 사이, 매매 사이클(_run_cycle)과 독립적으로 일별 총자산을 1회 기록한다.
-        주말은 기록하지 않는다. 평일이라도 오늘 거래 이력/일봉 갱신이 전혀 없으면 휴장일로 보수적으로
-        판단해 기록을 생략한다(판단 기준: trade_history 또는 stock_daily_ohlcv에 오늘 날짜 행이 있는지)."""
+        주말은 기록하지 않는다. 평일이라도 오늘 1분봉(stock_ohlcv) 갱신이 창이 끝날 때까지 전혀
+        없으면 휴장일로 보수적으로 판단해 기록을 생략한다. 조회 예외는 휴장일로 단정하지 않고
+        1분 뒤 재시도한다."""
         while self.running:
             try:
                 now = datetime.now(KST)
@@ -1701,10 +1698,17 @@ class StockTrader:
                     await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
                     continue
 
-                if not await self._has_trading_activity_today(now):
-                    logger.warning("일별 총자산 기록 생략: 오늘 거래 이력/일봉 갱신 없음(휴장일 추정)")
-                    self._balance_snapshot_handled_for = now.date()
-                    await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
+                try:
+                    has_activity = await self._has_trading_activity_today(now)
+                except Exception as e:
+                    logger.warning(f"거래일 판단 조회 실패(무시, 재시도): {e}")
+                    await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
+                    continue
+
+                if not has_activity:
+                    # 아직 창(~16:30) 안이므로 포기하지 않고 다음 시도로 넘긴다.
+                    # 창이 끝날 때까지 계속 없으면 위 window_end 분기에서 그날 기록을 생략한다.
+                    await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
                     continue
 
                 try:

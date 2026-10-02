@@ -210,7 +210,7 @@ async def handle_trade_command(
     user_msg: str, *, pool: Any, redis: Any, universe: Any, get_kis_token_fn, config: Any,
     kis_order_fn, get_stock_positions_fn, send_telegram_fn, log_journal_fn,
     get_balance_fn=None, get_recent_ohlcv_fn=None, get_market_warning_fn=None,
-    invalidate_cache_fn=None,
+    get_quote_fn=None, invalidate_cache_fn=None,
 ) -> Optional[str]:
     """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
     from common.telegram import CHANNEL_SLIM  # 지연 임포트(테스트 환경에 aiohttp 없어도 동작)
@@ -231,30 +231,25 @@ async def handle_trade_command(
     action = "buy" if is_buy else "sell"
     action_kr = "매수" if is_buy else "매도"
 
-    # 현재가 (검증된 KIS 직접 조회 경로)
+    # 현재가 — dashboard의 KIS 속도제한 대응 시세 조회(_fetch_kis_inquire_price →
+    # _kis_quote_get, 최대 2회 재시도)를 RouterContext로 주입받아 재사용한다
+    # ([AT] fix/chat-price-lookup). 예전엔 재시도 없는 단발 조회라 KIS 속도제한(EGW00201)에
+    # 걸리면 output이 비어 price=0 → "현재가 조회 실패"로 끝났다(10/1 SK텔레콤, 10/2 부국철강
+    # 실측). get_market_warning_fn과 동일하게 안전 관련 의존성이라, 운영 ctx에서 미주입이면
+    # 조용히 건너뛰지 않고 fail-closed로 주문을 차단한다.
+    if get_quote_fn is None:
+        logger.error(f"수동주문 현재가 조회 함수 누락(fail-closed) [{symbol}]")
+        return f"⚠️ {name}({symbol}) 현재가 조회 기능이 연결되지 않았습니다 — 주문 불가"
     price = 0
     try:
-        token = await get_kis_token_fn()
-        if token:
-            import aiohttp as _aiohttp
-            import ssl as _ssl
-            _c = _ssl.create_default_context()
-            _c.check_hostname = False
-            _c.verify_mode = _ssl.CERT_NONE
-            async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
-                pr = await sess.get(
-                    f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
-                    headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
-                             "appsecret": config.kis_app_secret,
-                             "tr_id": "FHKST01010100", "custtype": "P"},
-                    params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
-                    timeout=_aiohttp.ClientTimeout(total=8))
-                o = (await pr.json()).get("output", {})
-                price = int(o.get("stck_prpr", 0) or 0)
-                if o.get("hts_kor_isnm"):
-                    name = o.get("hts_kor_isnm")
+        quote = await get_quote_fn(symbol)
     except Exception as e:
         logger.warning(f"수동주문 현재가 조회 실패 [{symbol}]: {e}")
+        quote = None
+    if quote:
+        price = int(quote.get("stck_prpr", 0) or 0)
+        if quote.get("hts_kor_isnm"):
+            name = quote.get("hts_kor_isnm")
     if price <= 0:
         return f"⚠️ {name}({symbol}) 현재가 조회 실패 — 주문 불가"
 

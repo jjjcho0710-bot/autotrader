@@ -60,6 +60,13 @@ class RouterContext:
     # 사이징 한도와 달리 이건 안전 차단이라 운영 ctx에서 None이면 buy_gate가 fail-closed로
     # 매수를 차단한다(조용히 건너뛰지 않음). 테스트 등에서만 비워둔다.
     get_market_warning_fn: Optional[Callable[..., Any]] = None
+    # 채팅 직접 매매("종목 N주 매수/매도")의 현재가 조회용 — dashboard의 KIS 속도제한
+    # 대응 시세 조회(_fetch_kis_inquire_price → _kis_quote_get, 최대 2회 재시도)를 주입한다
+    # ([AT] fix/chat-price-lookup — 기존엔 재시도 없는 단발 조회라 KIS 속도제한(EGW00201)에
+    # 걸리면 output이 비어 price=0 → "현재가 조회 실패"로 끝났다, 10/1 SK텔레콤·10/2 부국철강
+    # 실측). get_market_warning_fn과 동일하게 안전 관련 의존성이라 운영 ctx에서 None이면
+    # order_handler가 fail-closed로 주문을 차단한다(조용히 건너뛰지 않음). 테스트 등에서만 비워둔다.
+    get_quote_fn: Optional[Callable[..., Any]] = None
     # 주문 응답불명(uncertain) 재확인 시 보유 포지션 메모리 캐시까지 무효화하기 위한 콜러블
     # (dashboard/main.py.invalidate_stock_positions_cache — [AT] order-result-reconcile).
     # None이면 redis 캐시만 지우고 재조회한다(메모리 캐시 TTL 10초 이내엔 옛 값일 수 있음).
@@ -138,7 +145,7 @@ async def route_late(user_msg: str, ctx: RouterContext) -> Optional[str]:
         get_stock_positions_fn=ctx.get_stock_positions, send_telegram_fn=ctx.send_telegram,
         log_journal_fn=ctx.log_journal, get_balance_fn=ctx.get_balance_fn,
         get_recent_ohlcv_fn=ctx.get_recent_ohlcv_fn,
-        get_market_warning_fn=ctx.get_market_warning_fn,
+        get_market_warning_fn=ctx.get_market_warning_fn, get_quote_fn=ctx.get_quote_fn,
         invalidate_cache_fn=ctx.invalidate_positions_cache_fn)
     if reply is not None:
         return reply

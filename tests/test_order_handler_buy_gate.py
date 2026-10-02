@@ -13,18 +13,17 @@ router/handlers/order_handler.handle_trade_command() 매수 안전장치 관문(
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from market.universe import Universe  # noqa: E402
 from router.handlers import order_handler  # noqa: E402
-from tests.test_order_handler import FakeConfig, FakePool, FakePriceSession, FakeRedis  # noqa: E402
+from tests.test_order_handler import FakeConfig, FakePool, FakeRedis, make_quote_fn  # noqa: E402
 
 
-def _price_session(price: int = 70000, name: str = "삼성전자"):
-    return FakePriceSession({"output": {"stck_prpr": str(price), "hts_kor_isnm": name}})
+def _quote_fn(price: int = 70000, name: str = "삼성전자"):
+    return make_quote_fn({"output": {"stck_prpr": str(price), "hts_kor_isnm": name}})
 
 
 async def _ok_positions():
@@ -54,6 +53,7 @@ class TestOrderHandlerBuyGateBlocks(unittest.IsolatedAsyncioTestCase):
             get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
             get_stock_positions_fn=get_stock_positions_fn or _ok_positions,
             get_market_warning_fn=get_market_warning_fn or _ok_warning,
+            get_quote_fn=_quote_fn(),
         )
 
     async def _run(self, msg, **kwargs):
@@ -66,8 +66,7 @@ class TestOrderHandlerBuyGateBlocks(unittest.IsolatedAsyncioTestCase):
         full_kwargs = self._kwargs(**kwargs)
         full_kwargs["send_telegram_fn"] = send_telegram
         full_kwargs["log_journal_fn"] = log_journal
-        with patch("aiohttp.ClientSession", return_value=_price_session()):
-            return await order_handler.handle_trade_command(msg, **full_kwargs)
+        return await order_handler.handle_trade_command(msg, **full_kwargs)
 
     async def test_blocked_by_investment_warning(self):
         async def warning(symbol):

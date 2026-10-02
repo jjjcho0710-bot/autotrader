@@ -432,7 +432,8 @@ class StockTrader:
                     logger.error(f"❌ [{symbol}] 학습 오류: {e}")
                     other += 1
 
-            if symbols_to_train:
+            # [AT] 학습 결과 알림은 매주 금요일(KST)에만 전송 — 학습 자체는 매일 유지
+            if symbols_to_train and datetime.now(KST).weekday() == 4:
                 sem = asyncio.Semaphore(10)
 
                 async def _name(r):

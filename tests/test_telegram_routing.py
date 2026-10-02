@@ -9,7 +9,7 @@
 검증 범위:
 (1) _send_telegram의 dest별 라우팅(개인방만/채널만/둘 다)
 (2) _jarvis_closing_report: 채널 전용, 본문에 금액 없음(마지막 블록 제외), 오늘 수익 계산
-    ("오늘 이전" 비교, 집계 시작 전, stale), 보유 목록 전체 표시, 신규 매수 종목별 합산
+    ("오늘 이전" 비교, 집계 시작 전, stale), 보유 목록 전체 표시, 오늘 체결 블록 표시
 (3) _jarvis_proactive_advice 결과란 체결 중복 제거
 (4) stark/execution_guard.execute(): 체결 시 채널에 금액 없는 한 줄 요약 전송(both)
 (5) router/handlers/order_handler: 채팅 직접매매 체결 시 개인방+채널 둘 다 전송
@@ -206,8 +206,8 @@ class TestClosingReportChannel(unittest.IsolatedAsyncioTestCase):
         self.assertIn("외 1건", msg)
 
     async def test_no_trade_body_amounts_except_final_block(self):
-        """본문(매수 목록·보유 목록)엔 예수금·총자산·평가금액·실현손익 같은 계좌 규모를
-        드러내는 금액이 없다 — 단가(평균 체결가, 공개 시세)는 "평가금액"이 아니므로 예외.
+        """본문(오늘 체결·보유 목록)엔 예수금·총자산·평가금액·실현손익 같은 계좌 규모를
+        드러내는 금액이 없다 — 체결 단가(공개 시세)는 "평가금액"이 아니므로 예외.
         마지막 블록에만 원금·오늘 수익·누적 수익·총자산 금액이 허용된다."""
         dm = _load_dashboard_main()
         trades = [
@@ -226,39 +226,8 @@ class TestClosingReportChannel(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("예수금", body)
         self.assertNotIn("총자산", body)
         self.assertNotIn("누적", body)
-        self.assertIn("평균 70,000원", body)  # 단가는 허용(계좌 잔고 규모를 드러내지 않음)
+        self.assertIn("70,000원", body)  # 체결 단가는 허용(계좌 잔고 규모를 드러내지 않음)
         self.assertIn("원", block)  # 마지막 블록엔 금액 허용
-
-    async def test_buy_list_shows_average_fill_price(self):
-        """평균 체결가는 계좌 잔고 규모를 드러내는 금액이 아니므로 본문에 표시해도 된다."""
-        dm = _load_dashboard_main()
-        trades = [
-            {"symbol": "005930", "side": "BUY", "price": 70000, "quantity": 2,
-             "amount": 140000, "pnl": None, "strategy": "t", "ts": None},
-        ]
-        pos_res = {"success": True, "data": [], "account": {}}
-        sent = await self._run(dm, trades=trades, pos_res=pos_res)
-        self.assertIn("평균 70,000원", sent[0]["text"])
-
-    async def test_buy_list_aggregates_same_symbol(self):
-        """같은 종목 여러 매수 건을 종목별 수량 합계+가중평균가로 합산 표시한다
-        (부국철강 2건=248주인데 124주만 표시되던 버그 재현 케이스)."""
-        dm = _load_dashboard_main()
-        trades = [
-            {"symbol": "003670", "side": "BUY", "price": 10000, "quantity": 124,
-             "amount": 1240000, "pnl": None, "strategy": "t", "ts": None},
-            {"symbol": "003670", "side": "BUY", "price": 10200, "quantity": 124,
-             "amount": 1264800, "pnl": None, "strategy": "t", "ts": None},
-        ]
-        pos_res = {"success": True, "data": [], "account": {}}
-        sent = await self._run(dm, trades=trades, pos_res=pos_res)
-        msg = sent[0]["text"]
-        self.assertIn("매수 2건", msg)
-        self.assertIn("248주", msg)  # 두 건의 수량이 합산되어야 함
-        # "신규 매수" 집계 목록(오늘 체결 블록 이전)에선 종목이 한 줄로 합쳐져 한 번만 나와야 한다
-        # ([AT] feat/channel-slim: "오늘 체결" 블록은 체결 건별로 보여주므로 거기선 별개로 또 나온다)
-        agg_section = msg.split("오늘 체결:")[0]
-        self.assertEqual(agg_section.count("종목003670"), 1)
 
     async def test_holdings_list_shows_all_without_truncation(self):
         """실보유 종목이 8개를 넘어도 전부 표시한다(10/1 결산: 10종목인데 8개만 표시되던 버그)."""

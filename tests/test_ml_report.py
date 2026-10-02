@@ -5,7 +5,8 @@ ML 학습 결과 보고서 / 하루 한 번 학습 / 보고서 전송 위치 검
 ml_trained_date 가 메모리라 재시작하면 같은 학습·메시지를 다시 보냈다. 여기서는
 1. build_ml_report_text 의 내용(종목명, 성공/실패/사유별 개수, 읽는 법, 정렬, 경고 표시, 요약, 전 종목 나열),
 2. common.telegram.split_text / send_report 의 분할·전송 위치·실패 격리,
-3. Redis 키(ml:trained:{KST날짜})로 재시작 후에도 재학습하지 않는지
+3. Redis 키(ml:trained:{KST날짜})로 재시작 후에도 재학습하지 않는지,
+4. [AT] 학습 결과 알림은 매주 금요일(KST)에만 전송하고 학습 자체는 매일 유지하는지
 를 고정한다.
 """
 import asyncio
@@ -23,6 +24,16 @@ from common import telegram  # noqa: E402
 main_mod = sys.modules[StockTrader.__module__]
 KST = timezone(timedelta(hours=9))
 NOW = datetime(2026, 9, 28, 15, 41, tzinfo=KST)
+FRIDAY_NOW = datetime(2026, 10, 2, 15, 41, tzinfo=KST)   # 금요일 — 알림 전송일
+MONDAY_NOW = datetime(2026, 9, 28, 15, 41, tzinfo=KST)   # 월요일 — 알림 미전송일
+
+
+def _fixed_datetime(fixed_now):
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now.astimezone(tz) if tz else fixed_now
+    return _FixedDatetime
 
 
 def rec(symbol, acc, samples=300, name=None):
@@ -238,10 +249,13 @@ class TestRunMlTraining(unittest.IsolatedAsyncioTestCase):
         with _fake_ml(train), \
                 mock.patch.object(main_mod, "db", fake_db), \
                 mock.patch.object(main_mod, "_resolve_stock_name", mock.AsyncMock(side_effect=lambda c: names.get(c, c))), \
+                mock.patch.object(main_mod, "datetime", _fixed_datetime(FRIDAY_NOW)), \
                 mock.patch("common.telegram.send_stock", mock.AsyncMock(side_effect=sent.append)):
             # [AT] feat/channel-slim: CHANNEL_SLIM=True(기본)면 ML 학습 결과는 채널이 아닌
             # 개인방(send_stock)으로 간다 — 라우팅 자체는 아래 TestRunMlTrainingChannelRouting
             # 에서 따로 검증하고, 여기서는 보고서 내용만 본다.
+            # [AT] 학습 결과 알림은 금요일에만 전송하므로 날짜를 금요일로 고정한다 —
+            # 전송 자체의 요일 게이팅은 아래 TestRunMlTrainingFridayGating 에서 따로 검증한다.
             ok = await trader._run_ml_training()
         return ok, sent, saved
 
@@ -302,6 +316,7 @@ class TestRunMlTrainingChannelRouting(unittest.IsolatedAsyncioTestCase):
         with _fake_ml(train), \
                 mock.patch.object(main_mod, "db", fake_db), \
                 mock.patch.object(main_mod, "_resolve_stock_name", mock.AsyncMock(side_effect=lambda c: c)), \
+                mock.patch.object(main_mod, "datetime", _fixed_datetime(FRIDAY_NOW)), \
                 mock.patch("common.telegram.CHANNEL_SLIM", channel_slim), \
                 mock.patch("common.telegram.send_stock", mock.AsyncMock(side_effect=sent_personal.append)), \
                 mock.patch("common.telegram.send_report", mock.AsyncMock(side_effect=sent_channel.append)):
@@ -319,6 +334,42 @@ class TestRunMlTrainingChannelRouting(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual(len(sent_channel), 1)
         self.assertEqual(sent_personal, [])
+
+
+class TestRunMlTrainingFridayGating(unittest.IsolatedAsyncioTestCase):
+    """[AT] 학습 결과 알림은 매주 금요일(KST)에만 전송 — 학습 자체(및 메모리 저장)는 요일과
+    무관하게 매일 수행된다."""
+
+    async def _run(self, now):
+        async def train(symbol, ohlcv):
+            return {"success": True, "accuracy": 55.0, "samples": 300}
+
+        fake_db = mock.Mock(pool=None)
+        fake_db.get_watchlist_symbols = mock.AsyncMock(return_value=["005930"])
+        fake_db.get_recent_ohlcv = mock.AsyncMock(return_value=[{}] * 100)
+        sent, saved = [], []
+        trader = _trader()
+        trader._save_ml_memory = mock.AsyncMock(side_effect=lambda r, s: saved.append((list(r), list(s))))
+        with _fake_ml(train), \
+                mock.patch.object(main_mod, "db", fake_db), \
+                mock.patch.object(main_mod, "_resolve_stock_name", mock.AsyncMock(side_effect=lambda c: c)), \
+                mock.patch.object(main_mod, "datetime", _fixed_datetime(now)), \
+                mock.patch("common.telegram.send_stock", mock.AsyncMock(side_effect=sent.append)), \
+                mock.patch("common.telegram.send_report", mock.AsyncMock(side_effect=sent.append)):
+            ok = await trader._run_ml_training()
+        return ok, sent, saved
+
+    async def test_notification_sent_on_friday(self):
+        ok, sent, saved = await self._run(FRIDAY_NOW)
+        self.assertTrue(ok)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(len(saved), 1)  # 학습 자체는 전송 여부와 무관하게 매일 수행
+
+    async def test_notification_skipped_on_non_friday(self):
+        ok, sent, saved = await self._run(MONDAY_NOW)
+        self.assertTrue(ok)
+        self.assertEqual(sent, [])       # 알림만 생략
+        self.assertEqual(len(saved), 1)  # 학습·메모리 저장은 그대로 수행
 
 
 class TestMlOncePerDay(unittest.IsolatedAsyncioTestCase):

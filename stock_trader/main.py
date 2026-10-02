@@ -234,6 +234,7 @@ class StockTrader:
             self._price_monitor(),
             self._six_hour_report(),
             self._daily_balance_snapshot(),
+            self._reconcile_pending_orders(),
         )
 
     # ── 메인 루프 ─────────────────────────────────────────
@@ -719,6 +720,114 @@ class StockTrader:
             logger.debug(f"최근 매도 이력 확인 실패 [{symbol}]: {e}")
             return False
 
+    # ── 지연 체결(pending) 백그라운드 재확인 ──────────────
+    # KISTrader.buy()/sell()가 재확인 2회(+3초, +7초)에도 체결을 확인 못 해 pending으로
+    # 반환한 주문을 여기서 계속 지켜본다. 자동 재주문은 하지 않는다([AT]
+    # fix/stock-trader-fill-reconcile).
+    PENDING_RECONCILE_INTERVAL_SEC = 30
+    PENDING_RECONCILE_TIMEOUT_SEC = 600  # 10분
+
+    async def _reconcile_pending_orders(self):
+        while self.running:
+            await asyncio.sleep(self.PENDING_RECONCILE_INTERVAL_SEC)
+            try:
+                await self._reconcile_pending_orders_once()
+            except Exception as e:
+                logger.warning(f"pending 주문 재확인 루프 오류: {e}")
+
+    async def _reconcile_pending_orders_once(self):
+        try:
+            keys = [k async for k in cache.client.scan_iter(match="order_pending:*")]
+        except Exception as e:
+            logger.warning(f"pending 주문 키 조회 실패: {e}")
+            return
+        for key in keys:
+            try:
+                await self._reconcile_one_pending_order(key)
+            except Exception as e:
+                logger.warning(f"pending 주문 처리 오류 [{key}]: {e}")
+
+    async def _reconcile_one_pending_order(self, key: str):
+        order_no = key.split(":", 1)[1]
+        raw = await cache.client.get(key)
+        if not raw:
+            return
+        ctx = json.loads(raw)
+        symbol = ctx["symbol"]
+        side = ctx["side"]
+        qty = ctx["qty"]
+        price = ctx["price"]
+        strategy = ctx.get("strategy") or ""
+        avg_price = ctx.get("avg_price")
+        accepted_at = ctx.get("accepted_at", 0)
+
+        if side == "buy":
+            filled_qty = await self.trader._get_filled_qty(order_no, symbol, side="02")
+            fill_price = price
+        else:
+            filled_qty, fetched_avg = await self.trader._get_filled_qty(order_no, symbol, with_price=True)
+            fill_price = fetched_avg or price
+
+        if filled_qty:
+            pnl = None
+            if side == "sell" and avg_price is not None:
+                pnl = int((fill_price - avg_price) * filled_qty)
+            await db.insert_trade(
+                bot="stock_trader", asset_type="stock", symbol=symbol,
+                side="BUY" if side == "buy" else "SELL",
+                price=int(fill_price), quantity=filled_qty, amount=fill_price * filled_qty,
+                strategy=f"{strategy}_지연체결확인" if strategy else "지연체결확인",
+                pnl=pnl,
+            )
+            await self._invalidate_position_cache()
+            self.trader.invalidate_balance_cache()
+            try:
+                from common.telegram import send_stock
+                elapsed_sec = int(_time.time() - accepted_at)
+                await send_stock(
+                    f"✅ <b>지연 체결 확인 [{symbol}]</b>\n"
+                    f"{'매수' if side == 'buy' else '매도'} {filled_qty}주 @ {int(fill_price):,}원 "
+                    f"(주문 {qty}주, 접수 후 {elapsed_sec}초 뒤 확인)"
+                )
+            except Exception:
+                pass
+            await self._clear_pending_order(order_no, symbol, side)
+            return
+
+        if _time.time() - accepted_at < self.PENDING_RECONCILE_TIMEOUT_SEC:
+            return
+
+        alert_key = f"order_pending_unknown_alerted:{order_no}"
+        try:
+            already_alerted = await cache.client.get(alert_key)
+        except Exception:
+            already_alerted = None
+        if not already_alerted:
+            try:
+                from common.telegram import send_stock
+                await send_stock(
+                    f"⚠️ <b>주문 결과 불명 [{symbol}]</b>\n"
+                    f"{'매수' if side == 'buy' else '매도'} {qty}주 주문이 접수 후 10분이 지나도 "
+                    f"체결 확인이 되지 않았습니다. 자동 재주문은 하지 않으니 직접 확인해 주세요."
+                )
+            except Exception:
+                pass
+            try:
+                await cache.client.setex(alert_key, 3600, "1")
+            except Exception:
+                pass
+        await self._clear_pending_order(order_no, symbol, side)
+
+    async def _clear_pending_order(self, order_no: str, symbol: str, side: str):
+        try:
+            await cache.client.delete(f"order_pending:{order_no}")
+            lock_key = f"order_pending_lock:{symbol}:{side}"
+            lock_val = await cache.client.get(lock_key)
+            if lock_val == order_no:
+                await cache.client.delete(lock_key)
+        except Exception:
+            pass
+
     async def _jarvis_exit_check(self, symbol: str, cur_price: int,
                                   avg_price: int, pnl_rate: float, qty: int):
         """급락/급등 시 Jarvis에게 매도 여부 판단 요청"""
@@ -854,7 +963,8 @@ class StockTrader:
                 try:
                     # 속도제한(초당 거래건수 초과, EGW00201) 자동 재시도는
                     # KISTrader.sell() 내부에서 처리된다.
-                    result = await self.trader.sell(symbol, cur_price, qty)
+                    result = await self.trader.sell(
+                        symbol, cur_price, qty, strategy=f"{strat_name}_손절", avg_price=avg_price)
                     if result.get("success"):
                         _fq = result.get("filled_qty", qty)
                         _fpnl = int((cur_price - avg_price) * _fq)
@@ -896,6 +1006,10 @@ class StockTrader:
                                 await reset_symbol_alert(symbol, redis_client=cache.client)
                             except Exception:
                                 pass
+                    elif result.get("pending"):
+                        # 체결 확인 대기 중 — 실패로 단정하지 않는다. 억제키/실패알림을 남기지
+                        # 않고 백그라운드 _reconcile_pending_orders()가 확정짓게 둔다.
+                        logger.info(f"⏳ 손절 매도 체결 확인 대기 [{symbol}] {pnl_rate:+.1f}% (pending)")
                     else:
                         err_msg = str(result.get('error', '알 수 없음'))
                         suppress_sec, fail_count = await self._compute_stop_loss_suppress_sec(symbol, err_msg)
@@ -947,7 +1061,9 @@ class StockTrader:
                 if surge_rate >= 10.0 and qty >= 2 and \
                    not await cache.client.get(f"surge_tp:{symbol}"):
                     half_qty = qty // 2
-                    result = await self.trader.sell(symbol, cur_price, half_qty)
+                    result = await self.trader.sell(
+                        symbol, cur_price, half_qty,
+                        strategy=f"{strat_name}_급등절반익절", avg_price=avg_price)
                     if result["success"]:
                         half_qty = result.get("filled_qty", half_qty)
                         half_pnl = int((cur_price - avg_price) * half_qty)
@@ -975,6 +1091,8 @@ class StockTrader:
                         pos["qty"] = qty - half_qty
                         self.positions[symbol] = pos
                         continue
+                    elif result.get("pending"):
+                        logger.info(f"⏳ 급등 절반익절 매도 체결 확인 대기 [{symbol}] (pending)")
             except Exception as e:
                 logger.warning(f"급등 절반익절 처리 오류 [{symbol}]: {e}")
 
@@ -988,7 +1106,9 @@ class StockTrader:
                     entry_prices = [float(r["close"]) for r in rows] if rows else []
                     sig = default_strategy.generate_signal(symbol, entry_prices) if entry_prices else None
                     if sig == "SELL":
-                        result = await self.trader.sell(symbol, cur_price, qty)
+                        result = await self.trader.sell(
+                            symbol, cur_price, qty,
+                            strategy=f"{strat_name}_구간익절_신호소멸", avg_price=avg_price)
                         if result.get("success"):
                             sold_qty = result.get("filled_qty", qty)
                             s_pnl = int((cur_price - avg_price) * sold_qty)
@@ -1032,6 +1152,9 @@ class StockTrader:
                                 except Exception:
                                     pass
                             continue
+                        elif result.get("pending"):
+                            logger.info(
+                                f"⏳ 구간익절(+1~5% 신호소멸) 매도 체결 확인 대기 [{symbol}] (pending)")
                         else:
                             logger.warning(
                                 f"구간익절(+1~5% 신호소멸) 매도 실패 [{symbol}]: {result.get('error')}")
@@ -1067,7 +1190,9 @@ class StockTrader:
                             self._selling.add(symbol)
                             sell_qty = max(1, qty // 2) if (decision == "HALF" and qty >= 2) else qty
                             try:
-                                result = await self.trader.sell(symbol, cur_price, sell_qty)
+                                result = await self.trader.sell(
+                                    symbol, cur_price, sell_qty,
+                                    strategy=f"{strat_name}_AI익절{decision}", avg_price=avg_price)
                             finally:
                                 self._selling.discard(symbol)
                             if result.get("success"):
@@ -1111,6 +1236,11 @@ class StockTrader:
                                             max(60, int((_eod - _now).total_seconds())), "tp")
                                     except Exception:
                                         pass
+                            elif result.get("pending"):
+                                # 체결 확인 대기 중 — 쿨다운 연장/실패 매매일지/실패알림 없이
+                                # 백그라운드 _reconcile_pending_orders()가 확정짓게 둔다.
+                                logger.info(
+                                    f"⏳ AI 익절 매도 체결 확인 대기 [{symbol}] (pending, 판단 {decision})")
                             else:
                                 # 매도 실패: 원인을 로그·매매일지에 남기고, 반복 재시도 방지 위해 쿨다운 대폭 연장
                                 _err = result.get("error", "알 수 없음")
@@ -1151,7 +1281,9 @@ class StockTrader:
                         half_qty = max(1, qty // 2)
                         self._selling.add(symbol)
                         try:
-                            result = await self.trader.sell(symbol, cur_price, half_qty)
+                            result = await self.trader.sell(
+                                symbol, cur_price, half_qty,
+                                strategy=f"{strat_name}_절반확정", avg_price=avg_price)
                         finally:
                             self._selling.discard(symbol)
                         if result.get("success"):
@@ -1186,6 +1318,8 @@ class StockTrader:
                                 self.positions.pop(symbol, None)
                                 await cache.client.delete(half_lock_key, trailing_high_key)
                             continue
+                        elif result.get("pending"):
+                            logger.info(f"⏳ 절반확정 매도 체결 확인 대기 [{symbol}] (pending)")
                         else:
                             logger.warning(f"절반확정 매도 실패 [{symbol}]: {result.get('error')}")
                     else:
@@ -1199,7 +1333,9 @@ class StockTrader:
                         if drop_pct >= self.TRAILING_STOP_PCT:
                             self._selling.add(symbol)
                             try:
-                                result = await self.trader.sell(symbol, cur_price, qty)
+                                result = await self.trader.sell(
+                                    symbol, cur_price, qty,
+                                    strategy=f"{strat_name}_트레일링스탑", avg_price=avg_price)
                             finally:
                                 self._selling.discard(symbol)
                             if result.get("success"):
@@ -1247,6 +1383,8 @@ class StockTrader:
                                     except Exception:
                                         pass
                                 continue
+                            elif result.get("pending"):
+                                logger.info(f"⏳ 트레일링 스탑 매도 체결 확인 대기 [{symbol}] (pending)")
                             else:
                                 logger.warning(f"트레일링 스탑 매도 실패 [{symbol}]: {result.get('error')}")
                 except Exception as e:

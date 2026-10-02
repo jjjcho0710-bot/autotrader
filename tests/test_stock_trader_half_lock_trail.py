@@ -119,7 +119,8 @@ class TestHalfLockRunsOnceAtPlus10Percent(_BaseCycleTest):
 
         await bot._run_cycle()
 
-        bot.trader.sell.assert_awaited_once_with("005930", 11000, 5)
+        bot.trader.sell.assert_awaited_once_with(
+            "005930", 11000, 5, strategy="MA크로스_절반확정", avg_price=10000)
         self.assertEqual(self.fake_redis.store.get("half_lock_done:005930"), "1")
         self.assertEqual(self.fake_redis.store.get("trailing_high:005930"), "11000")
         self.assertEqual(bot.positions["005930"]["qty"], 5)
@@ -173,7 +174,8 @@ class TestTrailingStopTriggersFullSell(_BaseCycleTest):
 
         await bot._run_cycle()
 
-        bot.trader.sell.assert_awaited_once_with("005930", cur_price, 5)
+        bot.trader.sell.assert_awaited_once_with(
+            "005930", cur_price, 5, strategy="MA크로스_트레일링스탑", avg_price=10000)
         self.assertNotIn("005930", bot.positions)
 
     async def test_drop_below_3_percent_from_high_does_not_sell(self):

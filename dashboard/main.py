@@ -2020,6 +2020,7 @@ async def run_knowledge_curate():
 async def _jarvis_weekly_preview():
     """일 20:00 — 다음주 예습: 보유 차트 분석 + 다음주 작전 초안"""
     try:
+        from common.telegram import CHANNEL_SLIM
         pos_txt = ""
         try:
             res = await get_stock_positions()
@@ -2052,7 +2053,8 @@ async def _jarvis_weekly_preview():
                 await redis_client.setex("jarvis:weekly_plan", 86400 * 7, preview[:800])
             except Exception:
                 pass
-            await _send_telegram(f"🗓️ 한강뷰매니저 다음주 예습 브리핑\n{preview[:900]}", dest="channel")
+            await _send_telegram(f"🗓️ 한강뷰매니저 다음주 예습 브리핑\n{preview[:900]}",
+                                  dest="personal" if CHANNEL_SLIM else "channel")
         logger.info("🗓️ 주간 예습 완료")
     except Exception as e:
         logger.error(f"주간 예습 오류: {e}")

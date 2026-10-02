@@ -674,9 +674,9 @@ class _FakeRedisNoop:
 
 class TestChannelSlimDashboardRouting(unittest.IsolatedAsyncioTestCase):
     """_jarvis_daily_plan(오늘의 작전)/_score_journal(판단 채점)/_jarvis_evening_review(복기)/
-    _intraday_scan(장중 보충 스캔)은 CHANNEL_SLIM=True(기본)면 개인방, False면 기존처럼
-    채널로 간다. 마감 결산·주말 학습보고·주간 복습은 이 전환 대상이 아니다(채널 유지, (2)에서
-    이미 검증)."""
+    _intraday_scan(장중 보충 스캔)/_jarvis_weekly_preview(다음주 예습 브리핑)은
+    CHANNEL_SLIM=True(기본)면 개인방, False면 기존처럼 채널로 간다. 마감 결산·주말 학습보고·
+    주간 복습은 이 전환 대상이 아니다(채널 유지, (2)에서 이미 검증)."""
 
     async def _send(self, sent):
         async def fake_send_telegram(text, **kw):
@@ -809,6 +809,32 @@ class TestChannelSlimDashboardRouting(unittest.IsolatedAsyncioTestCase):
             sent = await _run()
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["dest"], "channel")
+
+    async def test_weekly_preview_dest_follows_channel_slim(self):
+        dm = _load_dashboard_main()
+
+        async def _run():
+            sent = []
+            with patch.object(dm, "get_stock_positions",
+                               new=AsyncMock(return_value={"success": True, "data": []})), \
+                 patch.object(dm, "_analyze_chart", new=AsyncMock(return_value="차트: 정배열")), \
+                 patch.object(dm, "_get_jarvis_lessons", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "_get_active_directives", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "_ask_openwebui", new=AsyncMock(return_value="다음주 예습 내용")), \
+                 patch.object(dm, "redis_client", _FakeRedisNoop(), create=True), \
+                 patch.object(dm, "_send_telegram", new=await self._send(sent)):
+                await dm._jarvis_weekly_preview()
+            return sent
+
+        sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("다음주 예습 브리핑", sent[0]["text"])
+        self.assertEqual(sent[0]["dest"], "personal")  # CHANNEL_SLIM=True(기본)
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "channel")  # 되돌리기
 
 
 if __name__ == "__main__":

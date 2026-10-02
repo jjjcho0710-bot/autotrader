@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 TG_API = "https://api.telegram.org/bot"
 
+# [AT] feat/channel-slim (PM 승인): 채널(한강뷰 운영일지)을 "하루가 끝났을 때 읽는 일지"로
+# 한정한다. True면 개별 체결 한 줄 요약·장중 보충 스캔·6시간 리포트·오늘의 작전·판단 채점·
+# 복기 교훈 알림을 채널 대신 개인방(또는 무전송)으로 돌린다. False로 두면 기존 목적지(채널)
+# 로 되돌아간다 — 되돌리기는 이 상수 하나만 바꾸면 된다.
+CHANNEL_SLIM = True
+
 
 async def _send(token: str, chat_id: str, text: str):
     """기본 전송 함수"""
@@ -115,6 +121,37 @@ async def send_report(text: str):
                 return  # 실패 시 나머지 조각은 보내지 않는다
     except Exception as e:
         logger.warning(f"보고서 전송 실패: {type(e).__name__}")
+
+
+def format_fill_lines(trades, max_trades: int = 10, with_time: bool = False) -> list:
+    """체결 목록을 "종목 매수/매도 수량 @ 가격(매도는 손익률%)" 줄들로 포맷 — 6시간 리포트
+    (stock_trader StockTrader._format_six_hour_report)와 마감 결산(dashboard
+    _jarvis_closing_report)의 체결 목록이 같은 규칙을 쓰도록 공용으로 뽑았다
+    ([AT] feat/channel-slim). 시간순 정렬은 호출부가 미리 한다.
+    - trades: [{side, name, price, quantity, pnl, created_at(with_time=True일 때만 사용)}...]
+    - max_trades 초과 시 "외 N건", 빈 목록이면 "없음" 한 줄.
+    """
+    lines = []
+    shown = trades[:max_trades] if max_trades > 0 else []
+    for t in shown:
+        side_kr = "매수" if t["side"] == "BUY" else "매도"
+        qty = float(t["quantity"])
+        price = float(t["price"])
+        prefix = f"{t['created_at'].strftime('%H:%M')} " if with_time else ""
+        line = f" · {prefix}{t['name']} {side_kr} {int(qty):,}주 @ {price:,.0f}원"
+        pnl = t.get("pnl")
+        if t["side"] == "SELL" and pnl is not None:
+            pnl = float(pnl)
+            cost = price * qty - pnl
+            if cost:
+                line += f" ({pnl / cost * 100:+.1f}%)"
+        lines.append(line)
+    extra = len(trades) - len(shown)
+    if extra > 0:
+        lines.append(f" · 외 {extra}건")
+    if not trades:
+        lines.append(" · 없음")
+    return lines
 
 
 def fill_summary_line(*, name: str, symbol: str, side_kr: str, qty, price: float,

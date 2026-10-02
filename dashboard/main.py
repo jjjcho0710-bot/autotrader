@@ -1037,6 +1037,7 @@ async def _jarvis_closing_report():
     한 곳에서만 원금·오늘 수익·누적 수익·총자산 금액을 보여준다."""
     try:
         from datetime import timezone, timedelta
+        from common.telegram import format_fill_lines
         KST = timezone(timedelta(hours=9))
         now_kst = datetime.now(KST)
 
@@ -1101,6 +1102,18 @@ async def _jarvis_closing_report():
                 msg += "신규 매수:\n" + "\n".join(buy_list_items) + "\n"
         else:
             msg += "오늘 거래 없음\n"
+
+        # [AT] feat/channel-slim: 개별 체결 알림이 더 이상 채널로 가지 않으므로, 마감 결산
+        # (일지)에서 하루 체결을 볼 수 있게 요약 블록을 추가한다. trades는 쿼리에서 ts DESC로
+        # 가져왔으므로 reversed()로 시간순(오래된 것부터) 표시 — 6시간 리포트와 같은 공용
+        # 포맷(common.telegram.format_fill_lines)을 재사용한다.
+        fill_dicts = [
+            {"side": t["side"], "name": await _code_to_name(t["symbol"]),
+             "price": t["price"], "quantity": t["quantity"], "pnl": t["pnl"]}
+            for t in reversed(trades)
+        ]
+        msg += (f"\n오늘 체결: 매수 {len(buy_trades)}건 / 매도 {len(sell_trades)}건\n"
+                + "\n".join(format_fill_lines(fill_dicts, max_trades=10)))
 
         msg += f"\n📋 감시종목 {wl_count}개 | 실보유 {len(real_positions)}종목"
         if real_positions:
@@ -1208,6 +1221,7 @@ async def _get_jarvis_lessons(limit: int = 5) -> str:
 async def _jarvis_daily_plan():
     """아침 작전 수립 → Redis 캐시 (장중 빠른 판단의 컨텍스트 1장)"""
     try:
+        from common.telegram import CHANNEL_SLIM
         async with db_pool.acquire() as conn:
             wl = await conn.fetch(
                 "SELECT symbol, name, reason FROM watchlist WHERE is_active=TRUE LIMIT 20")
@@ -1257,7 +1271,8 @@ async def _jarvis_daily_plan():
         if plan and not plan.startswith("❌"):
             await redis_client.setex("jarvis:daily_plan", 60 * 60 * 12, plan)
             logger.info("🧭 오늘의 작전 캐시 완료")
-            await _send_telegram(f"🧭 한강뷰매니저 오늘의 작전 [{now_str}]\n{plan[:900]}", dest="channel")
+            await _send_telegram(f"🧭 한강뷰매니저 오늘의 작전 [{now_str}]\n{plan[:900]}",
+                                  dest="personal" if CHANNEL_SLIM else "channel")
         else:
             logger.warning(f"작전 수립 실패(AI 응답 불가): {str(plan)[:100]}")
     except Exception as e:
@@ -1267,6 +1282,7 @@ async def _jarvis_daily_plan():
 async def _score_journal() -> str:
     """오늘의 판단(SKIP/EXECUTE)을 당일 종가로 채점 → 요약 반환"""
     try:
+        from common.telegram import CHANNEL_SLIM
         async with db_pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT id, symbol, name, action, jarvis_decision, price, principles
@@ -1282,7 +1298,8 @@ async def _score_journal() -> str:
                     WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
                       AND bot='stock_trader'""")
             if not total_today:
-                await _send_telegram("📝 오늘 판단 채점: 기록 0건\n(전략 신호 미발생 — 매수 시도 자체가 없었음)", dest="channel")
+                await _send_telegram("📝 오늘 판단 채점: 기록 0건\n(전략 신호 미발생 — 매수 시도 자체가 없었음)",
+                                      dest="personal" if CHANNEL_SLIM else "channel")
             return ""
         token = await get_kis_token()
         if not token:
@@ -1353,7 +1370,7 @@ async def _score_journal() -> str:
             await redis_client.setex("jarvis:score_today", 3600 * 6, summary)
         except Exception:
             pass
-        await _send_telegram(summary, dest="channel")
+        await _send_telegram(summary, dest="personal" if CHANNEL_SLIM else "channel")
         logger.info("📝 판단 채점 완료: %s건", total)
         return summary
     except Exception as e:
@@ -1370,6 +1387,7 @@ async def _score_then_review():
 async def _jarvis_evening_review(target_date=None):
     """저녁 복기 → 교훈 저장 (target_date 미지정 시 오늘)"""
     try:
+        from common.telegram import CHANNEL_SLIM
         today = target_date or datetime.now(KST).date()
         async with db_pool.acquire() as conn:
             trades = await conn.fetch("""
@@ -1440,7 +1458,8 @@ async def _jarvis_evening_review(target_date=None):
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)", lesson)
-            await _send_telegram(f"🌙 한강뷰매니저 복기\n{lesson}", dest="channel")
+            await _send_telegram(f"🌙 한강뷰매니저 복기\n{lesson}",
+                                  dest="personal" if CHANNEL_SLIM else "channel")
             logger.info("🌙 복기 교훈 저장 완료")
     except Exception as e:
         logger.error(f"복기 오류: {e}")
@@ -1703,6 +1722,7 @@ async def _intraday_scan():
     """장중 감시종목 보충: 그 시점 거래량 상위에서 조건 통과 종목 추가
     (아침 종목 유지, 신규만 추가 — 기준 동일: score≥4, 스팩/칼날 제외)"""
     try:
+        from common.telegram import CHANNEL_SLIM
         now_kst = datetime.now(KST)
         logger.info("🔍 장중 보충 스캔 시작 [%s]", now_kst.strftime("%H:%M"))
         candidates = await _kis_scan_candidates()
@@ -1746,7 +1766,7 @@ async def _intraday_scan():
                    f"신규 감시 {len(added)}종목:\n" + "\n".join(lines))
             if _last_kis_scan_surge_excluded:
                 msg += f"\n급등 제외 {_last_kis_scan_surge_excluded}종목"
-            await _send_telegram(msg, dest="channel")
+            await _send_telegram(msg, dest="personal" if CHANNEL_SLIM else "channel")
             logger.info("🔍 장중 스캔: %d종목 추가(표시), %d종목 등록", len(added), registered)
         else:
             logger.info("🔍 장중 스캔: 전부 기존 감시 중이거나 보유 종목만 등록(%d종목)", registered)

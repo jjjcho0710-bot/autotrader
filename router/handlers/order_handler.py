@@ -89,6 +89,7 @@ async def handle_proposal_response(
     invalidate_cache_fn: Optional[Any] = None,
 ) -> Optional[str]:
     """매수 제안(proposal:{symbol}) 승인/거절 처리"""
+    from common.telegram import CHANNEL_SLIM  # 지연 임포트(테스트 환경에 aiohttp 없어도 동작)
     um = user_msg.strip()
     if not _RE_PROP.search(um):
         return None
@@ -133,9 +134,10 @@ async def handle_proposal_response(
             msg = (f"✅ <b>{target['name']} 매수 체결 (주인 승인)</b>\n"
                    f"{target['qty']}주 @ {int(target['price']):,}원")
             await send_telegram_fn(msg, dest="personal")
-            await send_telegram_fn(
-                _fill_channel_summary(target["name"], symbol, "매수", target["qty"], float(target["price"])),
-                dest="channel")
+            if not CHANNEL_SLIM:
+                await send_telegram_fn(
+                    _fill_channel_summary(target["name"], symbol, "매수", target["qty"], float(target["price"])),
+                    dest="channel")
             return msg.replace("<b>", "").replace("</b>", "")
 
         if order.get("uncertain") and get_positions_fn is not None:
@@ -162,9 +164,10 @@ async def handle_proposal_response(
                 msg = (f"✅ <b>{target['name']} 매수 체결 확인 (응답 지연, 주인 승인)</b>\n"
                        f"{diff_qty}주 @ {int(target['price']):,}원")
                 await send_telegram_fn(msg, dest="personal")
-                await send_telegram_fn(
-                    _fill_channel_summary(target["name"], symbol, "매수", diff_qty, float(target["price"])),
-                    dest="channel")
+                if not CHANNEL_SLIM:
+                    await send_telegram_fn(
+                        _fill_channel_summary(target["name"], symbol, "매수", diff_qty, float(target["price"])),
+                        dest="channel")
                 return msg.replace("<b>", "").replace("</b>", "")
             return (f"⚠️ {target['name']} 주문 결과 불명 — 보유 수량 변화 없음. "
                     f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
@@ -210,6 +213,7 @@ async def handle_trade_command(
     invalidate_cache_fn=None,
 ) -> Optional[str]:
     """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
+    from common.telegram import CHANNEL_SLIM  # 지연 임포트(테스트 환경에 aiohttp 없어도 동작)
     msg = user_msg.strip()
     is_buy = bool(re.search(r"(매수|사자|사줘|사라)", msg))
     is_sell = bool(re.search(r"(매도|팔아|팔자|팔아줘)", msg))
@@ -355,8 +359,9 @@ async def handle_trade_command(
             f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
             f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",
             dest="personal")
-        await send_telegram_fn(
-            _fill_channel_summary(name, symbol, action_kr, qty, price, pnl_rate), dest="channel")
+        if not CHANNEL_SLIM:
+            await send_telegram_fn(
+                _fill_channel_summary(name, symbol, action_kr, qty, price, pnl_rate), dest="channel")
         await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
                               user_msg[:200], "MANUAL", "사용자 직접 지시",
                               True, True, price, qty, source="chat")
@@ -394,8 +399,9 @@ async def handle_trade_command(
                 f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 확인 (응답 지연)</b>\n"
                 f"가격: {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}",
                 dest="personal")
-            await send_telegram_fn(
-                _fill_channel_summary(name, symbol, action_kr, diff_qty, price, pnl_rate), dest="channel")
+            if not CHANNEL_SLIM:
+                await send_telegram_fn(
+                    _fill_channel_summary(name, symbol, action_kr, diff_qty, price, pnl_rate), dest="channel")
             await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
                                   user_msg[:200], "MANUAL_UNCERTAIN_FILLED", "사용자 직접 지시(응답지연 체결확인)",
                                   True, True, price, diff_qty, source="chat")

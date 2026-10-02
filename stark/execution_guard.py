@@ -464,9 +464,11 @@ async def _finalize_filled_order(
         f"한강뷰매니저 판단: {reply[:80]}"
     )
     await send_telegram_fn(msg)
-    if send_channel_fn:
+    from common.telegram import CHANNEL_SLIM  # 지연 임포트(테스트 환경에 aiohttp 없어도 동작)
+    if send_channel_fn and not CHANNEL_SLIM:
         # 매수·매도 체결 알림(개별)은 개인방+채널 둘 다 — 채널엔 한 줄 요약만(금액 없이
-        # 가격·%만, [AT] feat/telegram-routing)
+        # 가격·%만, [AT] feat/telegram-routing). CHANNEL_SLIM=True면 채널 요약은 보내지 않고
+        # 개인방 알림(위 send_telegram_fn)은 그대로 유지한다([AT] feat/channel-slim).
         try:
             channel_line = f"{emoji} {name}({symbol}) {action_kr} {qty:.0f}주 @ {price:,.0f}원"
             if pnl_rate is not None:

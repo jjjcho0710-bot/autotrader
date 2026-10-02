@@ -14,6 +14,7 @@ stock_trader/main.py StockTrader._six_hour_report / _format_six_hour_report 단�
   - 메시지는 4096자를 넘지 않도록 체결 건수를 줄여서 맞춘다.
 """
 import asyncio
+import contextlib
 import sys
 import types
 import unittest
@@ -250,11 +251,17 @@ def _make_trader(positions=None, strategies=None):
 
 
 def _run_six_hour_report(trades, send_report, now_seq, balance=None, positions=None,
-                          strategies=None, stop_after_send=True):
+                          strategies=None, stop_after_send=True, send_stock=None,
+                          channel_slim=None):
     """_six_hour_report 루프를 한 번만 돌린다.
     now_seq: [sleep 이전 now(루프 시작), sleep 이후 now(실제 전송 시각)] — 둘 다 KST-aware.
-    stop_after_send=True: send_report 호출 직후 running=False(정상 전송 경로 테스트용).
+    stop_after_send=True: 전송 호출 직후 running=False(정상 전송 경로 테스트용).
     stop_after_send=False: sleep 직후 running=False(SKIP_IDLE처럼 전송이 안 될 수도 있는 경로용).
+    send_stock: 개인방 발송 캡처용 콜백. 생략하면 send_report와 동일한 콜백을 쓴다([AT]
+    feat/channel-slim: CHANNEL_SLIM 기본값(True)에서는 send_stock 쪽으로 실제 전송되므로,
+    목적지를 구분하지 않는 테스트에서도 루프가 멈추고 메시지가 캡처되게 한다).
+    channel_slim: 지정하면 common.telegram.CHANNEL_SLIM을 이 값으로 패치해 목적지(개인방/채널)
+    를 강제한다. 생략하면 모듈 기본값(True) 그대로 둔다.
     반환값: 검증용으로 fake pool(= DB 조회 호출 인자 확인 가능)을 돌려준다.
     """
     trader = _make_trader(positions=positions, strategies=strategies)
@@ -278,12 +285,30 @@ def _run_six_hour_report(trades, send_report, now_seq, balance=None, positions=N
     real_report = StockTrader._six_hour_report
     report_fn = _send_report_and_stop if stop_after_send else send_report
 
+    if send_stock is not None:
+        async def _send_stock_and_stop(text):
+            await send_stock(text)
+            trader.running = False
+
+        stock_fn = _send_stock_and_stop if stop_after_send else send_stock
+    else:
+        stock_fn = report_fn
+
+    patches = [
+        mock.patch.object(stock_main, "datetime", _FakeNow(now_seq), create=False),
+        mock.patch.object(stock_main.db, "pool", fake_pool, create=True),
+        mock.patch.object(stock_main.asyncio, "sleep", _fake_sleep),
+        mock.patch("common.telegram.send_report", report_fn),
+        mock.patch("common.telegram.send_stock", stock_fn),
+        mock.patch.object(config, "INITIAL_SEED_KRW", 10_000_000),
+    ]
+    if channel_slim is not None:
+        patches.append(mock.patch("common.telegram.CHANNEL_SLIM", channel_slim))
+
     async def _drive():
-        with mock.patch.object(stock_main, "datetime", _FakeNow(now_seq), create=False), \
-             mock.patch.object(stock_main.db, "pool", fake_pool, create=True), \
-             mock.patch.object(stock_main.asyncio, "sleep", _fake_sleep), \
-             mock.patch("common.telegram.send_report", report_fn), \
-             mock.patch.object(config, "INITIAL_SEED_KRW", 10_000_000):
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             await real_report(trader)
 
     asyncio.run(_drive())
@@ -291,21 +316,47 @@ def _run_six_hour_report(trades, send_report, now_seq, balance=None, positions=N
 
 
 class TestSixHourReportChannelOnly(unittest.TestCase):
-    def test_sends_to_channel_only(self):
-        """send_report(채널)만 호출된다 — send_stock(개인방) 호출은 코드상 존재하지 않는다."""
-        report_calls = []
+    def test_channel_slim_default_sends_to_personal_only(self):
+        """[AT] feat/channel-slim: CHANNEL_SLIM=True(기본)이면 개인방(send_stock)으로만 가고
+        채널(send_report)은 호출되지 않는다."""
+        channel_calls, personal_calls = [], []
 
         async def _send_report(text):
-            report_calls.append(text)
+            channel_calls.append(text)
+
+        async def _send_stock(text):
+            personal_calls.append(text)
 
         _run_six_hour_report(
             [{"side": "BUY", "name": "삼성전자", "price": 70000, "quantity": 5, "pnl": None,
               "created_at": _dt(17, 30)}],
-            _send_report, now_seq=[_dt(17, 55), _dt(18, 0)])
+            _send_report, now_seq=[_dt(17, 55), _dt(18, 0)], send_stock=_send_stock)
 
-        self.assertEqual(len(report_calls), 1)
-        self.assertIn("주식 6시간 리포트", report_calls[0])
-        self.assertIn("삼성전자", report_calls[0])
+        self.assertEqual(channel_calls, [])
+        self.assertEqual(len(personal_calls), 1)
+        self.assertIn("주식 6시간 리포트", personal_calls[0])
+        self.assertIn("삼성전자", personal_calls[0])
+
+    def test_channel_slim_false_restores_channel_only(self):
+        """CHANNEL_SLIM=False로 되돌리면 기존처럼 채널(send_report)로만 가고 개인방은 안 간다."""
+        channel_calls, personal_calls = [], []
+
+        async def _send_report(text):
+            channel_calls.append(text)
+
+        async def _send_stock(text):
+            personal_calls.append(text)
+
+        _run_six_hour_report(
+            [{"side": "BUY", "name": "삼성전자", "price": 70000, "quantity": 5, "pnl": None,
+              "created_at": _dt(17, 30)}],
+            _send_report, now_seq=[_dt(17, 55), _dt(18, 0)], send_stock=_send_stock,
+            channel_slim=False)
+
+        self.assertEqual(personal_calls, [])
+        self.assertEqual(len(channel_calls), 1)
+        self.assertIn("주식 6시간 리포트", channel_calls[0])
+        self.assertIn("삼성전자", channel_calls[0])
 
     def test_report_has_no_money_amounts_end_to_end(self):
         """(d) 실제 루프를 돌려도 금액 문구/거래총액이 없어야 한다."""

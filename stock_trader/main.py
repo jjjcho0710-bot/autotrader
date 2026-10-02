@@ -442,8 +442,13 @@ class StockTrader:
                 await asyncio.gather(*(_name(r) for r in trained))
                 meta = {"total": len(symbols_to_train), "insufficient": insufficient, "other": other}
                 msg = build_ml_report_text(trained, meta, datetime.now(KST))
-                from common.telegram import send_report
-                await send_report(msg)
+                # [AT] feat/channel-slim: ML 학습 결과는 신뢰도가 낮은 문서라 CHANNEL_SLIM=True
+                # (기본)면 채널 대신 개인방으로 보낸다. False면 기존처럼 채널로 되돌아간다.
+                from common.telegram import CHANNEL_SLIM, send_report, send_stock
+                if CHANNEL_SLIM:
+                    await send_stock(msg)
+                else:
+                    await send_report(msg)
             if results:
                 await self._save_ml_memory(results, symbols_to_train)
             return True

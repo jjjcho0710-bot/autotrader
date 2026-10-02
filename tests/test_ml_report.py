@@ -238,7 +238,10 @@ class TestRunMlTraining(unittest.IsolatedAsyncioTestCase):
         with _fake_ml(train), \
                 mock.patch.object(main_mod, "db", fake_db), \
                 mock.patch.object(main_mod, "_resolve_stock_name", mock.AsyncMock(side_effect=lambda c: names.get(c, c))), \
-                mock.patch("common.telegram.send_report", mock.AsyncMock(side_effect=sent.append)):
+                mock.patch("common.telegram.send_stock", mock.AsyncMock(side_effect=sent.append)):
+            # [AT] feat/channel-slim: CHANNEL_SLIM=True(기본)면 ML 학습 결과는 채널이 아닌
+            # 개인방(send_stock)으로 간다 — 라우팅 자체는 아래 TestRunMlTrainingChannelRouting
+            # 에서 따로 검증하고, 여기서는 보고서 내용만 본다.
             ok = await trader._run_ml_training()
         return ok, sent, saved
 
@@ -280,6 +283,42 @@ class TestRunMlTraining(unittest.IsolatedAsyncioTestCase):
         _, sent, _ = await self._run(symbols, {s: 100 for s in symbols}, train)
         body = sent[0].split("📊 결과 (정확도 높은 순)")[1]
         self.assertEqual(sum(1 for l in body.split("\n") if l.startswith("· ")), 30)
+
+
+class TestRunMlTrainingChannelRouting(unittest.IsolatedAsyncioTestCase):
+    """[AT] feat/channel-slim: ML 학습 결과(신뢰도 낮은 문서)는 CHANNEL_SLIM=True(기본)면
+    채널이 아닌 개인방으로, False(되돌림)면 기존처럼 채널로 간다."""
+
+    async def _run(self, channel_slim: bool):
+        async def train(symbol, ohlcv):
+            return {"success": True, "accuracy": 55.0, "samples": 300}
+
+        fake_db = mock.Mock(pool=None)
+        fake_db.get_watchlist_symbols = mock.AsyncMock(return_value=["005930"])
+        fake_db.get_recent_ohlcv = mock.AsyncMock(return_value=[{}] * 100)
+        sent_personal, sent_channel = [], []
+        trader = _trader()
+        trader._save_ml_memory = mock.AsyncMock()
+        with _fake_ml(train), \
+                mock.patch.object(main_mod, "db", fake_db), \
+                mock.patch.object(main_mod, "_resolve_stock_name", mock.AsyncMock(side_effect=lambda c: c)), \
+                mock.patch("common.telegram.CHANNEL_SLIM", channel_slim), \
+                mock.patch("common.telegram.send_stock", mock.AsyncMock(side_effect=sent_personal.append)), \
+                mock.patch("common.telegram.send_report", mock.AsyncMock(side_effect=sent_channel.append)):
+            ok = await trader._run_ml_training()
+        return ok, sent_personal, sent_channel
+
+    async def test_channel_slim_true_sends_personal_only(self):
+        ok, sent_personal, sent_channel = await self._run(channel_slim=True)
+        self.assertTrue(ok)
+        self.assertEqual(len(sent_personal), 1)
+        self.assertEqual(sent_channel, [])
+
+    async def test_channel_slim_false_sends_channel_only(self):
+        ok, sent_personal, sent_channel = await self._run(channel_slim=False)
+        self.assertTrue(ok)
+        self.assertEqual(len(sent_channel), 1)
+        self.assertEqual(sent_personal, [])
 
 
 class TestMlOncePerDay(unittest.IsolatedAsyncioTestCase):

@@ -1189,11 +1189,15 @@ async def _learn_from_url(url: str, hint: str = "") -> str:
 
 
 async def _get_jarvis_lessons(limit: int = 5) -> str:
-    """최근 복기 교훈 로드 (아침 작전 수립용)"""
+    """최근 복기 교훈 로드 (아침 작전 수립·능동제안·주간예습·매도판단·매수판단 컨텍스트 공용).
+    PM이 is_active=FALSE로 끈 교훈(편향 유도 등)이 다시 섞여 들어가지 않도록
+    is_active=TRUE만 읽는다([AT] fix/lesson-hygiene — 10/2 공격 유도 교훈 10건을 꺼도
+    최신 3개가 계속 프롬프트에 들어가던 문제)."""
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT content FROM jarvis_notes WHERE category='lesson' ORDER BY created_at DESC LIMIT $1",
+                "SELECT content FROM jarvis_notes WHERE category='lesson' AND is_active=TRUE "
+                "ORDER BY created_at DESC LIMIT $1",
                 limit)
         return "\n".join(f"- {r['content']}" for r in rows) if rows else "(아직 없음)"
     except Exception:
@@ -1366,6 +1370,15 @@ async def _score_then_review():
     await _jarvis_evening_review()
 
 
+# 야간 복기(_jarvis_evening_review)·주간 복습(_jarvis_weekly_review)이 AI가 쓴 문장을
+# jarvis_notes(lesson)에 자동 저장하는 동작을 끈다(기본값, [AT] fix/lesson-hygiene).
+# 판단 채점 자체가 SKIP 기준(+1%)과 매수 기준(+0.5%)이 비대칭이라 "기회 놓침을 최소화하라"는
+# 취지의 편향된 교훈이 매일 재생성됐다(10/2 PM이 교훈 10건을 is_active=FALSE로 꺼도 다음 날
+# 같은 취지가 다시 저장되는 순환). 복기 텔레그램 메시지 전송은 그대로 유지하고 DB 저장만
+# 건너뛴다 — 켜면(True) 기존 동작 그대로 저장된다.
+LESSON_AUTOSAVE_ENABLED = False
+
+
 async def _jarvis_evening_review(target_date=None):
     """저녁 복기 → 교훈 저장 (target_date 미지정 시 오늘)"""
     try:
@@ -1437,12 +1450,13 @@ async def _jarvis_evening_review(target_date=None):
                     lesson = line.strip()
                     break
             lesson = lesson[:300]
-            async with db_pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)", lesson)
+            if LESSON_AUTOSAVE_ENABLED:
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)", lesson)
+                logger.info("🌙 복기 교훈 저장 완료")
             await _send_telegram(f"🌙 한강뷰매니저 복기\n{lesson}",
                                   dest="personal" if CHANNEL_SLIM else "channel")
-            logger.info("🌙 복기 교훈 저장 완료")
     except Exception as e:
         logger.error(f"복기 오류: {e}")
 
@@ -1470,10 +1484,11 @@ async def _jarvis_weekend_study_report():
                 WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'
                   AND jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0
                 GROUP BY COALESCE(name, symbol) ORDER BY n DESC LIMIT 3""")
-            # 이번 주 새로 생긴 교훈
+            # 이번 주 새로 생긴 교훈 — 비활성화된 교훈은 주말 학습보고에도 노출하지 않는다
+            # ([AT] fix/lesson-hygiene)
             lessons = await conn.fetch("""
                 SELECT content, created_at FROM jarvis_notes
-                WHERE category='lesson' AND created_at > NOW() - INTERVAL '7 days'
+                WHERE category='lesson' AND is_active=TRUE AND created_at > NOW() - INTERVAL '7 days'
                 ORDER BY created_at DESC LIMIT 6""")
             # 정제본 핵심 원칙 (카테고리별)
             core = await conn.fetch("""
@@ -1810,16 +1825,17 @@ async def _jarvis_weekly_review():
         review = await _ask_openwebui(prompt, session_id="daily_plan")
         saved = 0
         if review and not review.startswith("❌"):
-            async with db_pool.acquire() as conn:
-                for line in review.split("\n"):
-                    line = line.strip().lstrip("-").strip()
-                    # 정확히 지시한 접두어로 시작하는 줄만 교훈으로 인정
-                    # (예: 인사말에 '교훈'이란 단어만 섞인 문장이 통째로 저장되는 것 방지)
-                    if line.startswith("주간 교훈:") and len(line) > 10 and saved < 3:
-                        await conn.execute(
-                            "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)",
-                            f"[주간] {line[:280]}")
-                        saved += 1
+            if LESSON_AUTOSAVE_ENABLED:
+                async with db_pool.acquire() as conn:
+                    for line in review.split("\n"):
+                        line = line.strip().lstrip("-").strip()
+                        # 정확히 지시한 접두어로 시작하는 줄만 교훈으로 인정
+                        # (예: 인사말에 '교훈'이란 단어만 섞인 문장이 통째로 저장되는 것 방지)
+                        if line.startswith("주간 교훈:") and len(line) > 10 and saved < 3:
+                            await conn.execute(
+                                "INSERT INTO jarvis_notes (category, content) VALUES ('lesson', $1)",
+                                f"[주간] {line[:280]}")
+                            saved += 1
             await _send_telegram(f"📚 한강뷰매니저 주간 복습 완료 — 교훈 {saved}건 저장\n{review[:600]}", dest="channel")
         logger.info(f"📚 주간 복습 완료: 교훈 {saved}건")
     except Exception as e:
@@ -5563,9 +5579,10 @@ async def _training_summary_raw(days: int = 14):
     """트레이닝 페이지용: 교훈 목록 + 일별 채점 성적"""
     try:
         async with db_pool.acquire() as conn:
+            # 트레이닝 페이지에도 비활성화된 교훈은 노출하지 않는다([AT] fix/lesson-hygiene)
             lessons = await conn.fetch("""
                 SELECT content, created_at FROM jarvis_notes
-                WHERE category='lesson' ORDER BY created_at DESC LIMIT 20""")
+                WHERE category='lesson' AND is_active=TRUE ORDER BY created_at DESC LIMIT 20""")
             daily = await conn.fetch("""
                 SELECT DATE(ts AT TIME ZONE 'Asia/Seoul') AS d,
                        COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL') AND eval_pnl_rate >= 0.5)  AS exec_hit,

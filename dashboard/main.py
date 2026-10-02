@@ -4313,9 +4313,11 @@ import re as _re_mod
 
 
 async def _get_balance_for_sizing() -> dict:
-    """채팅 직접 매수 사이징(기본금액) 계산용 잔고 조회 — get_stock_balance()의 data를
-    stock_trader(KISTrader.get_balance)와 동일한 평평한 형태({"total":...,"cash":...})로 반환."""
-    res = await get_stock_balance()
+    """채팅 직접 매수 사이징(기본금액) 계산용 잔고 조회 — _get_stock_balance_raw()의 data를
+    stock_trader(KISTrader.get_balance)와 동일한 평평한 형태({"total":...,"cash":...})로 반환.
+    FastAPI 데코레이터를 거치지 않는 _raw 버전을 직접 호출한다(get_stock_positions가
+    _get_stock_positions_raw를 거치는 것과 동일한 이유 — [AT] fix/balance-cache)."""
+    res = await _get_stock_balance_raw()
     return res.get("data", {}) if isinstance(res, dict) else {}
 
 
@@ -5132,10 +5134,14 @@ _last_cash_source: Optional[str] = None  # 예수금 계산에 쓰인 필드 —
 
 
 def invalidate_stock_positions_cache() -> None:
-    """주식 보유 포지션 메모리 캐시 즉시 무효화 (주문 완료 후 다음 판단·조회 최신화용)"""
+    """주식 보유 포지션 메모리 캐시 즉시 무효화 (주문 완료 후 다음 판단·조회 최신화용).
+    주문 체결 시점은 잔고(매수가능조회) 사이징 캐시도 함께 최신화해야 하는 시점과 같으므로
+    ([AT] fix/balance-cache) 이 함수의 모든 호출부(채팅 주문 응답불명 재확인, 신호 경로
+    execute 체결 확정)에서 잔고 캐시도 함께 비운다."""
     global _stock_positions_cache, _stock_positions_cache_ts
     _stock_positions_cache = None
     _stock_positions_cache_ts = 0.0
+    invalidate_stock_balance_cache()
 
 
 @app.get("/api/positions/stock")
@@ -5318,49 +5324,92 @@ async def _get_stock_positions_raw():
 
 
 
+_stock_balance_lock: Optional[asyncio.Lock] = None
+_stock_balance_cache: Optional[dict] = None
+_stock_balance_cache_ts: float = 0.0
+_STOCK_BALANCE_CACHE_TTL: float = 15.0
+
+
+def invalidate_stock_balance_cache() -> None:
+    """주식 매수가능 잔고(사이징용) 메모리 캐시 즉시 무효화 — invalidate_stock_positions_cache와
+    항상 함께 비워진다([AT] fix/balance-cache)."""
+    global _stock_balance_cache, _stock_balance_cache_ts
+    _stock_balance_cache = None
+    _stock_balance_cache_ts = 0.0
+
+
 @app.get("/api/balance/stock")
 async def get_stock_balance():
-    """KIS API - 주식 잔고 조회"""
-    try:
-        import aiohttp as http
-        base = config.kis_base_url
-        async with http.ClientSession() as session:
-            token_res = await session.post(f"{base}/oauth2/tokenP", json={
-                "grant_type": "client_credentials",
-                "appkey": config.kis_app_key,
-                "appsecret": config.kis_app_secret,
-            })
-            token_data = await token_res.json()
-            token = token_data.get("access_token", "")
-            headers = {
-                "authorization": f"Bearer {token}",
-                "appkey": config.kis_app_key,
-                "appsecret": config.kis_app_secret,
-                "tr_id": "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R",
-                "custtype": "P",
-            }
-            acct = config.kis_account_no.replace("-", "")
-            params = {
-                "CANO": acct[:8],
-                "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
-                "PDNO": "005930", "ORD_UNPR": "0",
-                "ORD_DVSN": "01", "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N",
-            }
-            res = await session.get(
-                f"{base}/uapi/domestic-stock/v1/trading/inquire-psbl-order",
-                headers=headers, params=params
-            )
-            data = await res.json()
-            output = data.get("output", {})
-            return {
-                "success": True,
-                "data": {
-                    "cash":  int(output.get("ord_psbl_cash", 0)),
-                    "total": int(output.get("tot_evlu_amt", 0)),
+    return await _get_stock_balance_raw()
+
+
+async def _get_stock_balance_raw():
+    """KIS API - 주식 잔고(매수가능조회) — 동시 호출 직렬화 + 15초 캐시([AT] fix/balance-cache).
+    채팅·신호 경로 사이징(_get_balance_for_sizing)과 한도 계산이 매수 판단마다 이 엔드포인트를
+    불러 KIS 속도제한(EGW00201)에 자주 걸렸다(10/2 실측) — get_stock_positions/
+    _get_stock_positions_raw와 동일한 락+TTL 캐시 패턴을 적용한다. 성공 응답만 캐시하고,
+    실패/속도제한 응답은 캐시하지 않는다."""
+    global _stock_balance_lock, _stock_balance_cache, _stock_balance_cache_ts
+    import time
+
+    now_ts = time.time()
+    if _stock_balance_cache is not None and (now_ts - _stock_balance_cache_ts) < _STOCK_BALANCE_CACHE_TTL:
+        return dict(_stock_balance_cache)
+
+    if _stock_balance_lock is None:
+        _stock_balance_lock = asyncio.Lock()
+
+    async with _stock_balance_lock:
+        now_ts = time.time()
+        if _stock_balance_cache is not None and (now_ts - _stock_balance_cache_ts) < _STOCK_BALANCE_CACHE_TTL:
+            return dict(_stock_balance_cache)
+
+        try:
+            import aiohttp as http
+            base = config.kis_base_url
+            async with http.ClientSession() as session:
+                token_res = await session.post(f"{base}/oauth2/tokenP", json={
+                    "grant_type": "client_credentials",
+                    "appkey": config.kis_app_key,
+                    "appsecret": config.kis_app_secret,
+                })
+                token_data = await token_res.json()
+                token = token_data.get("access_token", "")
+                headers = {
+                    "authorization": f"Bearer {token}",
+                    "appkey": config.kis_app_key,
+                    "appsecret": config.kis_app_secret,
+                    "tr_id": "VTTC8908R" if config.KIS_IS_PAPER else "TTTC8908R",
+                    "custtype": "P",
                 }
-            }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+                acct = config.kis_account_no.replace("-", "")
+                params = {
+                    "CANO": acct[:8],
+                    "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
+                    "PDNO": "005930", "ORD_UNPR": "0",
+                    "ORD_DVSN": "01", "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N",
+                }
+                res = await session.get(
+                    f"{base}/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+                    headers=headers, params=params
+                )
+                data = await res.json()
+                if res.status != 200 or data.get("rt_cd") != "0":
+                    err_msg = data.get("msg1") or data.get("msg_cd") or f"KIS 잔고 조회 실패 (HTTP {res.status})"
+                    return {"success": False, "error": err_msg}
+                output = data.get("output", {})
+                result = {
+                    "success": True,
+                    "data": {
+                        "cash":  int(output.get("ord_psbl_cash", 0)),
+                        "total": int(output.get("tot_evlu_amt", 0)),
+                    }
+                }
+                _stock_balance_cache = result
+                _stock_balance_cache_ts = time.time()
+                return dict(result)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 

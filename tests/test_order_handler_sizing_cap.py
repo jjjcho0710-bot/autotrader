@@ -9,14 +9,13 @@ router/handlers/order_handler.py 리스크 기반 매수 사이징 한도([AT] f
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from market.universe import Universe  # noqa: E402
 from router.handlers import order_handler  # noqa: E402
-from tests.test_order_handler import FakeConfig, FakePool, FakePriceSession, FakeRedis  # noqa: E402
+from tests.test_order_handler import FakeConfig, FakePool, FakeRedis, make_quote_fn  # noqa: E402
 
 
 class FakeSizingConfig(FakeConfig):
@@ -24,8 +23,8 @@ class FakeSizingConfig(FakeConfig):
     INITIAL_SEED_KRW = 10_000_000
 
 
-def _price_session(price: int, name: str = "삼성바이오로직스"):
-    return FakePriceSession({"output": {"stck_prpr": str(price), "hts_kor_isnm": name}})
+def _quote_fn(price: int, name: str = "삼성바이오로직스"):
+    return make_quote_fn({"output": {"stck_prpr": str(price), "hts_kor_isnm": name}})
 
 
 async def _default_get_positions():
@@ -37,7 +36,8 @@ async def _default_get_market_warning(symbol):
 
 
 class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
-    def _kwargs(self, *, get_balance_fn=None, get_stock_positions_fn=None, get_market_warning_fn=None):
+    def _kwargs(self, *, price=70000, get_balance_fn=None, get_stock_positions_fn=None,
+                get_market_warning_fn=None):
         universe = Universe(None)
         universe.replace_cache({"삼성바이오로직스": "207940"})
 
@@ -63,6 +63,7 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
             send_telegram_fn=send_telegram,
             log_journal_fn=log_journal, get_balance_fn=get_balance_fn, get_recent_ohlcv_fn=None,
             get_market_warning_fn=get_market_warning_fn or _default_get_market_warning,
+            get_quote_fn=_quote_fn(price),
         )
 
     async def test_qty_reduced_when_exceeding_cap(self):
@@ -72,9 +73,8 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         async def get_balance():
             return {"total": 10_000_000}
 
-        kwargs = self._kwargs(get_balance_fn=get_balance)
-        with patch("aiohttp.ClientSession", return_value=_price_session(400_000)):
-            reply = await order_handler.handle_trade_command("삼성바이오로직스 3주 매수", **kwargs)
+        kwargs = self._kwargs(price=400_000, get_balance_fn=get_balance)
+        reply = await order_handler.handle_trade_command("삼성바이오로직스 3주 매수", **kwargs)
         self.assertIn("요청 3주 → 사이징 한도로 2주로 조정", reply)
         self.assertIn("2주 매수 완료", reply)
 
@@ -83,9 +83,8 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         async def get_balance():
             return {"total": 10_000_000}
 
-        kwargs = self._kwargs(get_balance_fn=get_balance)
-        with patch("aiohttp.ClientSession", return_value=_price_session(1_000_000)):
-            reply = await order_handler.handle_trade_command("삼성바이오로직스 1주 매수", **kwargs)
+        kwargs = self._kwargs(price=1_000_000, get_balance_fn=get_balance)
+        reply = await order_handler.handle_trade_command("삼성바이오로직스 1주 매수", **kwargs)
         self.assertIn("사이징 한도", reply)
         self.assertIn("1주도 매수 불가", reply)
         self.assertIn("고가 종목", reply)
@@ -95,9 +94,8 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         async def get_balance():
             return {"total": 10_000_000}
 
-        kwargs = self._kwargs(get_balance_fn=get_balance)
-        with patch("aiohttp.ClientSession", return_value=_price_session(50_000)):
-            reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수", **kwargs)
+        kwargs = self._kwargs(price=50_000, get_balance_fn=get_balance)
+        reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수", **kwargs)
         self.assertNotIn("사이징 한도로", reply)
         self.assertIn("5주 매수 완료", reply)
 
@@ -106,17 +104,15 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         async def get_balance():
             raise AssertionError("한도무시 키워드가 있으면 잔고 조회를 하면 안 된다")
 
-        kwargs = self._kwargs(get_balance_fn=get_balance)
-        with patch("aiohttp.ClientSession", return_value=_price_session(1_000_000)):
-            reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수 한도무시", **kwargs)
+        kwargs = self._kwargs(price=1_000_000, get_balance_fn=get_balance)
+        reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수 한도무시", **kwargs)
         self.assertIn("5주 매수 완료", reply)
         self.assertIn("⚠️ 한도무시 적용", reply)
 
     async def test_missing_sizing_dependencies_does_not_block_buy(self):
         # get_balance_fn 미주입(예: 테스트/구버전 호출부) → 사이징을 건너뛰고 요청 수량 그대로 체결.
-        kwargs = self._kwargs(get_balance_fn=None)
-        with patch("aiohttp.ClientSession", return_value=_price_session(1_000_000)):
-            reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수", **kwargs)
+        kwargs = self._kwargs(price=1_000_000, get_balance_fn=None)
+        reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수", **kwargs)
         self.assertIn("5주 매수 완료", reply)
         self.assertNotIn("사이징", reply)
 
@@ -132,10 +128,9 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         async def get_balance():
             raise RuntimeError("DB 연결 끊김")
 
-        kwargs = self._kwargs(get_balance_fn=get_balance)
+        kwargs = self._kwargs(price=50_000, get_balance_fn=get_balance)
         kwargs["send_telegram_fn"] = send_telegram
-        with patch("aiohttp.ClientSession", return_value=_price_session(50_000)):
-            reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수", **kwargs)
+        reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매수", **kwargs)
 
         self.assertIn("5주 매수 완료", reply)
         self.assertIn("사이징 한도 계산 실패 — 한도 미적용", reply)
@@ -149,9 +144,9 @@ class TestBuySizingCap(unittest.IsolatedAsyncioTestCase):
         async def get_stock_positions():
             return {"data": [{"symbol": "207940", "qty": 10, "avg_price": 90000}]}
 
-        kwargs = self._kwargs(get_balance_fn=get_balance, get_stock_positions_fn=get_stock_positions)
-        with patch("aiohttp.ClientSession", return_value=_price_session(100_000)):
-            reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매도", **kwargs)
+        kwargs = self._kwargs(
+            price=100_000, get_balance_fn=get_balance, get_stock_positions_fn=get_stock_positions)
+        reply = await order_handler.handle_trade_command("삼성바이오로직스 5주 매도", **kwargs)
         self.assertIn("5주 매도 완료", reply)
         self.assertNotIn("사이징", reply)
 

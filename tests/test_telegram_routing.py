@@ -32,7 +32,7 @@ from stark import execution_guard  # noqa: E402
 from tests.test_execution_guard import FakePool as EGFakePool  # noqa: E402
 from tests.test_execution_guard import FakeRedis as EGFakeRedis  # noqa: E402
 from tests.test_execution_guard import make_decision, make_signal  # noqa: E402
-from tests.test_order_handler import FakePool, FakePriceSession, FakeRedis  # noqa: E402
+from tests.test_order_handler import FakePool, FakeRedis, make_quote_fn  # noqa: E402
 from router.handlers import order_handler  # noqa: E402
 from market.universe import Universe  # noqa: E402
 
@@ -522,14 +522,13 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
         async def log_journal(*a, **kw):
             pass
 
-        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
-                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})), \
-             patch("common.telegram.CHANNEL_SLIM", False):
+        with patch("common.telegram.CHANNEL_SLIM", False):
             await order_handler.handle_trade_command(
                 "삼성전자 2주 매수", pool=pool, redis=redis, universe=universe,
                 get_kis_token_fn=get_kis_token, config=FakeOrderConfig(), kis_order_fn=kis_order,
                 get_stock_positions_fn=get_stock_positions, send_telegram_fn=send_telegram,
-                log_journal_fn=log_journal, get_market_warning_fn=get_market_warning)
+                log_journal_fn=log_journal, get_market_warning_fn=get_market_warning,
+                get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
 
         self.assertEqual(len(sent), 2)
         dests = {s["dest"] for s in sent}
@@ -564,13 +563,12 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
         async def log_journal(*a, **kw):
             pass
 
-        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
-                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
-            await order_handler.handle_trade_command(
-                "삼성전자 2주 매수", pool=pool, redis=redis, universe=universe,
-                get_kis_token_fn=get_kis_token, config=FakeOrderConfig(), kis_order_fn=kis_order,
-                get_stock_positions_fn=get_stock_positions, send_telegram_fn=send_telegram,
-                log_journal_fn=log_journal, get_market_warning_fn=get_market_warning)
+        await order_handler.handle_trade_command(
+            "삼성전자 2주 매수", pool=pool, redis=redis, universe=universe,
+            get_kis_token_fn=get_kis_token, config=FakeOrderConfig(), kis_order_fn=kis_order,
+            get_stock_positions_fn=get_stock_positions, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, get_market_warning_fn=get_market_warning,
+            get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
 
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["dest"], "personal")

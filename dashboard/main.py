@@ -4381,6 +4381,7 @@ async def _jarvis_chat_impl(body: dict):
         get_balance_fn=_get_balance_for_sizing,
         get_recent_ohlcv_fn=_get_recent_daily_ohlcv_for_sizing,
         get_market_warning_fn=_get_market_warning_for_gate,
+        get_quote_fn=_fetch_kis_inquire_price,
         invalidate_positions_cache_fn=invalidate_stock_positions_cache,
     )
 

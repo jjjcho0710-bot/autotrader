@@ -118,10 +118,8 @@ class TestRouteLateSizingWiring(unittest.IsolatedAsyncioTestCase):
     잡지 못했다 — 이 테스트는 route_late를 통해서만 호출한다."""
 
     async def test_buy_command_through_route_late_applies_sizing_cap(self):
-        from unittest.mock import patch
-
         from tests.test_order_handler import FakePool as OrderFakePool
-        from tests.test_order_handler import FakePriceSession
+        from tests.test_order_handler import make_quote_fn
 
         universe = Universe(None)
         universe.replace_cache({"삼성바이오로직스": "207940"})
@@ -166,16 +164,14 @@ class TestRouteLateSizingWiring(unittest.IsolatedAsyncioTestCase):
             get_kis_token=get_kis_token, kis_order=kis_order, send_telegram=send_telegram,
             log_journal=log_journal, get_balance_fn=get_balance, get_recent_ohlcv_fn=None,
             get_stock_positions=get_stock_positions, get_market_warning_fn=get_market_warning,
+            get_quote_fn=make_quote_fn(
+                {"output": {"stck_prpr": "400000", "hts_kor_isnm": "삼성바이오로직스"}}),
         )
-
-        def _price_session(price: int):
-            return FakePriceSession({"output": {"stck_prpr": str(price), "hts_kor_isnm": "삼성바이오로직스"}})
 
         # equity 1000만 × 위험 0.75% ÷ 손절 7%(기본값) ≈ 107.1만원 기본금액.
         # ATR 조회 없음 → 보수적 폴백 배율 0.75배 → 한도 ≈80.36만원.
         # 40만원 × 3주 = 120만원이 한도를 넘으므로 floor(80.36만/40만) = 2주로 줄어야 한다.
-        with patch("aiohttp.ClientSession", return_value=_price_session(400_000)):
-            reply = await intent_router.route_late("삼성바이오로직스 3주 매수", ctx)
+        reply = await intent_router.route_late("삼성바이오로직스 3주 매수", ctx)
 
         self.assertIn("요청 3주 → 사이징 한도로 2주로 조정", reply)
         self.assertIn("2주 매수 완료", reply)
@@ -191,11 +187,9 @@ class TestRouteLateBuyGateWiring(unittest.IsolatedAsyncioTestCase):
     우연히 같은 결과(차단)가 나오는 함정을 피하고, 호출 여부로 배선 자체를 증명할 수 있다."""
 
     async def test_route_late_wires_market_warning_fn_and_blocks_on_investment_warning(self):
-        from unittest.mock import patch
-
         from tests.test_order_handler import FakeConfig as OrderFakeConfig
         from tests.test_order_handler import FakePool as OrderFakePool
-        from tests.test_order_handler import FakePriceSession
+        from tests.test_order_handler import make_quote_fn
 
         universe = Universe(None)
         universe.replace_cache({"삼성전자": "005930"})
@@ -229,11 +223,10 @@ class TestRouteLateBuyGateWiring(unittest.IsolatedAsyncioTestCase):
             get_kis_token=get_kis_token, kis_order=kis_order, send_telegram=send_telegram,
             log_journal=log_journal, get_stock_positions=get_positions,
             get_market_warning_fn=get_market_warning,
+            get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}),
         )
 
-        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
-                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})):
-            reply = await intent_router.route_late("삼성전자 2주 매수", ctx)
+        reply = await intent_router.route_late("삼성전자 2주 매수", ctx)
 
         self.assertIsNotNone(reply)
         self.assertIn("⛔", reply)

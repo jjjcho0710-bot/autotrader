@@ -910,8 +910,13 @@ async def _jarvis_stock_scanner():
         logger.error(f"Jarvis 스캐너 실패: {e}")
 
 
+AUTO_ANALYSIS_ENABLED = False  # ML 예측 확률이 동전 던지기 수준이라 비활성화 (기본값)
+
+
 async def _jarvis_auto_analysis():
     """Jarvis 자동 분석 — 감시 종목 전체 ML 예측 후 텔레그램 리포트"""
+    if not AUTO_ANALYSIS_ENABLED:
+        return
     try:
         from ml.model import MLModelManager
         manager = MLModelManager(db_pool)
@@ -1077,30 +1082,7 @@ async def _jarvis_closing_report():
         msg = f"📊 <b>한강뷰매니저 마감 결산</b> [{now_kst.strftime('%m/%d')}]\n"
         msg += f"{'='*25}\n"
 
-        if trades:
-            msg += f"매수 {len(buy_trades)}건 / 매도 {len(sell_trades)}건\n"
-            if buy_trades:
-                # 종목별 수량 합계 + 금액가중평균 체결가로 합산 표시(같은 종목 여러 건이
-                # 흩어져 "매수 N건"과 목록 종목수가 안 맞는 문제 방지). 체결가는 종목당
-                # 단가(공개 시세)라 계좌 잔고 규모를 드러내는 금액이 아니므로 채널에도 표시한다.
-                agg_order = []
-                agg = {}
-                for t in buy_trades:
-                    sym = t["symbol"]
-                    if sym not in agg:
-                        agg[sym] = {"qty": 0.0, "amount": 0.0}
-                        agg_order.append(sym)
-                    q = float(t["quantity"])
-                    agg[sym]["qty"] += q
-                    agg[sym]["amount"] += float(t["price"]) * q
-                buy_list_items = []
-                for sym in agg_order:
-                    a = agg[sym]
-                    avg_price = a["amount"] / a["qty"] if a["qty"] else 0
-                    nm = await _code_to_name(sym)
-                    buy_list_items.append(f"  🟢 {nm} {a['qty']:.0f}주 평균 {avg_price:,.0f}원")
-                msg += "신규 매수:\n" + "\n".join(buy_list_items) + "\n"
-        else:
+        if not trades:
             msg += "오늘 거래 없음\n"
 
         # [AT] feat/channel-slim: 개별 체결 알림이 더 이상 채널로 가지 않으므로, 마감 결산

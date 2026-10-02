@@ -82,13 +82,13 @@ async def handle_update(body: dict, ctx: BotContext) -> dict:
 
         if text == "/status":
             reply = await ctx.ask_openwebui("현재 봇 상태 알려줘", session_id=chat_id)
-            await ctx.send_telegram(f"🤖 <b>STARK</b>\n\n{reply}", chat_id, token)
+            await ctx.send_telegram(f"🤖 <b>한강뷰매니저</b>\n\n{reply}", chat_id, token)
             return {"ok": True}
 
         if text == "/positions":
             await ctx.typing_action(chat_id, token)
             reply = await ctx.ask_openwebui("현재 보유 포지션 현황 알려줘", session_id=chat_id)
-            await ctx.send_telegram(f"🤖 <b>STARK</b>\n\n{reply}", chat_id, token)
+            await ctx.send_telegram(f"🤖 <b>한강뷰매니저</b>\n\n{reply}", chat_id, token)
             return {"ok": True}
 
         if text == "/history":
@@ -128,7 +128,7 @@ async def handle_update(body: dict, ctx: BotContext) -> dict:
             reply = await ctx.ask_openwebui(text, session_id=ctx.session_id)
         if len(reply) > 3800:
             reply = reply[:3800] + "...\n(내용이 길어 일부 생략됨)"
-        await ctx.send_telegram(f"🤖 <b>STARK</b>\n\n{reply}", chat_id, token)
+        await ctx.send_telegram(f"🤖 <b>한강뷰매니저</b>\n\n{reply}", chat_id, token)
         return {"ok": True}
     except Exception as e:
         logger.error(f"텔레그램 webhook 오류: {e}")

@@ -657,6 +657,9 @@ class TestChannelSlimDashboardRouting(unittest.IsolatedAsyncioTestCase):
             async def fetch(self, query, *args):
                 return []
 
+            async def fetchrow(self, query, *args):
+                return None
+
         async def _run():
             sent = []
             with patch.object(dm, "db_pool", _ClosingReportPool(_Conn()), create=True), \
@@ -664,6 +667,8 @@ class TestChannelSlimDashboardRouting(unittest.IsolatedAsyncioTestCase):
                  patch.object(dm, "_get_jarvis_lessons", new=AsyncMock(return_value="")), \
                  patch.object(dm, "_get_jarvis_knowledge", new=AsyncMock(return_value="")), \
                  patch.object(dm, "_get_active_directives", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "get_stock_positions",
+                               new=AsyncMock(return_value={"success": False, "error": "조회 실패", "data": []})), \
                  patch.object(dm, "_ask_openwebui", new=AsyncMock(return_value="오늘의 작전 내용")), \
                  patch.object(dm, "_send_telegram", new=await self._send(sent)):
                 await dm._jarvis_daily_plan()

@@ -1204,6 +1204,79 @@ async def _get_jarvis_lessons(limit: int = 5) -> str:
         return "(로드 실패)"
 
 
+def _strip_internal_ids(text: str) -> str:
+    """'오늘의 작전' 프롬프트에만 쓰는 지역 정제 — 지시사항((#29))·지식(K83, R12) 앞에 붙는
+    내부 관리번호를 지워 AI가 사람이 못 알아듣는 번호를 작전 문장에 그대로 베끼지 않게 한다.
+    directive_handler/curator 쪽 원본 포맷(#id, K{id}, R{id})은 지시 취소·원칙 통계 파싱에
+    쓰이므로 그대로 두고, 여기서는 이 함수가 받은 텍스트에서만 걷어낸다([AT] fix/daily-plan-facts)."""
+    import re as _re
+    text = _re.sub(r"^-\s*\(#\d+\)\s*", "- ", text, flags=_re.MULTILINE)
+    text = _re.sub(r"^-\s*[KR]\d+\s+", "- ", text, flags=_re.MULTILINE)
+    return text
+
+
+async def _jarvis_daily_plan_current_state() -> str:
+    """'오늘의 작전' 프롬프트에 주입할 [현재 상태] 블록 — 보유 종목수/한도/현금/종목당 매수 상한.
+    조회에 실패한 항목은 '확인 불가'로 표시한다(지어내지 않음). 10/2 실측 문제(보유 10종목이
+    한도 9를 넘었는데도 "예수금 여력 충분"·"신규 진입 1순위" 식으로 작전이 사실과 반대로
+    단정했던 것)를 막기 위해 코드가 계산한 값만 넘긴다([AT] fix/daily-plan-facts)."""
+    held_txt = "확인 불가"
+    cash_txt = "확인 불가"
+    cap_txt = "확인 불가"
+    gate_txt = ""
+
+    held_count = None
+    equity = None
+    try:
+        pos_res = await get_stock_positions()
+        if pos_res.get("success"):
+            held_count = len(pos_res.get("data") or [])
+            account = pos_res.get("account") or {}
+            cash_val = account.get("cash")
+            if cash_val is not None:
+                cash_txt = f"{int(cash_val):,}원"
+            equity = account.get("total_eval")
+    except Exception as e:
+        logger.warning(f"작전 수립: 보유/예수금 조회 실패: {e}")
+
+    # execution_guard._get_max_positions()는 실패 시 안전한 기본값(5)을 반환해 실매매
+    # 차단 로직에는 맞지만, 여기서는 "조회 실패=확인 불가"를 구분해야 해서 같은 쿼리를
+    # 별도로 수행한다(실패 시 기본값을 끼워 넣지 않음).
+    max_positions = None
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT params FROM strategy_config
+                WHERE bot='stock_trader' AND is_active=TRUE LIMIT 1
+            """)
+            if row and row.get("params"):
+                params = row["params"]
+                if isinstance(params, str):
+                    params = json.loads(params)
+                if isinstance(params, dict) and "max_positions" in params:
+                    max_positions = int(params["max_positions"])
+    except Exception as e:
+        logger.warning(f"작전 수립: max_positions 조회 실패: {e}")
+
+    if held_count is not None and max_positions is not None:
+        held_txt = f"{held_count}/{max_positions}"
+        if held_count >= max_positions:
+            gate_txt = "\n- 신규 매수 불가(한도 도달 — 기존 종목 매도로 자리가 나야 가능)"
+
+    if equity and equity > 0:
+        from common import position_sizing
+        base_amount = position_sizing.compute_base_amount(
+            float(equity), position_sizing.DEFAULT_STOP_LOSS_PCT, config.RISK_PER_TRADE_PCT)
+        if base_amount > 0:
+            cap_txt = (f"{base_amount:,.0f}원 이하 "
+                       f"(자산×{config.RISK_PER_TRADE_PCT}%÷손절률, 변동성에 따라 더 낮아질 수 있음)")
+
+    return (f"[현재 상태 — 금액·비율·한도 판단은 이 블록이 항상 우선]\n"
+            f"- 보유 종목수/한도: {held_txt}{gate_txt}\n"
+            f"- 현금(예수금): {cash_txt}\n"
+            f"- 종목당 매수 상한(기본): {cap_txt}")
+
+
 async def _jarvis_daily_plan():
     """아침 작전 수립 → Redis 캐시 (장중 빠른 판단의 컨텍스트 1장)"""
     try:
@@ -1213,8 +1286,9 @@ async def _jarvis_daily_plan():
                 "SELECT symbol, name, reason FROM watchlist WHERE is_active=TRUE LIMIT 20")
         wl_txt = "\n".join(f"- {r['name']}({r['symbol']}): {r['reason'] or ''}" for r in wl) or "(없음)"
         lessons = await _get_jarvis_lessons()
-        knowledge = await _get_jarvis_knowledge(5)
-        directives_txt = await _get_active_directives()
+        knowledge = _strip_internal_ids(await _get_jarvis_knowledge(5))
+        directives_txt = _strip_internal_ids(await _get_active_directives())
+        current_state = await _jarvis_daily_plan_current_state()
         weekly_plan = ""
         try:
             wp = await redis_client.get("jarvis:weekly_plan")
@@ -1224,6 +1298,8 @@ async def _jarvis_daily_plan():
         now_str = datetime.now(KST).strftime("%m/%d")
 
         prompt = f"""너는 한국 주식 단타 전문 트레이더다. 오늘({now_str}) 장중 매매 작전을 수립하라.
+
+{current_state}
 
 [오늘의 감시종목]
 {wl_txt}
@@ -1242,6 +1318,7 @@ async def _jarvis_daily_plan():
 
 
 [매매 규칙 — 반드시 준수]
+- 금액·비율·한도 규칙은 [현재 상태]가 항상 우선이며 지시사항과 충돌하면 [현재 상태]를 따른다. 확률(%) 수치를 근거로 쓰지 말고 종목을 '진입 1순위'로 단정하지 말라(현재 상태에서 신규 매수가 불가하면 우선 종목은 '관찰'로만 표기)
 - 재매수 금지: 손절한 종목은 5일간 재매수 불가(2회 손절 시 14일). 단, 손절가 +5% 위 신호는 추세전환으로 허용
 - 당일 2회 손절 발생 시 그날 신규 매수 전면 중단
 - 신호 등급: 강한 복합 신호(골든크로스+거래량급증+수급양호)는 스윙 관점 허용, 약한 신호는 단타로 짧게

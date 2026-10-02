@@ -81,6 +81,10 @@ class StockTrader:
     VOLATILITY_MULT_FALLBACK = position_sizing.VOLATILITY_MULT_FALLBACK
     ATR_PERIOD = position_sizing.ATR_PERIOD
 
+    # [AT] feat/six-hour-report-readable (PM 승인): 거래 0건 + 장시간이 전혀 포함되지
+    # 않는 구간(00:00·06:00 전송분, 주말)이면 6시간 리포트 전송을 건너뛴다. False로 끌 수 있다.
+    SIX_HOUR_REPORT_SKIP_IDLE = True
+
     def __init__(self):
         self.running    = False
         self.trader     = KISTrader()
@@ -1726,6 +1730,88 @@ class StockTrader:
             logger.warning(f"텔레그램 알림 실패: {e}")
 
     # ── 6시간 통합 리포트 ────────────────────────────────
+    @staticmethod
+    def _six_hour_window_has_no_market_overlap(window_start: datetime, window_end: datetime) -> bool:
+        """[window_start, window_end) 구간에 평일 장시간(MARKET_OPEN~MARKET_CLOSE)이
+        전혀 포함되지 않으면 True. 주말은 day.weekday()<5 검사로 자연히 걸러진다.
+        공휴일은 판별하지 않는다(이 파일의 다른 장중 판단 로직과 같은 한계)."""
+        day = window_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        while day < window_end:
+            if day.weekday() < 5:
+                open_dt = day.replace(hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute)
+                close_dt = day.replace(hour=MARKET_CLOSE.hour, minute=MARKET_CLOSE.minute)
+                if window_start < close_dt and window_end > open_dt:
+                    return False
+            day += timedelta(days=1)
+        return True
+
+    @staticmethod
+    def _format_six_hour_report(window_start, window_end, trades, positions, cum_rate, stop_loss,
+                                 max_trades=10):
+        """6시간 리포트 본문을 만드는 순수 함수(DB·네트워크 접근 없음).
+        채널 메시지 금액 정책(PM 승인): 예수금·총자산·평가손익 금액·거래 총액은 절대 넣지
+        않고, 주당 체결가와 %만 쓴다.
+        - trades: [{side, name, price, quantity, pnl, created_at(tz-aware)}...] (정렬 불필요,
+          내부에서 시간순으로 다시 정렬한다)
+        - positions: [{name, pnl_rate}...]
+        - cum_rate: float 또는 None(None이면 '누적 수익률' 줄 생략 — stale/집계 시작 전 등)
+        - stop_loss: float 또는 None(예: -7.0; None이면 손절선 줄 생략)
+        """
+        if window_start.date() == window_end.date():
+            period = f"{window_start.strftime('%m/%d %H:%M')}~{window_end.strftime('%H:%M')}"
+        else:
+            period = f"{window_start.strftime('%m/%d %H:%M')}~{window_end.strftime('%m/%d %H:%M')}"
+
+        trades_sorted = sorted(trades, key=lambda t: t['created_at'])
+        buys = [t for t in trades_sorted if t['side'] == 'BUY']
+        sells = [t for t in trades_sorted if t['side'] == 'SELL']
+
+        lines = [f"📊 주식 6시간 리포트 ({period})", "",
+                 f"체결: 매수 {len(buys)}건 / 매도 {len(sells)}건"]
+        shown = trades_sorted[:max_trades] if max_trades > 0 else []
+        for t in shown:
+            hhmm = t['created_at'].strftime('%H:%M')
+            side_kr = '매수' if t['side'] == 'BUY' else '매도'
+            qty = float(t['quantity'])
+            price = float(t['price'])
+            line = f" · {hhmm} {t['name']} {side_kr} {int(qty):,}주 @ {price:,.0f}원"
+            pnl = t.get('pnl')
+            if t['side'] == 'SELL' and pnl is not None:
+                pnl = float(pnl)
+                cost = price * qty - pnl
+                if cost:
+                    line += f" ({pnl / cost * 100:+.1f}%)"
+            lines.append(line)
+        extra = len(trades_sorted) - len(shown)
+        if extra > 0:
+            lines.append(f" · 외 {extra}건")
+        if not trades_sorted:
+            lines.append(" · 없음")
+
+        lines.append("")
+        pos_sorted = sorted(positions, key=lambda p: float(p.get('pnl_rate', 0)), reverse=True)
+        if pos_sorted:
+            lines.append(f"보유 {len(pos_sorted)}종목 (손익률 순)")
+            lines.append(" · " + " · ".join(
+                f"{p.get('name', '?')} {float(p.get('pnl_rate', 0)):+.1f}%" for p in pos_sorted))
+        else:
+            lines.append("보유 0종목")
+
+        tail = []
+        if pos_sorted and stop_loss is not None:
+            worst = min(pos_sorted, key=lambda p: float(p.get('pnl_rate', 0)))
+            worst_rate = float(worst.get('pnl_rate', 0))
+            if worst_rate < 0:
+                tail.append(f"⚠️ 손절선({stop_loss:+.0f}%)까지 가장 가까운 종목: "
+                            f"{worst.get('name', '?')} {worst_rate:+.1f}%")
+        if cum_rate is not None:
+            tail.append(f"누적 수익률 {cum_rate:+.2f}%")
+        if tail:
+            lines.append("")
+            lines.extend(tail)
+
+        return "\n".join(lines)
+
     async def _six_hour_report(self):
         while self.running:
             now = datetime.now(KST)
@@ -1737,43 +1823,67 @@ class StockTrader:
             await asyncio.sleep((next_run - now).total_seconds())
 
             try:
+                # [AT] feat/six-hour-report-readable (PM 승인): sleep 전 now(루프 시작 시각)를
+                # 제목에 그대로 쓰면 실제 전송 시각과 어긋난다(예: 전송 18:00인데 제목 17:43).
+                # sleep이 끝난 뒤 다시 구한 시각으로 window_start/window_end를 한 번만 계산해
+                # DB 조회와 제목 양쪽에 동일한 값을 쓴다.
+                window_end = datetime.now(KST)
+                window_start = window_end - timedelta(hours=6)
+
                 # [AT] feat/telegram-routing: 6시간 리포트는 채널 전용("읽는 기록")이다.
                 # 개인방 중복 발송을 없애고, 채널 메시지에서는 예수금·손익 금액 같은 계좌
                 # 잔고 규모를 드러내는 금액을 빼고 수량·%만 쓴다.
                 from common.telegram import send_report
                 async with db.pool.acquire() as conn:
                     trades = await conn.fetch("""
-                        SELECT side, symbol, amount, pnl, strategy, created_at
-                        FROM trade_history
-                        WHERE bot='stock_trader'
-                        AND created_at >= NOW() - INTERVAL '6 hours'
-                        ORDER BY created_at DESC
-                    """)
+                        SELECT t.side, COALESCE(s.name, t.symbol) AS name,
+                               t.price, t.quantity, t.pnl, t.created_at
+                        FROM trade_history t
+                        LEFT JOIN stocks s ON s.symbol = t.symbol
+                        WHERE t.bot='stock_trader'
+                        AND t.created_at >= $1 AND t.created_at < $2
+                        ORDER BY t.created_at ASC
+                    """, window_start, window_end)
 
-                buys = [t for t in trades if t['side'] == 'BUY']
-                sells = [t for t in trades if t['side'] == 'SELL']
+                # [AT] feat/six-hour-report-readable (PM 승인): 거래가 없고 이 구간에 평일
+                # 장시간이 전혀 포함되지 않으면(00:00·06:00 전송분, 주말) 전송을 건너뛴다.
+                if (self.SIX_HOUR_REPORT_SKIP_IDLE and not trades
+                        and self._six_hour_window_has_no_market_overlap(window_start, window_end)):
+                    logger.info("📭 6시간 리포트 건너뜀(거래 없음 + 장시간 미포함 구간)")
+                    continue
 
-                pos_list = []
-                for sym, pos in self.positions.items():
-                    rate = float(pos.get('pnl_rate', 0))
-                    pos_list.append(f"{pos.get('name', sym)} {rate:+.1f}%")
+                trade_dicts = [
+                    {"side": t["side"], "name": t["name"], "price": t["price"],
+                     "quantity": t["quantity"], "pnl": t["pnl"],
+                     "created_at": t["created_at"].astimezone(KST)}
+                    for t in trades
+                ]
+                pos_list = [
+                    {"name": pos.get("name", sym), "pnl_rate": float(pos.get("pnl_rate", 0))}
+                    for sym, pos in self.positions.items()
+                ]
 
                 acct = await self.trader.get_balance()
                 total_eval = acct.get('total', 0)
-
-                report = (
-                    f"📊 주식 6시간 리포트 ({now.strftime('%m/%d %H:%M')})\n\n"
-                    f"매수 {len(buys)}건 / 매도 {len(sells)}건\n\n"
-                    f"보유: {', '.join(pos_list) if pos_list else '없음'}"
-                )
+                cum_rate = None
                 if total_eval > 0 and not acct.get('stale'):
-                    cum_pnl, cum_pnl_rate = compute_total_pnl(total_eval)
-                    report += f"\n누적손익(원금대비): {cum_pnl_rate:+.2f}%"
+                    _, cum_rate = compute_total_pnl(total_eval)
 
-                if trades:
-                    report += "\n\n최근 매매: " + ", ".join(
-                        f"{'매수' if t['side']=='BUY' else '매도'} {t['symbol']}" for t in list(trades)[:5]
-                    )
+                active = self.get_all_active_strategies()
+                stop_loss = -self.DEFAULT_STOP_LOSS_PCT
+                if active:
+                    _, first_params = active[0]
+                    stop_loss = float(first_params.get("stop_loss", stop_loss))
+
+                report = self._format_six_hour_report(
+                    window_start, window_end, trade_dicts, pos_list, cum_rate, stop_loss)
+                # 길이 제한(4096자) 초과 시 체결 건수를 줄여 다시 생성
+                max_trades = 10
+                while len(report) > 4096 and max_trades > 0:
+                    max_trades -= 1
+                    report = self._format_six_hour_report(
+                        window_start, window_end, trade_dicts, pos_list, cum_rate, stop_loss,
+                        max_trades=max_trades)
 
                 await send_report(report)
                 logger.info("📨 6시간 주식 리포트 전송(채널)")

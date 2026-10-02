@@ -6,7 +6,8 @@ tests/test_total_pnl_display.py - "누적 손익(원금 대비)" 지표 테스�
 - dashboard/main.py _get_stock_positions_raw: account에 total_pnl/total_pnl_rate 포함
 - dashboard/main.py /api/account/stock (account_stock_summary): total_pnl/total_pnl_rate 반환
 - dashboard/main.py _jarvis_closing_report: 마감 결산 메시지에 "누적손익(원금대비)" 한 줄 포함
-- stock_trader/main.py StockTrader._six_hour_report: 6시간 리포트에 "누적손익(원금대비)" 한 줄 포함
+- stock_trader/main.py StockTrader._six_hour_report: 6시간 리포트에 "누적 수익률" 한 줄 포함
+  (리포트 형식 상세 테스트는 tests/test_six_hour_report_channel.py)
 - 대시보드 홈 화면(home.html, pc/pages/home.html) 정적 마크업: 새 지표 표시 요소 존재
 """
 import asyncio
@@ -247,6 +248,7 @@ def _run_one_report(trades, total_eval, send_stock, send_report):
     trader = StockTrader.__new__(StockTrader)
     trader.running = True
     trader.positions = {}
+    trader.strategies = {}  # get_all_active_strategies()가 참조 — 활성 전략 없음(참고 손절값 사용)
 
     class _Broker:
         async def get_balance(self):
@@ -264,8 +266,12 @@ def _run_one_report(trades, total_eval, send_stock, send_report):
             await send_report(text)
             trader.running = False
 
+        # SIX_HOUR_REPORT_SKIP_IDLE은 이 테스트의 관심사가 아니다(실제 벽시계 시각에 따라
+        # 거래 0건 + 장시간 미포함 구간으로 판정되면 전송이 생략돼 테스트가 들떠서(flaky) 실패할
+        # 수 있어 꺼둔다).
         with mock.patch.object(stock_main.db, "pool", _FakePool(_FakeConn(trades)), create=True), \
              mock.patch.object(stock_main.asyncio, "sleep", _fake_sleep), \
+             mock.patch.object(StockTrader, "SIX_HOUR_REPORT_SKIP_IDLE", False), \
              mock.patch("common.telegram.send_stock", send_stock), \
              mock.patch("common.telegram.send_report", _send_report_and_stop), \
              mock.patch.object(config, "INITIAL_SEED_KRW", 10_000_000):
@@ -288,7 +294,7 @@ class TestSixHourReportTotalPnl(unittest.TestCase):
         _run_one_report([], total_eval=11_000_000, send_stock=_send_stock, send_report=_send_report)
 
         self.assertEqual(len(report_calls), 1)
-        self.assertIn("누적손익(원금대비)", report_calls[0])
+        self.assertIn("누적 수익률", report_calls[0])
         self.assertIn("+10.00%", report_calls[0])
         self.assertNotIn("1,000,000원", report_calls[0])
 
@@ -305,7 +311,7 @@ class TestSixHourReportTotalPnl(unittest.TestCase):
         _run_one_report([], total_eval=0, send_stock=_send_stock, send_report=_send_report)
 
         self.assertEqual(len(report_calls), 1)
-        self.assertNotIn("누적손익(원금대비)", report_calls[0])
+        self.assertNotIn("누적 수익률", report_calls[0])
 
 
 class TestHomeHtmlMarkup(unittest.TestCase):

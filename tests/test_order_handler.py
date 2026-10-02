@@ -216,9 +216,10 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=send_telegram)
         self.assertIn("매수 체결", reply)
         self.assertEqual(len(logged), 1)
-        # 매수 체결은 개인방(전체 메시지) + 채널(한 줄 요약) 둘 다 보낸다
-        # ([AT] feat/telegram-routing)
-        self.assertEqual(len(sent), 2)
+        # 매수 체결은 개인방(전체 메시지)으로 간다. CHANNEL_SLIM=True(기본, [AT] feat/channel-slim)
+        # 에서는 채널 한 줄 요약을 보내지 않는다 — CHANNEL_SLIM=False일 때의 개인방+채널 동작은
+        # tests/test_telegram_routing.py::TestOrderHandlerChannelSummary에서 검증한다.
+        self.assertEqual(len(sent), 1)
 
     async def test_approve_order_failure_reports_error(self):
         redis = FakeRedis({

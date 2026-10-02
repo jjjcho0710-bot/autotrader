@@ -13,6 +13,8 @@
 (3) _jarvis_proactive_advice 결과란 체결 중복 제거
 (4) stark/execution_guard.execute(): 체결 시 채널에 금액 없는 한 줄 요약 전송(both)
 (5) router/handlers/order_handler: 채팅 직접매매 체결 시 개인방+채널 둘 다 전송
+(6) [AT] feat/channel-slim: _jarvis_daily_plan/_score_journal/_jarvis_evening_review/
+    _intraday_scan은 CHANNEL_SLIM=True(기본)면 개인방, False면 기존처럼 채널로 간다
 """
 import asyncio
 import sys
@@ -180,6 +182,29 @@ class TestClosingReportChannel(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["dest"], "channel")
 
+    async def test_fill_summary_block_shows_zero_when_no_trades(self):
+        """[AT] feat/channel-slim: 채널에 개별 체결이 안 가므로 마감 결산에 "오늘 체결" 요약
+        블록을 추가했다 — 체결 0건이면 0건과 "없음"을 보여준다."""
+        dm = _load_dashboard_main()
+        sent = await self._run(dm, trades=[], pos_res={"success": True, "data": [], "account": {}})
+        msg = sent[0]["text"]
+        self.assertIn("오늘 체결: 매수 0건 / 매도 0건", msg)
+        self.assertIn("없음", msg)
+
+    async def test_fill_summary_block_shows_extra_count_over_ten(self):
+        """체결이 10건을 넘으면 앞 10건만 보여주고 "외 N건"을 붙인다
+        (6시간 리포트의 체결 목록과 같은 공용 규칙, common.telegram.format_fill_lines)."""
+        dm = _load_dashboard_main()
+        trades = [
+            {"symbol": f"{i:06d}", "side": "BUY", "price": 10000, "quantity": 1,
+             "amount": 10000, "pnl": None, "strategy": "t", "ts": None}
+            for i in range(11)
+        ]
+        sent = await self._run(dm, trades=trades, pos_res={"success": True, "data": [], "account": {}})
+        msg = sent[0]["text"]
+        self.assertIn("오늘 체결: 매수 11건 / 매도 0건", msg)
+        self.assertIn("외 1건", msg)
+
     async def test_no_trade_body_amounts_except_final_block(self):
         """본문(매수 목록·보유 목록)엔 예수금·총자산·평가금액·실현손익 같은 계좌 규모를
         드러내는 금액이 없다 — 단가(평균 체결가, 공개 시세)는 "평가금액"이 아니므로 예외.
@@ -230,7 +255,10 @@ class TestClosingReportChannel(unittest.IsolatedAsyncioTestCase):
         msg = sent[0]["text"]
         self.assertIn("매수 2건", msg)
         self.assertIn("248주", msg)  # 두 건의 수량이 합산되어야 함
-        self.assertEqual(msg.count("종목003670"), 1)  # 한 줄로 합쳐짐(종목이 두 번 나오지 않음)
+        # "신규 매수" 집계 목록(오늘 체결 블록 이전)에선 종목이 한 줄로 합쳐져 한 번만 나와야 한다
+        # ([AT] feat/channel-slim: "오늘 체결" 블록은 체결 건별로 보여주므로 거기선 별개로 또 나온다)
+        agg_section = msg.split("오늘 체결:")[0]
+        self.assertEqual(agg_section.count("종목003670"), 1)
 
     async def test_holdings_list_shows_all_without_truncation(self):
         """실보유 종목이 8개를 넘어도 전부 표시한다(10/1 결산: 10종목인데 8개만 표시되던 버그)."""
@@ -360,7 +388,80 @@ class TestProactiveAdviceResultCompression(unittest.IsolatedAsyncioTestCase):
 
 
 class TestExecutionGuardChannelSummary(unittest.IsolatedAsyncioTestCase):
-    async def test_buy_fill_sends_channel_summary_without_amount(self):
+    async def test_buy_fill_sends_channel_summary_without_amount_when_slim_off(self):
+        """CHANNEL_SLIM=False(되돌림)이면 기존처럼 개인방+채널 둘 다 간다."""
+        execution_guard.reset_buy_lock()
+        pool = EGFakePool()
+        redis = EGFakeRedis()
+        personal_sent, channel_sent = [], []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text):
+            personal_sent.append(text)
+
+        async def send_channel(text):
+            channel_sent.append(text)
+
+        async def log_journal(*a, **kw):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            await execution_guard.execute(
+                make_signal(qty=5, price=70000), make_decision(), pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram, send_channel_fn=send_channel,
+                log_journal_fn=log_journal, save_trade_memory_fn=None, code_to_name_fn=code_to_name,
+            )
+
+        self.assertEqual(len(personal_sent), 1)
+        self.assertEqual(len(channel_sent), 1)
+        self.assertIn("원", channel_sent[0])  # 단가는 허용
+        self.assertNotIn("금액", channel_sent[0])
+        self.assertIn("5주", channel_sent[0])
+        self.assertIn("005930", channel_sent[0])
+
+    async def test_sell_fill_channel_summary_includes_pnl_rate_when_slim_off(self):
+        """CHANNEL_SLIM=False(되돌림)이면 매도 채널 요약에도 손익률이 그대로 포함된다."""
+        execution_guard.reset_buy_lock()
+        pool = EGFakePool()
+        redis = EGFakeRedis()
+        channel_sent = []
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000, "qty": 10}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text):
+            pass
+
+        async def send_channel(text):
+            channel_sent.append(text)
+
+        async def log_journal(*a, **kw):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            await execution_guard.execute(
+                make_signal(action="sell", qty=10, price=75000), make_decision(), pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram, send_channel_fn=send_channel,
+                log_journal_fn=log_journal, save_trade_memory_fn=None, code_to_name_fn=code_to_name,
+                get_positions_fn=get_positions,
+            )
+
+        self.assertEqual(len(channel_sent), 1)
+
+    async def test_channel_slim_default_suppresses_channel_summary_personal_kept(self):
+        """[AT] feat/channel-slim: CHANNEL_SLIM=True(기본)면 채널 한 줄 요약은 보내지 않고
+        개인방 상세 알림은 그대로 간다."""
         execution_guard.reset_buy_lock()
         pool = EGFakePool()
         redis = EGFakeRedis()
@@ -388,45 +489,7 @@ class TestExecutionGuardChannelSummary(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(personal_sent), 1)
-        self.assertEqual(len(channel_sent), 1)
-        self.assertIn("원", channel_sent[0])  # 단가는 허용
-        self.assertNotIn("금액", channel_sent[0])
-        self.assertIn("5주", channel_sent[0])
-        self.assertIn("005930", channel_sent[0])
-
-    async def test_sell_fill_channel_summary_includes_pnl_rate(self):
-        execution_guard.reset_buy_lock()
-        pool = EGFakePool()
-        redis = EGFakeRedis()
-        channel_sent = []
-
-        async def get_positions():
-            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000, "qty": 10}]}
-
-        async def kis_order(symbol, price, qty, is_buy):
-            return {"success": True}
-
-        async def send_telegram(text):
-            pass
-
-        async def send_channel(text):
-            channel_sent.append(text)
-
-        async def log_journal(*a, **kw):
-            pass
-
-        async def code_to_name(symbol):
-            return "삼성전자"
-
-        await execution_guard.execute(
-            make_signal(action="sell", qty=10, price=75000), make_decision(), pool=pool, redis=redis,
-            kis_order_fn=kis_order, send_telegram_fn=send_telegram, send_channel_fn=send_channel,
-            log_journal_fn=log_journal, save_trade_memory_fn=None, code_to_name_fn=code_to_name,
-            get_positions_fn=get_positions,
-        )
-
-        self.assertEqual(len(channel_sent), 1)
-        self.assertIn("+7.1%", channel_sent[0])
+        self.assertEqual(channel_sent, [])
 
     async def test_no_send_channel_fn_does_not_break_execute(self):
         """send_channel_fn 미주입(기존 호출부) 시에도 정상 동작해야 한다(하위호환)."""
@@ -464,7 +527,50 @@ class FakeOrderConfig:
 
 
 class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
-    async def test_buy_success_sends_personal_and_channel(self):
+    async def test_buy_success_sends_personal_and_channel_when_slim_off(self):
+        """CHANNEL_SLIM=False(되돌림)이면 기존처럼 개인방+채널 둘 다 간다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"success": True, "data": []}
+
+        async def get_market_warning(symbol):
+            return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def send_telegram(text, **kw):
+            sent.append({"text": text, "dest": kw.get("dest")})
+
+        async def log_journal(*a, **kw):
+            pass
+
+        with patch("aiohttp.ClientSession", return_value=FakePriceSession(
+                {"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}})), \
+             patch("common.telegram.CHANNEL_SLIM", False):
+            await order_handler.handle_trade_command(
+                "삼성전자 2주 매수", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeOrderConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, get_market_warning_fn=get_market_warning)
+
+        self.assertEqual(len(sent), 2)
+        dests = {s["dest"] for s in sent}
+        self.assertEqual(dests, {"personal", "channel"})
+        channel_msg = next(s["text"] for s in sent if s["dest"] == "channel")
+        self.assertNotIn("금액", channel_msg)
+        self.assertIn("2주", channel_msg)
+
+    async def test_buy_success_channel_slim_default_sends_personal_only(self):
+        """[AT] feat/channel-slim: CHANNEL_SLIM=True(기본)면 채널 한 줄 요약 없이 개인방만 간다."""
         universe = Universe(None)
         universe.replace_cache({"삼성전자": "005930"})
         pool = FakePool()
@@ -497,14 +603,38 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
                 get_stock_positions_fn=get_stock_positions, send_telegram_fn=send_telegram,
                 log_journal_fn=log_journal, get_market_warning_fn=get_market_warning)
 
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "personal")
+
+    async def test_proposal_approve_sends_personal_and_channel_when_slim_off(self):
+        """CHANNEL_SLIM=False(되돌림)이면 기존처럼 개인방+채널 둘 다 간다."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": '{"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 1}',
+        })
+        sent = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True}
+
+        async def log_journal(*a, **kw):
+            pass
+
+        async def send_telegram(text, **kw):
+            sent.append({"text": text, "dest": kw.get("dest")})
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            reply = await order_handler.handle_proposal_response(
+                "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+                send_telegram_fn=send_telegram)
+
+        self.assertIn("매수 체결", reply)
         self.assertEqual(len(sent), 2)
         dests = {s["dest"] for s in sent}
         self.assertEqual(dests, {"personal", "channel"})
-        channel_msg = next(s["text"] for s in sent if s["dest"] == "channel")
-        self.assertNotIn("금액", channel_msg)
-        self.assertIn("2주", channel_msg)
 
-    async def test_proposal_approve_sends_personal_and_channel(self):
+    async def test_proposal_approve_channel_slim_default_sends_personal_only(self):
+        """[AT] feat/channel-slim: CHANNEL_SLIM=True(기본)면 채널 요약 없이 개인방만 간다."""
         redis = FakeRedis({
             "proposal:latest": "005930",
             "proposal:005930": '{"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 1}',
@@ -525,9 +655,186 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
             send_telegram_fn=send_telegram)
 
         self.assertIn("매수 체결", reply)
-        self.assertEqual(len(sent), 2)
-        dests = {s["dest"] for s in sent}
-        self.assertEqual(dests, {"personal", "channel"})
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "personal")
+
+
+# ── (6) [AT] feat/channel-slim: 채널 슬림 대상 4종 함수 목적지 전환 ──────────
+
+
+class _FakeRedisNoop:
+    """redis_client 대체용 — get은 항상 None, setex는 아무것도 안 함."""
+
+    async def get(self, key):
+        return None
+
+    async def setex(self, *a, **kw):
+        pass
+
+
+class TestChannelSlimDashboardRouting(unittest.IsolatedAsyncioTestCase):
+    """_jarvis_daily_plan(오늘의 작전)/_score_journal(판단 채점)/_jarvis_evening_review(복기)/
+    _intraday_scan(장중 보충 스캔)/_jarvis_weekly_preview(다음주 예습 브리핑)은
+    CHANNEL_SLIM=True(기본)면 개인방, False면 기존처럼 채널로 간다. 마감 결산·주말 학습보고·
+    주간 복습은 이 전환 대상이 아니다(채널 유지, (2)에서 이미 검증)."""
+
+    async def _send(self, sent):
+        async def fake_send_telegram(text, **kw):
+            sent.append({"text": text, "dest": kw.get("dest")})
+        return fake_send_telegram
+
+    async def test_daily_plan_dest_follows_channel_slim(self):
+        dm = _load_dashboard_main()
+
+        class _Conn:
+            async def fetch(self, query, *args):
+                return []
+
+        async def _run():
+            sent = []
+            with patch.object(dm, "db_pool", _ClosingReportPool(_Conn()), create=True), \
+                 patch.object(dm, "redis_client", _FakeRedisNoop(), create=True), \
+                 patch.object(dm, "_get_jarvis_lessons", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "_get_jarvis_knowledge", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "_get_active_directives", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "_ask_openwebui", new=AsyncMock(return_value="오늘의 작전 내용")), \
+                 patch.object(dm, "_send_telegram", new=await self._send(sent)):
+                await dm._jarvis_daily_plan()
+            return sent
+
+        sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "personal")  # CHANNEL_SLIM=True(기본)
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "channel")  # 되돌리기
+
+    async def test_score_journal_zero_records_dest_follows_channel_slim(self):
+        dm = _load_dashboard_main()
+
+        class _Conn:
+            async def fetch(self, query, *args):
+                return []
+
+            async def fetchval(self, query, *args):
+                return 0
+
+        async def _run():
+            sent = []
+            with patch.object(dm, "db_pool", _ClosingReportPool(_Conn()), create=True), \
+                 patch.object(dm, "_send_telegram", new=await self._send(sent)):
+                await dm._score_journal()
+            return sent
+
+        sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("기록 0건", sent[0]["text"])
+        self.assertEqual(sent[0]["dest"], "personal")
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "channel")
+
+    async def test_evening_review_dest_follows_channel_slim(self):
+        dm = _load_dashboard_main()
+
+        class _Conn:
+            def __init__(self):
+                self.executed = []
+
+            async def fetch(self, query, *args):
+                if "trade_journal" in query:
+                    return [{"symbol": "005930", "name": "삼성전자",
+                              "jarvis_decision": "SKIP", "eval_pnl_rate": 1.2}]
+                return []
+
+            async def execute(self, query, *args):
+                self.executed.append(args)
+
+        async def _run():
+            sent = []
+            with patch.object(dm, "db_pool", _ClosingReportPool(_Conn()), create=True), \
+                 patch.object(dm, "redis_client", _FakeRedisNoop(), create=True), \
+                 patch.object(dm, "_ask_openwebui", new=AsyncMock(return_value="교훈: 다음엔 신중하게")), \
+                 patch.object(dm, "_send_telegram", new=await self._send(sent)):
+                await dm._jarvis_evening_review()
+            return sent
+
+        sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("복기", sent[0]["text"])
+        self.assertEqual(sent[0]["dest"], "personal")
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "channel")
+
+    async def test_intraday_scan_dest_follows_channel_slim(self):
+        dm = _load_dashboard_main()
+
+        class _Conn:
+            def __init__(self):
+                self.executed = []
+
+            async def fetch(self, query, *args):
+                return []
+
+            async def execute(self, query, *args):
+                self.executed.append(args)
+
+        candidates = [{"symbol": "005930", "name": "삼성전자", "close": 70000, "change": 2.0,
+                       "vol_ratio": 3.0, "score": 5, "rsi": 55.0}]
+
+        async def _run():
+            sent = []
+            with patch.object(dm, "_kis_scan_candidates", new=AsyncMock(return_value=candidates)), \
+                 patch.object(dm, "get_stock_positions",
+                               new=AsyncMock(return_value={"success": True, "data": []})), \
+                 patch.object(dm, "db_pool", _ClosingReportPool(_Conn()), create=True), \
+                 patch.object(dm, "_last_kis_scan_surge_excluded", 0), \
+                 patch.object(dm, "_send_telegram", new=await self._send(sent)):
+                await dm._intraday_scan()
+            return sent
+
+        sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("장중 보충 스캔", sent[0]["text"])
+        self.assertEqual(sent[0]["dest"], "personal")
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "channel")
+
+    async def test_weekly_preview_dest_follows_channel_slim(self):
+        dm = _load_dashboard_main()
+
+        async def _run():
+            sent = []
+            with patch.object(dm, "get_stock_positions",
+                               new=AsyncMock(return_value={"success": True, "data": []})), \
+                 patch.object(dm, "_analyze_chart", new=AsyncMock(return_value="차트: 정배열")), \
+                 patch.object(dm, "_get_jarvis_lessons", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "_get_active_directives", new=AsyncMock(return_value="")), \
+                 patch.object(dm, "_ask_openwebui", new=AsyncMock(return_value="다음주 예습 내용")), \
+                 patch.object(dm, "redis_client", _FakeRedisNoop(), create=True), \
+                 patch.object(dm, "_send_telegram", new=await self._send(sent)):
+                await dm._jarvis_weekly_preview()
+            return sent
+
+        sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertIn("다음주 예습 브리핑", sent[0]["text"])
+        self.assertEqual(sent[0]["dest"], "personal")  # CHANNEL_SLIM=True(기본)
+
+        with patch("common.telegram.CHANNEL_SLIM", False):
+            sent = await _run()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["dest"], "channel")  # 되돌리기
 
 
 if __name__ == "__main__":

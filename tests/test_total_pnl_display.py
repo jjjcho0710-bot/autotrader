@@ -243,8 +243,9 @@ from main import StockTrader  # noqa: E402
 
 
 def _run_one_report(trades, total_eval, send_stock, send_report):
-    """6시간 리포트는 채널 전용이다([AT] feat/telegram-routing) — send_report 호출 직후
-    루프를 멈춘다. send_stock은 더 이상 호출되지 않아야 한다."""
+    """6시간 리포트 목적지는 CHANNEL_SLIM(기본 True)에 따라 개인방(send_stock)/채널
+    (send_report)로 갈린다([AT] feat/channel-slim) — 어느 쪽이 실제로 불려도 루프가
+    멈추도록 둘 다 같은 방식(호출 직후 running=False)으로 감싼다."""
     trader = StockTrader.__new__(StockTrader)
     trader.running = True
     trader.positions = {}
@@ -266,13 +267,17 @@ def _run_one_report(trades, total_eval, send_stock, send_report):
             await send_report(text)
             trader.running = False
 
+        async def _send_stock_and_stop(text):
+            await send_stock(text)
+            trader.running = False
+
         # SIX_HOUR_REPORT_SKIP_IDLE은 이 테스트의 관심사가 아니다(실제 벽시계 시각에 따라
         # 거래 0건 + 장시간 미포함 구간으로 판정되면 전송이 생략돼 테스트가 들떠서(flaky) 실패할
         # 수 있어 꺼둔다).
         with mock.patch.object(stock_main.db, "pool", _FakePool(_FakeConn(trades)), create=True), \
              mock.patch.object(stock_main.asyncio, "sleep", _fake_sleep), \
              mock.patch.object(StockTrader, "SIX_HOUR_REPORT_SKIP_IDLE", False), \
-             mock.patch("common.telegram.send_stock", send_stock), \
+             mock.patch("common.telegram.send_stock", _send_stock_and_stop), \
              mock.patch("common.telegram.send_report", _send_report_and_stop), \
              mock.patch.object(config, "INITIAL_SEED_KRW", 10_000_000):
             await real_report(trader)
@@ -282,14 +287,15 @@ def _run_one_report(trades, total_eval, send_stock, send_report):
 
 class TestSixHourReportTotalPnl(unittest.TestCase):
     def test_report_includes_cumulative_pnl_rate_when_total_eval_available(self):
-        """채널 메시지는 금액 없이 누적손익률(%)만 보여준다(계좌 규모를 드러내는 금액 제외)."""
+        """메시지는 금액 없이 누적손익률(%)만 보여준다(계좌 규모를 드러내는 금액 제외).
+        CHANNEL_SLIM=True(기본)이므로 개인방(send_stock)으로 간다([AT] feat/channel-slim)."""
         report_calls = []
 
         async def _send_stock(text):
-            pass
+            report_calls.append(text)
 
         async def _send_report(text):
-            report_calls.append(text)
+            pass
 
         _run_one_report([], total_eval=11_000_000, send_stock=_send_stock, send_report=_send_report)
 
@@ -303,10 +309,10 @@ class TestSixHourReportTotalPnl(unittest.TestCase):
         report_calls = []
 
         async def _send_stock(text):
-            pass
+            report_calls.append(text)
 
         async def _send_report(text):
-            report_calls.append(text)
+            pass
 
         _run_one_report([], total_eval=0, send_stock=_send_stock, send_report=_send_report)
 

@@ -1497,13 +1497,10 @@ class StockTrader:
                 logger.info(f"💸 잔고 부족 ({cash:,}원) → 매수 스킵")
                 continue
 
-            # ML 예측 결과 (Jarvis에게 참고 정보로 전달)
-            ml_result = await self._get_ml_result(symbol, rows)
-
-            # ML 문구는 reason 생성에만 사용 — 매수 금액 산정에서는 제외한다(PM 승인, 2026-09-30).
-            # ML 정확도가 42~64%(동전 수준)라 확신도 기반 사이징의 근거가 약해 "종목당 최대
-            # 손실 고정" 방식으로 대체했다.
-            _, ml_text = self._ml_buy_plan(ml_result, cash)
+            # ML 예측 계산(ml_predictions 저장, 추후 모델 평가용 기준 데이터) — PM 승인(2026-10-02)으로
+            # Jarvis 판단에는 더 이상 전달하지 않는다(buy_prob 90~100% 구간조차 적중률 43.9%/
+            # 평균수익 -0.51%로 확률과 적중률 사이에 유의미한 관계가 없음이 확인됨).
+            await self._get_ml_result(symbol, rows)
 
             # 리스크 기반 매수 금액 = 기본(자산×위험비율÷손절률) × 변동성배율.
             # 확신도 배율(EXECUTE=1.0/EXECUTE_SMALL=0.5)과 예수금 최종 캡은 AI 판단 이후
@@ -1584,7 +1581,7 @@ class StockTrader:
             buy_amount_krw = cur_price * qty
             cash_note = " ⚠️(마지막 확인: 지연됨)" if cash_stale else ""
             reason = (
-                f"전략:{triggered_strategy} | {ml_text} "
+                f"전략:{triggered_strategy} "
                 f"| 수급:{supply_reason} | 뉴스:{news_reason} "
                 f"| 예수금:{cash:,.0f}원{cash_note} | 매수예정:{buy_amount_krw:,.0f}원"
             )
@@ -1672,36 +1669,6 @@ class StockTrader:
             logger.warning(f"⚠️ [{symbol}] ML 예측 결과에 buy_prob 없음")
             return {"success": False, "reason": "예측 없음"}
         return result
-
-    @staticmethod
-    def _ml_buy_plan(ml_result: dict, cash: float) -> tuple:
-        """ML 결과 → (매수 금액, reason 에 넣을 ML 문구).
-        성공: 확률 구간별 비율(강함 30%/보통 20%/약함 15%/최소 10%) + "ML매수확률:NN%(강도)".
-        실패: 확률을 쓰지 않고 최소 비율(10%) 고정 + "ML예측 없음(사유)".
-        (stark/decision_engine.py 의 AI 폴백은 "ML매수확률:NN%" 만 읽으므로 실패 문구는 확률 0 으로 처리된다.)
-
-        주의(PM 승인, 2026-09-30): 이 함수가 반환하는 매수 금액은 더 이상 실제 매수 금액
-        산정에 쓰이지 않는다(리스크 기반 사이징으로 대체, _compute_base_amount 참고). 호출부는
-        ml_text 만 사용한다. 기존 회귀 테스트(tests/test_ml_no_prediction.py)를 유지하기 위해
-        반환값 자체는 그대로 둔다."""
-        if ml_result.get("success") and isinstance(ml_result.get("buy_prob"), (int, float)):
-            buy_prob = ml_result["buy_prob"]
-            if buy_prob >= 0.90:
-                ratio, strength = 0.30, "강함"
-            elif buy_prob >= 0.80:
-                ratio, strength = 0.20, "보통"
-            elif buy_prob >= 0.70:
-                ratio, strength = 0.15, "약함"
-            else:
-                ratio, strength = 0.10, "최소"
-            ml_text = f"ML매수확률:{buy_prob:.0%}({strength})"
-        else:
-            ratio = 0.10
-            ml_text = f"ML예측 없음({ml_result.get('reason') or '사유 미상'})"
-
-        buy_amount = min(int(cash * ratio), cash)
-        buy_amount = max(buy_amount, 100000)
-        return buy_amount, ml_text
 
     @staticmethod
     def _compute_base_amount(equity: float, stop_loss_pct: float, risk_per_trade_pct: float) -> float:

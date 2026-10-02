@@ -22,7 +22,6 @@ from stark.decision_logger import log_decision
 logger = logging.getLogger("stark.decision_engine")
 
 _VERDICT_RE = re.compile(r"\b(EXECUTE_SMALL|EXECUTE|PROPOSE|SKIP)\b")
-_ML_PROB_RE = re.compile(r"ML매수확률[:\s]*([0-9]+)%")
 
 # 판정별 확신도 휴리스틱. 원본 코드는 EXECUTE/EXECUTE_SMALL/PROPOSE/SKIP 라벨만 파싱했을 뿐
 # 수치 확신도가 전혀 없었다 — stark_decisions.confidence를 의미 있게 채우기 위해 도입한
@@ -58,20 +57,17 @@ async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any =
         reply = (reply or "") + "\n[자동 실행: 규칙 외 강신호 — 소액 자동 진입]"
         confidence = _VERDICT_CONFIDENCE["PROPOSE"]
 
-    # 429/오류 폴백: AI 응답 불가 시 신호의 ML 확률로 규칙 판단 (봇 생존)
+    # 429/오류 폴백: AI 응답 불가 시 ML 확률로 매수를 판단하던 기존 로직을 제거했다(PM 승인,
+    # 2026-10-02 — buy_prob 90~100% 구간조차 적중률 43.9%/평균수익 -0.51%로, 확률이 높을수록
+    # 더 잘 맞는 관계가 없다는 게 확인됨). AI 응답이 없으면 봇 생존을 위해 매수를 시도하는 대신
+    # 무조건 보수적 SKIP으로 처리한다.
     ai_failed = (not reply) or reply.startswith("❌") or "429" in (reply or "")[:200]
     if ai_failed:
-        ml_m = _ML_PROB_RE.search(signal.get("reason") or "")
-        ml_prob = int(ml_m.group(1)) if ml_m else 0
-        # 원본 코드 그대로: 소문자 "buy"만 확인한다("BUY" 대문자는 폴백 매수를 안 함) —
-        # 의도적 동작인지 확인되지 않은 기존 동작이라 그대로 보존.
-        should_execute = (action == "buy" and ml_prob >= 70)
-        reply = (f"[AI폴백] ML확률 {ml_prob}% 기준 "
-                 f"{'EXECUTE' if should_execute else 'SKIP'} (Gemini 응답 불가)")
+        should_execute = False
+        reply = "[AI폴백] AI 응답 불가로 보수적 SKIP"
         source = "rule"
-        confidence = round(ml_prob / 100.0, 2)  # ML 폴백은 실제 수치가 있으니 휴리스틱 대신 그대로 사용
         logger.warning(f"🤖 AI 폴백 판단 [{symbol}]: {reply}")
-        decision_label = "EXECUTE" if should_execute else "SKIP"
+        decision_label = "SKIP"
     else:
         decision_label = "EXECUTE_SMALL" if is_small else (verdict or "SKIP")
 

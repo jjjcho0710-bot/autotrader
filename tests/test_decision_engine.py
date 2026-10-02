@@ -4,8 +4,8 @@ stark/decision_engine.py 단위 테스트.
 핵심 검증 포인트(STARK_PLAN 4번·6번 원칙):
 1. EXECUTE/EXECUTE_SMALL/SKIP/PROPOSE 판정 파싱이 원본과 동일하게 동작하는가.
 2. PROPOSE는 소액 자동승격되는가.
-3. AI 실패 시 ML 확률 폴백이 원본의 (의도가 불분명하지만) 소문자 "buy"만 인식하는
-   동작을 그대로 보존하는가.
+3. AI 실패 시 ML 확률로 매수를 시도하던 폴백이 제거되어, reason에 ML 확률이 있어도
+   무조건 보수적 SKIP으로 처리되는가(PM 승인, 2026-10-02 — ML 확률 기반 폴백 매수 제거).
 4. 판단마다(SKIP 포함) stark_decisions에 반드시 기록되는가 — 이게 없으면
    "0건인 날"의 원인을 사후에 알 수 없다는 게 STARK_PLAN의 핵심 불만이었다.
 5. decide()는 절대 주문을 실행하지 않는다(판단과 실행의 물리적 분리).
@@ -112,30 +112,21 @@ class TestDecide(unittest.IsolatedAsyncioTestCase):
         decision = await decision_engine.decide(make_signal(action="sell"), "prompt", ask_llm_fn=ask_llm, pool=pool)
         self.assertFalse(decision["should_execute"])
 
-    async def test_ai_failure_falls_back_to_ml_probability_lowercase_buy(self):
+    async def test_ai_failure_never_executes_even_with_high_ml_probability_in_reason(self):
+        """ML 확률 폴백 매수는 제거됐다(PM 승인, 2026-10-02 — buy_prob 90~100% 구간조차
+        적중률 43.9%/평균수익 -0.51%로 확률이 높을수록 잘 맞는 관계가 없음이 확인됨).
+        AI 응답 실패 시 reason에 ML 확률이 아무리 높게 적혀 있어도 무조건 SKIP이다."""
         pool = FakePool()
 
         async def ask_llm(prompt, session_id):
             return ""  # 빈 응답 = AI 실패로 간주
 
         decision = await decision_engine.decide(
-            make_signal(action="buy", reason="ML매수확률: 80%"), "prompt", ask_llm_fn=ask_llm, pool=pool)
-        self.assertTrue(decision["ai_failed"])
-        self.assertTrue(decision["should_execute"])
-        self.assertEqual(decision["source"], "rule")
-
-    async def test_ai_failure_uppercase_buy_never_executes_legacy_quirk_preserved(self):
-        """원본 코드는 ML 폴백에서 action=='buy'(소문자)만 확인했다 — 'BUY'(대문자)는
-        확률이 아무리 높아도 실행되지 않는 게 원본 그대로의 동작이다."""
-        pool = FakePool()
-
-        async def ask_llm(prompt, session_id):
-            return ""
-
-        decision = await decision_engine.decide(
-            make_signal(action="BUY", reason="ML매수확률: 95%"), "prompt", ask_llm_fn=ask_llm, pool=pool)
+            make_signal(action="buy", reason="ML매수확률: 95%"), "prompt", ask_llm_fn=ask_llm, pool=pool)
         self.assertTrue(decision["ai_failed"])
         self.assertFalse(decision["should_execute"])
+        self.assertEqual(decision["source"], "rule")
+        self.assertIn("보수적 SKIP", decision["reply"])
 
     async def test_ai_failure_without_ml_probability_defaults_to_skip(self):
         pool = FakePool()
@@ -200,7 +191,9 @@ class TestConfidence(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision["confidence"], 0.30)
         self.assertEqual(logged, 0.30)
 
-    async def test_ml_fallback_confidence_uses_actual_probability_not_heuristic(self):
+    async def test_ai_failure_confidence_uses_low_skip_heuristic_regardless_of_reason(self):
+        """ML 확률 폴백이 제거됐으므로 AI 실패 시 confidence는 reason 내용과 무관하게
+        SKIP과 동일한 낮은 고정값(0.30)이다."""
         pool = FakePool()
 
         async def ask_llm(prompt, session_id):
@@ -208,10 +201,10 @@ class TestConfidence(unittest.IsolatedAsyncioTestCase):
 
         decision = await decision_engine.decide(
             make_signal(action="buy", reason="ML매수확률: 82%"), "prompt", ask_llm_fn=ask_llm, pool=pool)
-        self.assertEqual(decision["confidence"], 0.82)
-        self.assertEqual(pool._conn.inserted[0][3], 0.82)
+        self.assertEqual(decision["confidence"], 0.30)
+        self.assertEqual(pool._conn.inserted[0][3], 0.30)
 
-    async def test_ml_fallback_zero_probability_confidence_is_zero(self):
+    async def test_ai_failure_without_reason_confidence_is_also_low_skip_heuristic(self):
         pool = FakePool()
 
         async def ask_llm(prompt, session_id):
@@ -219,7 +212,7 @@ class TestConfidence(unittest.IsolatedAsyncioTestCase):
 
         decision = await decision_engine.decide(
             make_signal(reason="사유 없음"), "prompt", ask_llm_fn=ask_llm, pool=pool)
-        self.assertEqual(decision["confidence"], 0.0)
+        self.assertEqual(decision["confidence"], 0.30)
 
 
 if __name__ == "__main__":

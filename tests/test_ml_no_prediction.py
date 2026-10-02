@@ -5,10 +5,13 @@ ML 예측 실패 시 가짜 65% 대신 "예측 없음"을 정확히 전달하는
 {"buy_prob": 0.65} 를 반환했다. 그 65% 가 AI 프롬프트에 "ML매수확률:65%" 로 들어가 긍정 근거처럼
 인용됐다(stark_decisions 31건 전부 65%). 여기서는
 1. 모델 없음/예측 실패/예외 3가지 모두 buy_prob 없이 {"success": False, "reason": ...} 를 돌려주는지,
-2. reason 문자열에 성공일 때만 "ML매수확률:NN%", 실패일 때는 "ML예측 없음(사유)" 가 들어가는지,
-3. 실패 시 매수 금액이 최소 비율(10%)로 고정되는지,
-4. stark/decision_engine.py 의 AI 폴백이 "ML예측 없음" 을 확률 0 으로 읽어 매수하지 않는지
+2. stark/decision_engine.py 의 AI 폴백이 ML 확률(reason에 남아있더라도)로 매수를 시도하지
+   않는지(PM 승인, 2026-10-02 — ML 확률 기반 폴백 매수 자체를 제거함)
 를 고정한다.
+
+ML 확률 구간별 매수 비율·문구를 만들던 _ml_buy_plan 은 reason/AI 프롬프트에 ML 확률을
+남기지 않기 위해 제거됐다 — 그 함수가 만들던 "ML매수확률:NN%"/"ML예측 없음(사유)" 문구 자체가
+금지 대상이라 관련 테스트(TestMlBuyPlan)도 함께 제거했다.
 """
 import sys
 import types
@@ -89,45 +92,11 @@ class TestGetMlResultFailure(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self._run(predict), expected)
 
 
-class TestMlBuyPlan(unittest.TestCase):
-    CASH = 5_000_000
+class TestAiFallbackNeverBuysOnMlProbability(unittest.IsolatedAsyncioTestCase):
+    """ML 확률 기반 폴백 매수는 완전히 제거됐다 — reason에 어떤 ML 문구가 남아있어도
+    (과거 데이터·수동 입력 등으로) AI 응답 실패 시에는 항상 SKIP이어야 한다."""
 
-    def test_failure_uses_minimum_ratio_and_no_probability_text(self):
-        for reason in ("모델 없음", "피처 생성 실패", "예외:ValueError"):
-            amount, text = StockTrader._ml_buy_plan({"success": False, "reason": reason}, self.CASH)
-            self.assertEqual(amount, 500_000)  # 최소 비율 10%
-            self.assertEqual(text, f"ML예측 없음({reason})")
-            self.assertNotIn("65%", text)
-            self.assertNotIn("ML매수확률", text)
-
-    def test_failure_without_reason_still_marked_no_prediction(self):
-        _, text = StockTrader._ml_buy_plan({"success": False}, self.CASH)
-        self.assertTrue(text.startswith("ML예측 없음("))
-
-    def test_legacy_default_shape_is_not_treated_as_prediction(self):
-        # 옛 실패 기본값 {"buy_prob": 0.65} 처럼 success 가 없는 dict 는 성공으로 취급하지 않는다.
-        amount, text = StockTrader._ml_buy_plan({"buy_prob": 0.65}, self.CASH)
-        self.assertEqual(amount, 500_000)
-        self.assertTrue(text.startswith("ML예측 없음("))
-
-    def test_success_keeps_existing_tiers_and_text(self):
-        cases = [(0.95, 1_500_000, "ML매수확률:95%(강함)"),
-                 (0.85, 1_000_000, "ML매수확률:85%(보통)"),
-                 (0.72, 750_000, "ML매수확률:72%(약함)"),
-                 (0.65, 500_000, "ML매수확률:65%(최소)")]  # 모델이 실제로 65% 를 냈다면 그대로 표기
-        for prob, want_amount, want_text in cases:
-            amount, text = StockTrader._ml_buy_plan({"success": True, "buy_prob": prob}, self.CASH)
-            self.assertEqual((amount, text), (want_amount, want_text))
-
-    def test_minimum_order_amount_floor_preserved(self):
-        amount, _ = StockTrader._ml_buy_plan({"success": False, "reason": "모델 없음"}, 500_000)
-        self.assertEqual(amount, 100_000)
-
-
-class TestAiFallbackIgnoresNoPrediction(unittest.IsolatedAsyncioTestCase):
-    async def _decide(self, ml_result, ai_reply=""):
-        _, ml_text = StockTrader._ml_buy_plan(ml_result, 5_000_000)
-        reason = f"전략:MA크로스 | {ml_text} | 수급:외국인+1 기관+1 | 뉴스:없음"
+    async def _decide(self, reason, ai_reply=""):
         pool = FakePool()
 
         async def ask_llm(prompt, session_id):
@@ -139,17 +108,20 @@ class TestAiFallbackIgnoresNoPrediction(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_prediction_reasons_never_trigger_fallback_buy(self):
         for reason in ("모델 없음", "피처 생성 실패", "예측 없음", "예외:ValueError"):
-            decision, pool = await self._decide({"success": False, "reason": reason})
+            decision, pool = await self._decide(f"전략:MA크로스 | ML예측 없음({reason}) | 수급:외국인+1 기관+1 | 뉴스:없음")
             self.assertTrue(decision["ai_failed"], reason)
             self.assertFalse(decision["should_execute"], reason)
-            self.assertEqual(decision["confidence"], 0.0, reason)
-            self.assertIn("ML확률 0%", decision["reply"], reason)
-            self.assertIn("ML예측 없음", str(pool._conn.inserted[0]), reason)  # stark_decisions 에도 그대로 기록
+            self.assertEqual(decision["confidence"], 0.30, reason)
+            self.assertIn("보수적 SKIP", decision["reply"], reason)
 
-    async def test_real_high_probability_still_triggers_fallback_buy(self):
-        decision, _ = await self._decide({"success": True, "buy_prob": 0.85})
-        self.assertTrue(decision["should_execute"])
-        self.assertEqual(decision["confidence"], 0.85)
+    async def test_high_ml_probability_in_reason_no_longer_triggers_fallback_buy(self):
+        """원래는 buy_prob>=0.70이면 AI 폴백이 매수를 시도했다 — 그 경로 자체가 제거됐으므로
+        reason에 높은 ML 확률 문구가 있어도 SKIP이어야 한다."""
+        decision, pool = await self._decide("전략:MA크로스 | ML매수확률:85%(보통) | 수급:외국인+1 기관+1 | 뉴스:없음")
+        self.assertTrue(decision["ai_failed"])
+        self.assertFalse(decision["should_execute"])
+        self.assertEqual(decision["confidence"], 0.30)
+        self.assertIn("SKIP", pool._conn.inserted[0][2])
 
 
 if __name__ == "__main__":

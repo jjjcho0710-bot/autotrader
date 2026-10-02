@@ -10,6 +10,7 @@ KIS 실주문 실행(_kis_stock_order), 시세·잔고 조회, 텔레그램 발�
 전부 dashboard/main.py가 들고 있는 함수를 콜러블로 주입받는다 — 이 모듈 자체는 KIS API를
 직접 호출하지 않는다(실행 인프라와 라우팅 로직을 분리).
 """
+import asyncio
 import json
 import logging
 import re
@@ -35,6 +36,20 @@ KST = timezone(timedelta(hours=9))
 
 _RE_PROP = re.compile(r"(승인|오케이|오케|ok|ㅇㅋ|사자|매수 ?해|매수 ?하자|고고|거절|취소해|사지 ?마)", re.I)
 _RE_REJECT = re.compile(r"(거절|취소해|사지 ?마|안 ?사)")
+
+
+async def _invalidate_cache(invalidate_cache_fn: Optional[Any]) -> None:
+    """체결 즉시 보유/잔고 메모리 캐시 무효화 — reconcile_uncertain_order와 동일하게 동기/비동기
+    콜러블 둘 다 받는다(stark/execution_guard.py의 호출 패턴과 동일, [AT] fix/balance-cache)."""
+    if not invalidate_cache_fn:
+        return
+    try:
+        if asyncio.iscoroutinefunction(invalidate_cache_fn):
+            await invalidate_cache_fn()
+        else:
+            invalidate_cache_fn()
+    except Exception:
+        pass
 
 
 def _fill_channel_summary(name: str, symbol: str, action_kr: str, qty, price: float,
@@ -127,6 +142,7 @@ async def handle_proposal_response(
         order = await kis_order_fn(symbol, int(target["price"]), int(target["qty"]), True)
         await redis.delete(f"proposal:{symbol}")
         if order.get("success"):
+            await _invalidate_cache(invalidate_cache_fn)
             await log_journal_fn("stock_trader", symbol, target["name"], "buy",
                                   target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
                                   target.get("reason", ""), True, True,
@@ -350,6 +366,7 @@ async def handle_trade_command(
                 await redis.delete(k)
         except Exception:
             pass
+        await _invalidate_cache(invalidate_cache_fn)
         await send_telegram_fn(
             f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
             f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",

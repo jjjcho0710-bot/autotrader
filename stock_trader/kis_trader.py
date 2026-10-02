@@ -3,6 +3,7 @@ KIS API — 주문 실행 모듈
 매수 / 매도 / 잔고조회 / 보유종목 조회
 """
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -26,6 +27,13 @@ class KISTrader:
     # 공통 적용한다. 단, 매도는 체결 지연이 손실 확대로 이어질 수 있어 예외로 둔다
     # (sell() 참고).
     KIS_MIN_CALL_INTERVAL_SEC = 0.55
+
+    # 모의투자 서버 지연으로 접수 직후(1.5초) 체결이 아직 반영되지 않은 경우를 실패로
+    # 단정하지 않기 위한 추가 재확인 간격([AT] fix/stock-trader-fill-reconcile).
+    _FILL_RETRY_DELAYS_SEC = (3.0, 7.0)
+    # 재확인까지 끝내 미체결이면 pending 컨텍스트를 Redis에 보관하는 기간(초) — 백그라운드
+    # 재확인(stock_trader/main.py._reconcile_pending_orders)이 이 시간 안에 확정짓는다.
+    ORDER_PENDING_TTL_SEC = 1200  # 20분
 
     def __init__(self):
         self.access_token: str = ""
@@ -419,6 +427,33 @@ class KISTrader:
                 return positions
         return []
 
+    # ── 지연 체결(pending) 컨텍스트 ──────────────────────
+    async def _check_pending_lock(self, symbol: str, side: str) -> bool:
+        """같은 종목·방향으로 이미 pending(체결 확인 대기) 주문이 있는지 확인한다."""
+        try:
+            return bool(await cache.client.get(f"order_pending_lock:{symbol}:{side}"))
+        except Exception:
+            return False
+
+    async def _store_pending_order(
+        self, order_no: str, side: str, *, symbol: str, qty: int, price: int,
+        strategy: str = "", avg_price: Optional[float] = None,
+    ):
+        """재확인 2회(+3초, +7초)에도 체결이 안 잡힌 주문의 맥락을 Redis에 저장한다.
+        stock_trader/main.py._reconcile_pending_orders()가 30초마다 재조회해 지연 체결을
+        확정하거나 10분 뒤 '결과 불명'으로 정리한다. avg_price는 매도 시 손익 계산용
+        평단가(포지션 원가)이며 buy()에는 넘기지 않는다."""
+        ctx = {
+            "symbol": symbol, "side": side, "qty": qty, "price": price,
+            "strategy": strategy or "", "avg_price": avg_price,
+            "accepted_at": time.time(),
+        }
+        try:
+            await cache.client.setex(f"order_pending:{order_no}", self.ORDER_PENDING_TTL_SEC, json.dumps(ctx))
+            await cache.client.setex(f"order_pending_lock:{symbol}:{side}", self.ORDER_PENDING_TTL_SEC, order_no)
+        except Exception as e:
+            logger.warning(f"pending 주문 컨텍스트 저장 실패 [{symbol}]: {e}")
+
     # ── 매수 주문 ───────────────────────────────────────
     async def _refresh_token_if_expired(self, data: dict) -> bool:
         """토큰 만료 확인 후 자동 재발급, 재발급 성공 시 True.
@@ -456,10 +491,13 @@ class KISTrader:
             logger.warning("🔄 KIS 세션 재시작")
             await self.start()
 
-    async def buy(self, symbol: str, price: int, qty: int) -> dict:
+    async def buy(self, symbol: str, price: int, qty: int, strategy: str = "") -> dict:
         """지정가 매수 (토큰 만료 시 자동 재시도)
         주문 접수(rt_cd=0)는 '접수'만 의미하고 실제 체결을 보장하지 않으므로,
         접수 후 실제 체결 수량을 재조회해 진짜 성공 여부를 판정한다."""
+        if await self._check_pending_lock(symbol, "buy"):
+            logger.info(f"⏸️ [{symbol}] 이전 매수 주문 체결 확인 대기 중 — 중복 주문 차단")
+            return {"success": False, "pending": True, "error": "이전 주문 체결 확인 대기 중(중복 주문 차단)"}
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0802U" if config.KIS_IS_PAPER else "TTTC0802U"
         payload = {
@@ -503,8 +541,21 @@ class KISTrader:
                 logger.warning(f"⚠️ 체결 확인 API 실패 [{symbol}] — 접수 결과만으로 판정")
                 return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
             if filled_qty <= 0:
-                logger.error(f"❌ 매수 미체결: {symbol} 주문 {qty}주 접수됐으나 체결 0주")
-                return {"success": False, "error": f"주문 접수됐으나 미체결(체결수량 0)"}
+                # 모의투자 서버 지연으로 직후 체결이 아직 반영되지 않았을 수 있다 — 바로
+                # 실패로 단정하지 않고 +3초, +7초 두 번 더 재확인한다(총 약 10초).
+                for delay in self._FILL_RETRY_DELAYS_SEC:
+                    await _aio.sleep(delay)
+                    filled_qty = await self._get_filled_qty(order_no, symbol, side="02")
+                    if filled_qty:
+                        break
+                if not filled_qty:
+                    logger.warning(f"⏳ 매수 체결 지연 [{symbol}] 주문 {qty}주 접수 — 체결 확인 대기(pending)")
+                    await self._store_pending_order(
+                        order_no, "buy", symbol=symbol, qty=qty, price=price, strategy=strategy)
+                    return {
+                        "success": False, "pending": True, "order_no": order_no,
+                        "error": "주문 접수, 체결 확인 대기",
+                    }
             if filled_qty < qty:
                 self.invalidate_balance_cache()
                 logger.warning(f"⚠️ 매수 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
@@ -515,7 +566,7 @@ class KISTrader:
         return {"success": False, "error": "매수 실패"}
 
     # ── 매도 주문 ───────────────────────────────────────
-    async def sell(self, symbol: str, price: int, qty: int) -> dict:
+    async def sell(self, symbol: str, price: int, qty: int, strategy: str = "", avg_price: Optional[float] = None) -> dict:
         """시장가 매도 (토큰 만료 시 자동 재시도)
         지정가(00)는 가격이 안 맞으면 미체결/거부될 수 있어 매도는 시장가(01)로 확실히 체결
         주문 접수(rt_cd=0)는 '접수'만 의미하고 실제 체결을 보장하지 않으므로,
@@ -523,7 +574,14 @@ class KISTrader:
 
         매도(손절 등 긴급 주문)는 체결 지연이 손실 확대로 이어질 수 있어 KISTrader
         공용 최소 호출 간격(_throttle_kis_call)을 적용하지 않는다. 다만 속도제한
-        (EGW00201) 응답을 받으면 그 즉시 1.5초 후 1회 자동 재시도한다."""
+        (EGW00201) 응답을 받으면 그 즉시 1.5초 후 1회 자동 재시도한다.
+
+        strategy/avg_price는 재확인 끝에도 미체결(pending)일 때 Redis 컨텍스트에 실어
+        백그라운드 재확인이 trade_history에 같은 전략명·손익으로 기록할 수 있게 한다.
+        avg_price는 포지션 평단가(원가)로, 체결가(avg_fill_price)와는 다른 값이다."""
+        if await self._check_pending_lock(symbol, "sell"):
+            logger.info(f"⏸️ [{symbol}] 이전 매도 주문 체결 확인 대기 중 — 중복 주문 차단")
+            return {"success": False, "pending": True, "error": "이전 주문 체결 확인 대기 중(중복 주문 차단)"}
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
         tr_id = "VTTC0801U" if config.KIS_IS_PAPER else "TTTC0801U"
         payload = {
@@ -565,8 +623,22 @@ class KISTrader:
             logger.warning(f"⚠️ 체결 확인 API 실패 [{symbol}] — 접수 결과만으로 판정")
             return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
         if filled_qty <= 0:
-            logger.error(f"❌ 매도 미체결: {symbol} 주문 {qty}주 접수됐으나 체결 0주")
-            return {"success": False, "error": f"주문 접수됐으나 미체결(체결수량 0)"}
+            # 모의투자 서버 지연으로 직후 체결이 아직 반영되지 않았을 수 있다 — 바로
+            # 실패로 단정하지 않고 +3초, +7초 두 번 더 재확인한다(총 약 10초).
+            for delay in self._FILL_RETRY_DELAYS_SEC:
+                await _aio.sleep(delay)
+                filled_qty, avg_fill_price = await self._get_filled_qty(order_no, symbol, with_price=True)
+                if filled_qty:
+                    break
+            if not filled_qty:
+                logger.warning(f"⏳ 매도 체결 지연 [{symbol}] 주문 {qty}주 접수 — 체결 확인 대기(pending)")
+                await self._store_pending_order(
+                    order_no, "sell", symbol=symbol, qty=qty, price=price,
+                    strategy=strategy, avg_price=avg_price)
+                return {
+                    "success": False, "pending": True, "order_no": order_no,
+                    "error": "주문 접수, 체결 확인 대기",
+                }
         await self._check_sell_slippage(symbol, price, avg_fill_price)
         if filled_qty < qty:
             self.invalidate_balance_cache()

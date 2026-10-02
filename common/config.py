@@ -67,6 +67,8 @@ class Config:
 
     # ── 수집 설정 ──
     COLLECT_INTERVAL_SEC: int = int(os.getenv("COLLECT_INTERVAL_SEC", "60"))  # 1분봉
+    # 장 시간 검사 없이 항상 수집(기존 동작). 기본값 false — 평일 장중에만 수집.
+    COLLECT_ALWAYS: bool = os.getenv("COLLECT_ALWAYS", "") == "1"
     STOCK_SYMBOLS: list = None   # 아래에서 설정
 
     # ── 계좌 설정 ──

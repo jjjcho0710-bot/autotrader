@@ -7,12 +7,25 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, time
 
 from common.config import config
 from common.database import db, cache
 from collectors.kis_collector import KISCollector
 from collectors.daily_collector import DailyCollector
+
+# ── 장 시간 수집 윈도우(KST) ──────────────────────────────
+# KIS 모의투자 호출 한도를 dashboard/stock-trader/data-collector가 한 앱키로
+# 나눠 쓰므로, 장외 시간에는 분봉 수집을 건너뛴다(COLLECT_ALWAYS=1이면 예외).
+COLLECT_WINDOW_START = time(8, 55)
+COLLECT_WINDOW_END = time(15, 35)
+
+
+def _in_collect_window(now: datetime) -> bool:
+    """평일(월~금) COLLECT_WINDOW_START~END(양끝 포함) 사이인지 여부."""
+    if now.weekday() >= 5:  # 5=토, 6=일
+        return False
+    return COLLECT_WINDOW_START <= now.time() <= COLLECT_WINDOW_END
 
 # ── 로깅 설정 ──────────────────────────────────────────
 import time as _time
@@ -36,6 +49,7 @@ class DataCollector:
         self.kis = KISCollector()
         self.daily = DailyCollector()
         self.last_daily_collect = None
+        self._last_should_collect = None  # 장중/장외 전환 로그를 1줄만 남기기 위한 이전 상태
 
     async def collect_supply_dart(self):
         """수급 + 공시 수동 수집"""
@@ -99,17 +113,26 @@ class DataCollector:
         """메인 수집 루프"""
         while self.running:
             start_time = asyncio.get_event_loop().time()
-            logger.info(f"🔄 수집 사이클 시작 [{datetime.now().strftime('%H:%M:%S')}]")
+            now = datetime.now()
+            should_collect = config.COLLECT_ALWAYS or _in_collect_window(now)
+
+            if should_collect != self._last_should_collect:
+                if should_collect:
+                    logger.info(f"🔛 장중 수집 시작 [{now.strftime('%H:%M:%S')}]")
+                else:
+                    logger.info(f"🔚 장외 — 수집 건너뜀 [{now.strftime('%H:%M:%S')}]")
+                self._last_should_collect = should_collect
 
             try:
-                # 주식 + 코인 동시 수집
-                await asyncio.gather(
-                    self.kis.collect_all(),
-                    return_exceptions=True,
-                )
+                if should_collect:
+                    logger.info(f"🔄 수집 사이클 시작 [{now.strftime('%H:%M:%S')}]")
+                    # 주식 + 코인 동시 수집
+                    await asyncio.gather(
+                        self.kis.collect_all(),
+                        return_exceptions=True,
+                    )
 
-                # 일봉 수집 (하루 1번 16:00 이후)
-                now = datetime.now()
+                # 일봉 수집 (하루 1번 16:00 이후) — 장 시간 검사와 무관하게 동작
                 if (now.hour >= 16 and
                     (self.last_daily_collect is None or
                      self.last_daily_collect.date() < now.date())):

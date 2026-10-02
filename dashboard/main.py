@@ -3706,7 +3706,7 @@ JARVIS_SYSTEM_PROMPT = """너는 AutoTrader의 AI 집사 한강뷰매니저야. 
 - 주식/코인 매수/매도 실행 가능
 - 매매 전 반드시 확인 요청
 - 감시 종목 추가/제거 가능
-- ML 예측, 시세, 포트폴리오 분석 가능
+- 시세, 포트폴리오 분석 가능
 - 확실하지 않은 정보는 추측이라고 명시
 
 ## 추가 능력
@@ -3957,36 +3957,6 @@ async def get_portfolio_context(trades_since: Optional[datetime] = None) -> str:
         if watchlist:
             ctx_parts.append(f"\n[감시 종목 {len(watchlist)}개]")
             ctx_parts.append("  " + ", ".join([f"{r['name'] or r['symbol']}({r['symbol']})" for r in watchlist]))
-    except:
-        pass
-
-    try:
-        # ML 예측 결과 (최신)
-        async with db_pool.acquire() as conn:
-            preds = await conn.fetch("""
-                SELECT DISTINCT ON (p.symbol)
-                    p.symbol, p.signal, p.buy_prob, p.ts,
-                    m.accuracy, w.name
-                FROM ml_predictions p
-                LEFT JOIN ml_models m ON p.symbol=m.symbol AND m.model_name='naive_bayes'
-                LEFT JOIN watchlist w ON p.symbol=w.symbol
-                ORDER BY p.symbol, p.ts DESC
-            """)
-        if preds:
-            buy_list = [r for r in preds if r['signal'] == 'BUY']
-            sell_list = [r for r in preds if r['signal'] == 'SELL']
-            ctx_parts.append(f"\n[ML 예측 결과 ({len(preds)}종목 분석)]")
-            if buy_list:
-                ctx_parts.append(f"  🟢 매수 신호: " + ", ".join(
-                    [f"{r['name'] or r['symbol']}({r['buy_prob']:.0%})" for r in buy_list]
-                ))
-            if sell_list:
-                ctx_parts.append(f"  🔴 매도 신호: " + ", ".join(
-                    [f"{r['name'] or r['symbol']}" for r in sell_list]
-                ))
-            hold_list = [r for r in preds if r['signal'] == 'HOLD']
-            if hold_list:
-                ctx_parts.append(f"  🟡 관망: {len(hold_list)}종목")
     except:
         pass
 

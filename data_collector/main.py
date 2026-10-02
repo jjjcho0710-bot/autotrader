@@ -7,7 +7,7 @@ import asyncio
 import logging
 import signal
 import sys
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 
 from common.config import config
 from common.database import db, cache
@@ -17,15 +17,18 @@ from collectors.daily_collector import DailyCollector
 # ── 장 시간 수집 윈도우(KST) ──────────────────────────────
 # KIS 모의투자 호출 한도를 dashboard/stock-trader/data-collector가 한 앱키로
 # 나눠 쓰므로, 장외 시간에는 분봉 수집을 건너뛴다(COLLECT_ALWAYS=1이면 예외).
+# 서버 TZ가 UTC(또는 그 외 임의의 값)여도 동일하게 동작해야 하므로, 서버 로컬
+# datetime.now()가 아니라 timezone-aware datetime.now(KST)로 KST를 직접 구한다.
+KST = timezone(timedelta(hours=9))
 COLLECT_WINDOW_START = time(8, 55)
 COLLECT_WINDOW_END = time(15, 35)
 
 
-def _in_collect_window(now: datetime) -> bool:
-    """평일(월~금) COLLECT_WINDOW_START~END(양끝 포함) 사이인지 여부."""
-    if now.weekday() >= 5:  # 5=토, 6=일
+def _in_collect_window(now_kst: datetime) -> bool:
+    """now_kst: KST 기준 timezone-aware datetime. 평일(월~금) COLLECT_WINDOW_START~END(양끝 포함) 사이인지 여부."""
+    if now_kst.weekday() >= 5:  # 5=토, 6=일
         return False
-    return COLLECT_WINDOW_START <= now.time() <= COLLECT_WINDOW_END
+    return COLLECT_WINDOW_START <= now_kst.time() <= COLLECT_WINDOW_END
 
 # ── 로깅 설정 ──────────────────────────────────────────
 import time as _time
@@ -114,25 +117,27 @@ class DataCollector:
         while self.running:
             start_time = asyncio.get_event_loop().time()
             now = datetime.now()
-            should_collect = config.COLLECT_ALWAYS or _in_collect_window(now)
+            now_kst = datetime.now(KST)
+            should_collect = config.COLLECT_ALWAYS or _in_collect_window(now_kst)
 
             if should_collect != self._last_should_collect:
                 if should_collect:
-                    logger.info(f"🔛 장중 수집 시작 [{now.strftime('%H:%M:%S')}]")
+                    logger.info(f"🔛 장중 수집 시작 [{now_kst.strftime('%H:%M:%S')} KST]")
                 else:
-                    logger.info(f"🔚 장외 — 수집 건너뜀 [{now.strftime('%H:%M:%S')}]")
+                    logger.info(f"🔚 장외 — 수집 건너뜀 [{now_kst.strftime('%H:%M:%S')} KST]")
                 self._last_should_collect = should_collect
 
             try:
                 if should_collect:
-                    logger.info(f"🔄 수집 사이클 시작 [{now.strftime('%H:%M:%S')}]")
+                    logger.info(f"🔄 수집 사이클 시작 [{now_kst.strftime('%H:%M:%S')} KST]")
                     # 주식 + 코인 동시 수집
                     await asyncio.gather(
                         self.kis.collect_all(),
                         return_exceptions=True,
                     )
 
-                # 일봉 수집 (하루 1번 16:00 이후) — 장 시간 검사와 무관하게 동작
+                # 일봉 수집 (하루 1번 서버 시간 16:00 이후) — 장 시간 검사와 무관하게 동작.
+                # 서버 TZ가 UTC면 이 조건은 KST 01:00에 동작한다(이번 수정 범위 밖, 변경 없음).
                 if (now.hour >= 16 and
                     (self.last_daily_collect is None or
                      self.last_daily_collect.date() < now.date())):

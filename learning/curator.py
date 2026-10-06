@@ -155,11 +155,21 @@ async def jarvis_knowledge_curate(
                     """
                 )
             if st:
-                stats_txt = "\n".join(
-                    f"- K{r['principle_id']} {r['content'][:40]}: 적용 {r['applied']}회, 적중 {r['hits']}회 "
-                    f"({r['hits']/max(1, r['applied'])*100:.0f}%)"
-                    for r in st
-                )
+                # (적용, 적중)이 완전히 같은 원칙들은 매번 같은 판단에 함께 인용되어 통계가
+                # 사실상 중복 집계된 것이므로, 한 줄로 합쳐서 보여준다(K79/K80/K82/K83이
+                # 전부 43%로 찍히는 식의 착시 방지)
+                groups: dict[tuple, list] = {}
+                for r in st:
+                    groups.setdefault((r["applied"], r["hits"]), []).append(r)
+                lines = []
+                for (applied, hits), rs in sorted(groups.items(), key=lambda kv: -kv[0][0]):
+                    ids = "/".join(f"K{r['principle_id']}" for r in rs)
+                    content = rs[0]["content"][:40]
+                    lines.append(
+                        f"- {ids} {content}: 적용 {applied}회, 적중 {hits}회 "
+                        f"({hits/max(1, applied)*100:.0f}%)"
+                    )
+                stats_txt = "\n".join(lines)
         except Exception:
             pass
 
@@ -208,7 +218,7 @@ async def jarvis_knowledge_curate(
             msg += "\n\n📊 원칙 성과(적용순)\n" + stats_txt[:600]
 
         if send_telegram_fn:
-            await send_telegram_fn(msg, broadcast=True)
+            await send_telegram_fn(msg, dest="personal")
 
         return msg
 

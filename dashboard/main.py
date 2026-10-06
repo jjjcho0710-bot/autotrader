@@ -1555,13 +1555,13 @@ async def _jarvis_weekend_study_report():
                        COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate IS NOT NULL AND eval_pnl_rate < 1.0) AS good_skip
                 FROM trade_journal
                 WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'""")
-            # 반복 SKIP-상승 종목 상위
+            # 반복 SKIP-상승 종목 상위 (1회성 SKIP은 "반복"이 아니므로 제외)
             miss_rows = await conn.fetch("""
                 SELECT COALESCE(name, symbol) AS nm, COUNT(*) AS n, AVG(eval_pnl_rate) AS avg_r
                 FROM trade_journal
                 WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'
                   AND jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0
-                GROUP BY COALESCE(name, symbol) ORDER BY n DESC LIMIT 3""")
+                GROUP BY COALESCE(name, symbol) HAVING COUNT(*) >= 2 ORDER BY n DESC LIMIT 3""")
             # 이번 주 새로 생긴 교훈 — 비활성화된 교훈은 주말 학습보고에도 노출하지 않는다
             # ([AT] fix/lesson-hygiene)
             lessons = await conn.fetch("""
@@ -1580,13 +1580,18 @@ async def _jarvis_weekend_study_report():
                 "SELECT COUNT(*) FROM jarvis_notes WHERE category='knowledge' AND is_active=TRUE")
 
         total = int(wk["total"] or 0)
+        ex = int(wk["ex"] or 0)
         sk = int(wk["sk"] or 0)
         good_skip = int(wk["good_skip"] or 0)
         missed = int(wk["missed"] or 0)
         skip_acc = round(good_skip / (good_skip + missed) * 100) if (good_skip + missed) else 0
+        # EXECUTE/EXECUTE_SMALL/SKIP 외(NULL 등 미분류) 판단 — 분류 기준에서 빠지는 건수를
+        # 숨기지 않고 그대로 보여준다 (실행+보류 합계가 총 판단건수와 항상 맞도록)
+        etc = total - ex - sk
 
         parts = [f"📚 <b>한강뷰매니저 주말 학습보고</b> [{today.strftime('%m/%d')} {'일' if is_sun else '토'}]\n"]
-        parts.append(f"[이번 주 복습]\n판단 {total}건 (실행 {int(wk['ex'] or 0)} / 보류 {sk})\n"
+        parts.append(f"[이번 주 복습]\n판단 {total}건 (실행 {ex} / 보류 {sk}"
+                     + (f" / 기타 {etc}" if etc > 0 else "") + ")\n"
                      f"SKIP 정확도 {skip_acc}% (잘거름 {good_skip} / 놓침 {missed})")
         if miss_rows:
             _miss_items = []

@@ -95,6 +95,7 @@ class StockTrader:
         self._selling   = set()  # 현재 매도 처리중인 심볼 (동시 매도 주문 충돌 방지)
         self._safety_net_checked_date = None  # 달력 미반영 휴장일 안전망, 하루 1회만 확인
         self._calendar_stale_warned_date = None  # 달력 커버 범위 초과 경고, 하루 1회만 로그
+        self._positions_fail_count = 0  # 보유 포지션 조회 연속 실패 횟수 ([AT] fix/positions-fetch-failure)
 
     # ── DB에서 전략 설정 로드 ────────────────────────────
     async def load_strategies(self):
@@ -220,13 +221,8 @@ class StockTrader:
         await self.load_strategies()
         await self._warn_if_position_sizing_exceeds_equity()
 
-        try:
-            positions = await self.trader.get_positions() or []
-            self.positions = {p["symbol"]: p for p in positions if isinstance(p, dict) and p.get("symbol")}
+        if await self._load_positions():
             logger.info(f"📊 보유 종목: {list(self.positions.keys())}")
-        except Exception as e:
-            logger.warning(f"보유 포지션 로드 실패 (무시): {e}")
-            self.positions = {}
 
         await cache.set_bot_status("stock_trader", {
             "status": "running",
@@ -961,6 +957,27 @@ class StockTrader:
             logger.error(f"⚠️ 당일 손절횟수 조회 실패 — 안전을 위해 신규매수 차단 처리: {e}")
             return 999
 
+    # ── 보유 포지션 조회 ───────────────────────────────────
+    async def _load_positions(self) -> bool:
+        """보유 포지션을 조회해 self.positions에 반영한다.
+        조회 실패(예외)와 실제 빈 보유([])를 구분해, 실패 시에는 self.positions를
+        덮어쓰지 않고 직전 상태를 유지한다 — 호출부가 이번 사이클의 신규 진입 스캔을
+        건너뛰도록 False를 반환한다. 연속 3회 실패부터 개인방에 1회만 알린다."""
+        try:
+            positions = await self.trader.get_positions() or []
+            self.positions = {p["symbol"]: p for p in positions if isinstance(p, dict) and p.get("symbol")}
+            self._positions_fail_count = 0
+            return True
+        except Exception as e:
+            self._positions_fail_count += 1
+            logger.warning(
+                f"⚠️ 포지션 조회 실패 ({self._positions_fail_count}회 연속) — "
+                f"직전 보유 유지, 이번 사이클 신규 진입 스캔 스킵: {e}"
+            )
+            if self._positions_fail_count == 3:
+                await self._notify_error(f"보유 조회 연속 실패 ({self._positions_fail_count}회)")
+            return False
+
     # ── 매매 사이클 ───────────────────────────────────────
     async def _run_cycle(self):
         active_strategies = self.get_all_active_strategies()
@@ -974,12 +991,7 @@ class StockTrader:
         max_positions = int(params.get("max_positions", 5))
 
         # ① 보유 포지션 조회 & 손절/익절 체크
-        try:
-            positions = await self.trader.get_positions() or []
-            self.positions = {p["symbol"]: p for p in positions if isinstance(p, dict) and p.get("symbol")}
-        except Exception as e:
-            logger.warning(f"포지션 조회 실패: {e}")
-            self.positions = {}
+        positions_ok = await self._load_positions()
 
         default_strategy = self.build_strategy(strat_name, params)
 
@@ -1443,6 +1455,9 @@ class StockTrader:
                                 logger.warning(f"트레일링 스탑 매도 실패 [{symbol}]: {result.get('error')}")
                 except Exception as e:
                     logger.warning(f"절반확정/트레일링 처리 오류 [{symbol}]: {e}")
+
+        if not positions_ok:
+            return
 
         # ② 신규 진입 신호 체크
         if len(self.positions) >= max_positions:

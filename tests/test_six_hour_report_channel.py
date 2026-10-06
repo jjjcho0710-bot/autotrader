@@ -196,6 +196,13 @@ class TestSixHourWindowHasNoMarketOverlap(unittest.TestCase):
         self.assertTrue(StockTrader._six_hour_window_has_no_market_overlap(
             _dt(18, 0, day=2), _dt(0, 0, day=3)))
 
+    def test_confirmed_holiday_slot_that_would_normally_contain_market_hours(self):
+        """[AT] feat/market-calendar: 2026-10-05(월)은 개천절 대체공휴일 — 평일이고
+        12:00~18:00이 09:00~15:30 장시간과 겹치더라도 휴장일이면 미포함으로 본다.
+        공휴일 판별이 없으면(리버트) 이 테스트가 False로 깨진다."""
+        self.assertTrue(StockTrader._six_hour_window_has_no_market_overlap(
+            _dt(12, 0, day=5), _dt(18, 0, day=5)))
+
 
 # ───────────────────────── _six_hour_report (통합) ─────────────────────────
 

@@ -11,6 +11,7 @@ from datetime import datetime, time, timedelta, timezone
 
 from common.config import config
 from common.database import db, cache
+from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
 from collectors.kis_collector import KISCollector
 from collectors.daily_collector import DailyCollector
 
@@ -25,8 +26,11 @@ COLLECT_WINDOW_END = time(15, 35)
 
 
 def _in_collect_window(now_kst: datetime) -> bool:
-    """now_kst: KST 기준 timezone-aware datetime. 평일(월~금) COLLECT_WINDOW_START~END(양끝 포함) 사이인지 여부."""
+    """now_kst: KST 기준 timezone-aware datetime. 휴장일이 아닌 평일(월~금)
+    COLLECT_WINDOW_START~END(양끝 포함) 사이인지 여부."""
     if now_kst.weekday() >= 5:  # 5=토, 6=일
+        return False
+    if not is_trading_day(now_kst.date()):
         return False
     return COLLECT_WINDOW_START <= now_kst.time() <= COLLECT_WINDOW_END
 
@@ -53,6 +57,7 @@ class DataCollector:
         self.daily = DailyCollector()
         self.last_daily_collect = None
         self._last_should_collect = None  # 장중/장외 전환 로그를 1줄만 남기기 위한 이전 상태
+        self._calendar_stale_warned_date = None  # 달력 커버 범위 초과 경고, 하루 1회만 로그
 
     async def collect_supply_dart(self):
         """수급 + 공시 수동 수집"""
@@ -118,6 +123,13 @@ class DataCollector:
             start_time = asyncio.get_event_loop().time()
             now = datetime.now()
             now_kst = datetime.now(KST)
+
+            if is_calendar_stale(now_kst.date()) and self._calendar_stale_warned_date != now_kst.date():
+                self._calendar_stale_warned_date = now_kst.date()
+                logger.warning(
+                    f"⚠️ 휴장일 달력 범위 초과 — {now_kst.date()} (달력 커버 범위: ~{CALENDAR_COVERS_THROUGH}). "
+                    f"common/market_calendar.py 갱신 필요")
+
             should_collect = config.COLLECT_ALWAYS or _in_collect_window(now_kst)
 
             if should_collect != self._last_should_collect:

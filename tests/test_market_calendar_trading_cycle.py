@@ -7,6 +7,8 @@ stock_trader/main.py StockTrader._loop() 실제 호출부 end-to-end 검증.
 걸러내던 예전 조건으로 되돌리면) 깨진다.
 
 추가로 "달력에 없는 휴장일" 안전망(삼성전자 일봉 최신 날짜 확인)도 검증한다.
+이 안전망이 휴장으로 판정하면 그 사이클만이 아니라 그날 하루 종일 매매 사이클을
+건너뛰어야 한다(5분만 쉬고 다시 매매하는 회귀를 막는다).
 """
 import sys
 import types
@@ -156,6 +158,36 @@ class TestSafetyNetUndeclaredHoliday(unittest.IsolatedAsyncioTestCase):
         await self._run_one_cycle(datetime(2026, 10, 6, 10, 1, tzinfo=KST))
         self.assertEqual(self.trader._run_cycle.await_count, 2)
         self.trader.trader.get_daily_ohlcv.assert_awaited_once()
+
+    async def test_holiday_detected_skips_cycle_for_rest_of_day(self):
+        """안전망이 휴장으로 판정하면 그 사이클만 건너뛰는 게 아니라 그날 나머지 사이클도
+        모두 건너뛴다. 회귀: 예전엔 _safety_net_checked_date가 당일로 설정된 뒤 두 번째
+        사이클부터는 판정 블록을 다시 타지 않아 5분만 쉬고 그대로 매매를 돌렸다."""
+        self.trader.trader.get_daily_ohlcv = AsyncMock(
+            return_value=[{"date": "20261002", "close": 70000}])
+        with patch("common.telegram.send_stock", new=AsyncMock()):
+            await self._run_one_cycle(datetime(2026, 10, 6, 10, 0, tzinfo=KST))
+        self.trader._run_cycle.assert_not_awaited()
+
+        # 같은 날 이후(장 마감 직전) 사이클 — 여전히 건너뛰어야 한다
+        with patch("common.telegram.send_stock", new=AsyncMock()):
+            await self._run_one_cycle(datetime(2026, 10, 6, 15, 0, tzinfo=KST))
+        self.trader._run_cycle.assert_not_awaited()
+        # 일봉 조회도 하루 1회만(두 번째 사이클에서 재조회하지 않음)
+        self.trader.trader.get_daily_ohlcv.assert_awaited_once()
+
+    async def test_holiday_flag_resets_next_trading_day(self):
+        """안전망 휴장 판정은 그날 하루만 유효하고 다음 거래일에는 정상 동작한다."""
+        self.trader.trader.get_daily_ohlcv = AsyncMock(
+            return_value=[{"date": "20261002", "close": 70000}])
+        with patch("common.telegram.send_stock", new=AsyncMock()):
+            await self._run_one_cycle(datetime(2026, 10, 6, 10, 0, tzinfo=KST))
+        self.trader._run_cycle.assert_not_awaited()
+
+        self.trader.trader.get_daily_ohlcv = AsyncMock(
+            return_value=[{"date": "20261007", "close": 70000}])
+        await self._run_one_cycle(datetime(2026, 10, 7, 10, 0, tzinfo=KST))
+        self.trader._run_cycle.assert_awaited_once()
 
 
 class TestCalendarStaleWarningLogged(unittest.IsolatedAsyncioTestCase):

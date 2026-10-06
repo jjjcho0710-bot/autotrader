@@ -94,6 +94,7 @@ class StockTrader:
         self.ml_trained_date = None
         self._selling   = set()  # 현재 매도 처리중인 심볼 (동시 매도 주문 충돌 방지)
         self._safety_net_checked_date = None  # 달력 미반영 휴장일 안전망, 하루 1회만 확인
+        self._safety_net_holiday_date = None  # 안전망이 휴장으로 판정한 날짜 — 그날은 사이클 전체 스킵
         self._calendar_stale_warned_date = None  # 달력 커버 범위 초과 경고, 하루 1회만 로그
         self._positions_fail_count = 0  # 보유 포지션 조회 연속 실패 횟수 ([AT] fix/positions-fetch-failure)
 
@@ -266,6 +267,21 @@ class StockTrader:
                 await asyncio.sleep(300)  # 5분마다만 체크
                 continue
 
+            # 안전망이 오늘을 이미 휴장으로 판정했으면 하루 종일 사이클 전체 스킵
+            # (판정 직후 한 번만 걸러서는 5분 뒤 재진입 시 _safety_net_checked_date가 이미
+            # today로 설정돼 있어 판정 블록을 다시 타지 않고 그대로 매매 사이클로 빠져나감)
+            if self._safety_net_holiday_date == today:
+                try:
+                    await cache.set_bot_status("stock_trader", {
+                        "status": "running", "last_cycle": datetime.now().isoformat(),
+                        "positions": len(self.positions),
+                        "strategy": "휴장일(안전망)",
+                    })
+                except Exception:
+                    pass
+                await asyncio.sleep(300)  # 5분마다만 체크
+                continue
+
             # 장 마감 후 ML 자동 학습 (15:40, 하루 1회, 평일만)
             if (cur_time >= ML_TRAIN_TIME
                     and self.ml_trained_date != today
@@ -313,6 +329,7 @@ class StockTrader:
                             logger.warning(
                                 f"⚠️ 달력에 없는 휴장일 감지 — 달력상 거래일이나 삼성전자 "
                                 f"최신 일봉이 {latest_date}까지만 있음(오늘 {end_str})")
+                            self._safety_net_holiday_date = today  # 오늘 하루 종일 사이클 스킵
                             try:
                                 from common.telegram import send_stock
                                 await send_stock(

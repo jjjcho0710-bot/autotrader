@@ -387,6 +387,7 @@ class KISTrader:
               async with sess.get(
                 url, headers=self._headers(tr_id), params=params
               ) as resp:
+                status = resp.status
                 data = await resp.json()
                 if attempt == 0 and await self._refresh_token_if_expired(data):
                     continue
@@ -394,6 +395,16 @@ class KISTrader:
                     logger.warning("⏳ [get_positions] KIS 속도제한(EGW00201) — 1.5초 후 재시도")
                     await asyncio.sleep(1.5)
                     continue
+                if status != 200 or data.get("rt_cd") != "0":
+                    rt_cd = data.get("rt_cd", "None")
+                    msg_cd = data.get("msg_cd", "None")
+                    msg1 = data.get("msg1", "")
+                    if self._cano:
+                        msg1 = msg1.replace(self._cano, "********")
+                    logger.error(
+                        f"❌ KIS 보유종목 조회 실패: HTTP {status} | rt_cd={rt_cd} | msg_cd={msg_cd} | msg1={msg1}"
+                    )
+                    raise RuntimeError(f"KIS 보유종목 조회 실패: rt_cd={rt_cd} msg_cd={msg_cd} msg1={msg1}")
                 positions = []
                 for row in data.get("output1", []):
                     qty = int(row.get("hldg_qty", 0))
@@ -425,7 +436,7 @@ class KISTrader:
                         self._last_total = total_eval
                         self._last_total_ts = time.time()
                 return positions
-        return []
+        raise RuntimeError("KIS 보유종목 조회 실패: 속도제한/토큰 재시도 초과")
 
     # ── 지연 체결(pending) 컨텍스트 ──────────────────────
     async def _check_pending_lock(self, symbol: str, side: str) -> bool:

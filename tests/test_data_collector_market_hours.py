@@ -129,16 +129,16 @@ class TestInCollectWindow(unittest.TestCase):
     """_in_collect_window() 순수 함수 단위 테스트 — 인자는 KST-aware datetime."""
 
     def test_weekday_10am_collects(self):
-        # 2026-10-05 월요일 KST 10:00
-        self.assertTrue(_in_collect_window(_kst(2026, 10, 5, 10, 0, 0)))
+        # 2026-10-06 화요일(휴장일 아님) KST 10:00
+        self.assertTrue(_in_collect_window(_kst(2026, 10, 6, 10, 0, 0)))
 
     def test_weekday_before_open_skips(self):
-        # 2026-10-05 월요일 KST 07:00
-        self.assertFalse(_in_collect_window(_kst(2026, 10, 5, 7, 0, 0)))
+        # 2026-10-06 화요일 KST 07:00
+        self.assertFalse(_in_collect_window(_kst(2026, 10, 6, 7, 0, 0)))
 
     def test_weekday_after_close_skips(self):
-        # 2026-10-05 월요일 KST 16:30
-        self.assertFalse(_in_collect_window(_kst(2026, 10, 5, 16, 30, 0)))
+        # 2026-10-06 화요일 KST 16:30
+        self.assertFalse(_in_collect_window(_kst(2026, 10, 6, 16, 30, 0)))
 
     def test_saturday_skips(self):
         # 2026-10-03 토요일 KST 10:00
@@ -149,20 +149,37 @@ class TestInCollectWindow(unittest.TestCase):
         self.assertFalse(_in_collect_window(_kst(2026, 10, 4, 10, 0, 0)))
 
     def test_window_start_boundary_inclusive(self):
-        # 월요일 KST 08:55:00 — 포함
-        self.assertTrue(_in_collect_window(_kst(2026, 10, 5, 8, 55, 0)))
+        # 화요일 KST 08:55:00 — 포함
+        self.assertTrue(_in_collect_window(_kst(2026, 10, 6, 8, 55, 0)))
 
     def test_just_before_window_start_excluded(self):
-        # 월요일 KST 08:54:59 — 제외
-        self.assertFalse(_in_collect_window(_kst(2026, 10, 5, 8, 54, 59)))
+        # 화요일 KST 08:54:59 — 제외
+        self.assertFalse(_in_collect_window(_kst(2026, 10, 6, 8, 54, 59)))
 
     def test_window_end_boundary_inclusive(self):
-        # 월요일 KST 15:35:00 — 포함(마지막 분봉 수집 보장)
-        self.assertTrue(_in_collect_window(_kst(2026, 10, 5, 15, 35, 0)))
+        # 화요일 KST 15:35:00 — 포함(마지막 분봉 수집 보장)
+        self.assertTrue(_in_collect_window(_kst(2026, 10, 6, 15, 35, 0)))
 
     def test_just_after_window_end_excluded(self):
-        # 월요일 KST 15:35:01 — 제외
-        self.assertFalse(_in_collect_window(_kst(2026, 10, 5, 15, 35, 1)))
+        # 화요일 KST 15:35:01 — 제외
+        self.assertFalse(_in_collect_window(_kst(2026, 10, 6, 15, 35, 1)))
+
+    def test_known_holiday_monday_skips_despite_market_hours(self):
+        """[AT] feat/market-calendar: 2026-10-05(월)은 개천절 대체공휴일 — 평일·장시간
+        이어도 공휴일 판별이 없으면 이 테스트가 깨진다(리버트 감지용)."""
+        self.assertFalse(_in_collect_window(_kst(2026, 10, 5, 10, 0, 0)))
+
+    def test_known_holiday_friday_skips_despite_market_hours(self):
+        # 2026-10-09(금) 한글날
+        self.assertFalse(_in_collect_window(_kst(2026, 10, 9, 10, 0, 0)))
+
+    def test_christmas_skips(self):
+        # 2026-12-25(금) 성탄절
+        self.assertFalse(_in_collect_window(_kst(2026, 12, 25, 10, 0, 0)))
+
+    def test_year_end_closure_skips(self):
+        # 2026-12-31(목) 연말 휴장일
+        self.assertFalse(_in_collect_window(_kst(2026, 12, 31, 10, 0, 0)))
 
 
 class TestLoopMarketHoursGating(unittest.IsolatedAsyncioTestCase):
@@ -202,7 +219,7 @@ class TestLoopMarketHoursGating(unittest.IsolatedAsyncioTestCase):
 
     # (a) 서버 UTC 01:00 평일(=KST 10:00) → 수집함
     async def test_a_server_utc_morning_weekday_collects(self):
-        await self._run_one_cycle(datetime(2026, 10, 5, 1, 0, 0))  # 월요일 UTC 01:00
+        await self._run_one_cycle(datetime(2026, 10, 6, 1, 0, 0))  # 화요일 UTC 01:00
         self.collector.kis.collect_all.assert_awaited_once()
 
     # (b) 서버 UTC 08:55~09:00 평일(=KST 17:55~18:00) → 건너뜀
@@ -215,9 +232,16 @@ class TestLoopMarketHoursGating(unittest.IsolatedAsyncioTestCase):
         self.collector.kis.collect_all.assert_not_awaited()
 
     # (c) 일요일 UTC 23:55(=월요일 KST 08:55) → 수집함(경계 포함, 요일 전환)
+    # 2026-10-4/5는 공휴일 혼선을 피하려 10-11(일)/10-12(월, 휴장일 아님)로 검증한다.
     async def test_c_sunday_utc_late_night_rolls_into_monday_kst_collects(self):
-        await self._run_one_cycle(datetime(2026, 10, 4, 23, 55, 0))  # 일요일 UTC 23:55
+        await self._run_one_cycle(datetime(2026, 10, 11, 23, 55, 0))  # 일요일 UTC 23:55
         self.collector.kis.collect_all.assert_awaited_once()
+
+    # (c-2) 위와 동일 경계이지만 월요일이 확정 휴장일(10/5)인 경우 — 요일 전환은 맞아도
+    # 휴장일이면 건너뛰어야 한다([AT] feat/market-calendar 리버트 감지용).
+    async def test_c2_sunday_utc_late_night_rolls_into_holiday_monday_skips(self):
+        await self._run_one_cycle(datetime(2026, 10, 4, 23, 55, 0))  # 일요일 UTC 23:55 → 월 10/5 KST 08:55
+        self.collector.kis.collect_all.assert_not_awaited()
 
     # (d) 금요일 UTC 15:00(=토요일 KST 00:00) → 건너뜀(요일 전환)
     async def test_d_friday_utc_evening_rolls_into_saturday_kst_skips(self):
@@ -231,12 +255,27 @@ class TestLoopMarketHoursGating(unittest.IsolatedAsyncioTestCase):
 
     # (f) KST 15:35 경계 포함, 15:36 제외 (UTC로 표현: 06:35 포함, 06:36 제외)
     async def test_f_kst_window_end_boundary_inclusive(self):
-        await self._run_one_cycle(datetime(2026, 10, 5, 6, 35, 0))  # 월요일 UTC 06:35 = KST 15:35
+        await self._run_one_cycle(datetime(2026, 10, 6, 6, 35, 0))  # 화요일 UTC 06:35 = KST 15:35
         self.collector.kis.collect_all.assert_awaited_once()
 
     async def test_f_kst_window_end_boundary_excluded(self):
-        await self._run_one_cycle(datetime(2026, 10, 5, 6, 36, 0))  # 월요일 UTC 06:36 = KST 15:36
+        await self._run_one_cycle(datetime(2026, 10, 6, 6, 36, 0))  # 화요일 UTC 06:36 = KST 15:36
         self.collector.kis.collect_all.assert_not_awaited()
+
+    # (h) 확정 휴장일(10/5, 월)은 장시간 중이라도 건너뛴다 — PM 보고 실제 사고 재현
+    # (10/5 평일 스케줄로 돌아 결산·수집이 나간 사례).
+    async def test_h_confirmed_holiday_skips_even_during_market_hours(self):
+        await self._run_one_cycle(datetime(2026, 10, 5, 1, 0, 0))  # 월요일(휴장일) UTC 01:00 = KST 10:00
+        self.collector.kis.collect_all.assert_not_awaited()
+
+    # COLLECT_ALWAYS=1이면 확정 휴장일이라도 항상 수집한다.
+    async def test_g2_collect_always_overrides_holiday(self):
+        config.COLLECT_ALWAYS = True
+        try:
+            await self._run_one_cycle(datetime(2026, 10, 5, 1, 0, 0))  # 휴장일(월) UTC 01:00 = KST 10:00
+        finally:
+            config.COLLECT_ALWAYS = False
+        self.collector.kis.collect_all.assert_awaited_once()
 
     # (g) COLLECT_ALWAYS=1 이면 서버 시계·창과 무관하게 항상 수집
     async def test_g_collect_always_overrides_window_even_off_hours(self):
@@ -259,14 +298,14 @@ class TestLoopMarketHoursGating(unittest.IsolatedAsyncioTestCase):
     async def test_state_change_logs_once(self):
         """장외→장중 전환 시 1줄만 로그, 동일 상태가 이어지면 전환 로그가 또 찍히지 않는다."""
         with self.assertLogs("data-collector", level="INFO") as logs:
-            await self._run_one_cycle(datetime(2026, 10, 5, 1, 0, 0))  # 월요일 UTC 01:00 = KST 10:00
+            await self._run_one_cycle(datetime(2026, 10, 6, 1, 0, 0))  # 화요일 UTC 01:00 = KST 10:00
         transition_logs = [m for m in logs.output if "장중 수집 시작" in m or "수집 건너뜀" in m]
         self.assertEqual(len(transition_logs), 1)
         self.assertIn("KST", transition_logs[0])
 
         # 이미 "수집 중" 상태이므로 같은 상태의 다음 사이클에는 전환 로그가 없어야 한다.
         with self.assertLogs("data-collector", level="INFO") as logs:
-            await self._run_one_cycle(datetime(2026, 10, 5, 1, 1, 0))  # 월요일 UTC 01:01 = KST 10:01
+            await self._run_one_cycle(datetime(2026, 10, 6, 1, 1, 0))  # 화요일 UTC 01:01 = KST 10:01
         transition_logs = [m for m in logs.output if "장중 수집 시작" in m or "수집 건너뜀" in m]
         self.assertEqual(len(transition_logs), 0)
 

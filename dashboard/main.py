@@ -23,6 +23,7 @@ import redis.asyncio as aioredis
 
 from common.config import config, compute_total_pnl
 from common.migrations import run_migrations
+from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
 from market.universe import Universe
 from market.sync_batch import sync_stock_universe
 from chat.memory import (
@@ -1640,9 +1641,10 @@ async def _jarvis_weekend_study_report():
 
 async def _jarvis_unified_daily_report():
     """관리자 자비스 통합 일일보고: 코인봇+주식봇 보고 종합 → 텔레그램
-    주말(토·일)은 매매가 없으므로 학습보고로 대체"""
-    if datetime.now(KST).weekday() >= 5:
-        await _jarvis_weekend_study_report()
+    주말(토·일)·휴장일은 매매가 없으므로 건너뛴다(주간복습/다음주예습은 별도 스케줄:
+    토 10:00 _jarvis_weekly_review, 일 20:00 _jarvis_weekly_preview)"""
+    _now = datetime.now(KST)
+    if _now.weekday() >= 5 or not is_trading_day(_now.date()):
         return
     try:
         today = datetime.now(KST).date()
@@ -2024,7 +2026,8 @@ async def _jarvis_proactive_advice(trigger: str = "auto") -> str:
             return "제안 없음 — 지금은 특별히 제안할 것이 없습니다."
         # 완전 자동화: 승인 없이 즉시 실행 (주인 지시) — 장외면 개장 시 예약
         _now_chk = datetime.now(KST)
-        _market_open = (_now_chk.weekday() < 5 and dtime(9, 0) <= _now_chk.time().replace(tzinfo=None) <= dtime(15, 20))
+        _market_open = (_now_chk.weekday() < 5 and is_trading_day(_now_chk.date())
+                        and dtime(9, 0) <= _now_chk.time().replace(tzinfo=None) <= dtime(15, 20))
         results = []
         for i, it in enumerate(items, 1):
             cmd = it.get("command", "")
@@ -2386,17 +2389,27 @@ async def _jarvis_scheduler():
         today = now.date()
         cur_time = now.time().replace(tzinfo=None)
 
-        # 통합 일일보고 (매일 21:00, 주말 포함 — 코인 반영)
+        # 휴장일 달력 범위 초과 — 하루 1회 WARNING 로그 + 개인방 알림
+        if is_calendar_stale(today) and await _daily_gate("calendar_stale", today):
+            logger.warning(
+                f"⚠️ 휴장일 달력 범위 초과 — {today} (달력 커버 범위: ~{CALENDAR_COVERS_THROUGH})")
+            await _send_telegram(
+                f"⚠️ 휴장일 달력 갱신 필요 — common/market_calendar.py가 {CALENDAR_COVERS_THROUGH}까지만"
+                f" 반영되어 있습니다. KRX 공식 휴장일을 확인해 갱신해주세요.",
+                dest="personal")
+
+        # 통합 일일보고 (매일 21:00 — 코인 반영. 주말·휴장일은 함수 내부에서 건너뜀)
         if dtime(21, 0) <= cur_time <= dtime(21, 5) and await _daily_gate("daily_report", today):
             asyncio.create_task(_jarvis_unified_daily_report())
             asyncio.create_task(_summarize_old_chats())  # 장기 기억 이관 (하루 1일치)
 
         # 관심종목(우선순위) 15분마다 확인 — 장중에만
-        if now.weekday() < 5 and dtime(9, 0) <= cur_time <= dtime(15, 30) and now.minute % 15 == 0:
+        if (now.weekday() < 5 and is_trading_day(today)
+                and dtime(9, 0) <= cur_time <= dtime(15, 30) and now.minute % 15 == 0):
             asyncio.create_task(_priority_watch_check())
 
-        if now.weekday() >= 5:
-            # 주말 스터디: 토 10:00 주간복습 / 일 20:00 다음주예습
+        if now.weekday() >= 5 or not is_trading_day(today):
+            # 주말 스터디: 토 10:00 주간복습 / 일 20:00 다음주예습 (휴장일이면 평일이라 아래 두 조건 모두 해당 없음)
             if now.weekday() == 5 and dtime(10, 0) <= cur_time <= dtime(10, 5) \
                     and await _daily_gate("wk_review", today):
                 async def _sat_study():

@@ -13,6 +13,7 @@ from datetime import datetime, time, timezone, timedelta
 from common.config import config, compute_total_pnl
 from common.database import db, cache
 from common import position_sizing
+from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
 from kis_trader import KISTrader
 from ml_report import build_ml_report_text
 from strategy.ma_cross import MACrossStrategy, MACrossConfig
@@ -92,6 +93,9 @@ class StockTrader:
         self.strategies = {}
         self.ml_trained_date = None
         self._selling   = set()  # 현재 매도 처리중인 심볼 (동시 매도 주문 충돌 방지)
+        self._safety_net_checked_date = None  # 달력 미반영 휴장일 안전망, 하루 1회만 확인
+        self._safety_net_holiday_date = None  # 안전망이 휴장으로 판정한 날짜 — 그날은 사이클 전체 스킵
+        self._calendar_stale_warned_date = None  # 달력 커버 범위 초과 경고, 하루 1회만 로그
         self._positions_fail_count = 0  # 보유 포지션 조회 연속 실패 횟수 ([AT] fix/positions-fetch-failure)
 
     # ── DB에서 전략 설정 로드 ────────────────────────────
@@ -244,12 +248,34 @@ class StockTrader:
             cur_time = now.time().replace(tzinfo=None)
             today = now.date()
 
-            # 주말(토·일): 신호 감지 완전 중단, 하트비트만
-            if now.weekday() >= 5:
+            if is_calendar_stale(today) and self._calendar_stale_warned_date != today:
+                self._calendar_stale_warned_date = today
+                logger.warning(
+                    f"⚠️ 휴장일 달력 범위 초과 — {today} (달력 커버 범위: ~{CALENDAR_COVERS_THROUGH}). "
+                    f"common/market_calendar.py 갱신 필요")
+
+            # 주말(토·일)·휴장일: 신호 감지 완전 중단, 하트비트만
+            if now.weekday() >= 5 or not is_trading_day(today):
                 try:
                     await cache.set_bot_status("stock_trader", {
                         "status": "running", "last_cycle": datetime.now().isoformat(),
-                        "positions": len(self.positions), "strategy": "주말휴장",
+                        "positions": len(self.positions),
+                        "strategy": "주말휴장" if now.weekday() >= 5 else "휴장일",
+                    })
+                except Exception:
+                    pass
+                await asyncio.sleep(300)  # 5분마다만 체크
+                continue
+
+            # 안전망이 오늘을 이미 휴장으로 판정했으면 하루 종일 사이클 전체 스킵
+            # (판정 직후 한 번만 걸러서는 5분 뒤 재진입 시 _safety_net_checked_date가 이미
+            # today로 설정돼 있어 판정 블록을 다시 타지 않고 그대로 매매 사이클로 빠져나감)
+            if self._safety_net_holiday_date == today:
+                try:
+                    await cache.set_bot_status("stock_trader", {
+                        "status": "running", "last_cycle": datetime.now().isoformat(),
+                        "positions": len(self.positions),
+                        "strategy": "휴장일(안전망)",
                     })
                 except Exception:
                     pass
@@ -286,6 +312,36 @@ class StockTrader:
                 logger.info("🕐 개장 직후 5분 — KIS 잔고 동기화 대기")
                 await asyncio.sleep(30)
                 continue
+
+            # 안전망: 달력에 없는 휴장일 감지 (하루 1회, 장 시작 후 첫 사이클에서만)
+            # 달력은 거래일(True)이라고 하는데 삼성전자(005930) 최신 일봉이 오늘이 아니면
+            # 실제로는 휴장으로 보고 사이클을 건너뛴다. 일봉 조회 자체가 실패하면 휴장으로
+            # 단정하지 않고 기존 동작(사이클 진행)을 유지한다.
+            if self._safety_net_checked_date != today:
+                self._safety_net_checked_date = today
+                try:
+                    end_str = today.strftime("%Y%m%d")
+                    start_str = (today - timedelta(days=7)).strftime("%Y%m%d")
+                    candles = await self.trader.get_daily_ohlcv("005930", start_str, end_str)
+                    if candles:
+                        latest_date = max(c["date"] for c in candles)
+                        if latest_date != end_str:
+                            logger.warning(
+                                f"⚠️ 달력에 없는 휴장일 감지 — 달력상 거래일이나 삼성전자 "
+                                f"최신 일봉이 {latest_date}까지만 있음(오늘 {end_str})")
+                            self._safety_net_holiday_date = today  # 오늘 하루 종일 사이클 스킵
+                            try:
+                                from common.telegram import send_stock
+                                await send_stock(
+                                    f"⚠️ 달력에 없는 휴장일 감지 — 달력상 거래일({today})이지만 "
+                                    f"삼성전자 최신 일봉이 {latest_date}까지만 확인됩니다. "
+                                    f"오늘 매매 사이클을 건너뜁니다.")
+                            except Exception as te:
+                                logger.warning(f"달력 미반영 휴장일 알림 전송 실패: {te}")
+                            await asyncio.sleep(300)
+                            continue
+                except Exception as e:
+                    logger.warning(f"안전망 일봉 조회 실패(기존 동작 유지): {e}")
 
             logger.info(f"🔄 매매 사이클 [{now.strftime('%H:%M:%S')}]")
 
@@ -1726,11 +1782,10 @@ class StockTrader:
     @staticmethod
     def _six_hour_window_has_no_market_overlap(window_start: datetime, window_end: datetime) -> bool:
         """[window_start, window_end) 구간에 평일 장시간(MARKET_OPEN~MARKET_CLOSE)이
-        전혀 포함되지 않으면 True. 주말은 day.weekday()<5 검사로 자연히 걸러진다.
-        공휴일은 판별하지 않는다(이 파일의 다른 장중 판단 로직과 같은 한계)."""
+        전혀 포함되지 않으면 True. 주말·휴장일은 is_trading_day()로 걸러진다."""
         day = window_start.replace(hour=0, minute=0, second=0, microsecond=0)
         while day < window_end:
-            if day.weekday() < 5:
+            if day.weekday() < 5 and is_trading_day(day.date()):
                 open_dt = day.replace(hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute)
                 close_dt = day.replace(hour=MARKET_CLOSE.hour, minute=MARKET_CLOSE.minute)
                 if window_start < close_dt and window_end > open_dt:

@@ -16,6 +16,7 @@ git stash로 소스 3개 파일만 되돌리고 재실행해 실패를 확인했
 import json
 import sys
 import unittest
+from datetime import datetime as _real_datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 for mod_name in [
@@ -29,6 +30,21 @@ import dashboard.main as dm  # noqa: E402
 from market.universe import Universe  # noqa: E402
 from router.handlers import order_handler  # noqa: E402
 from tests.test_order_handler import FakeConfig, FakePool, FakeRedis, make_quote_fn  # noqa: E402
+
+_KST = timezone(timedelta(hours=9))
+
+
+class _FixedMarketHoursDatetime(_real_datetime):
+    """order_handler.datetime 대체용 — handle_advice_response의 장중/장외 분기
+    (datetime.now(KST) 기준)가 테스트를 실제로 돌리는 시각에 따라 흔들리지 않도록
+    평일 장중(수요일 10:00 KST)으로 고정한다([AT] fix/score-close-lookup 마무리) —
+    장외 시각에 실행하면 승인된 매수가 큐 예약으로 빠져 _order_source_tag 전달을
+    검증할 수 없었다."""
+
+    @classmethod
+    def now(cls, tz=None):
+        fixed = _real_datetime(2026, 10, 7, 10, 0, 0, tzinfo=_KST)  # 수요일 장중
+        return fixed.astimezone(tz) if tz else fixed
 
 
 # ── (1) _score_journal: 종목·날짜별 1건 집계 + 사람 개입 매수 분리 ───────────
@@ -303,9 +319,10 @@ class TestAdviceApprovedVsDirectManualTagging(unittest.IsolatedAsyncioTestCase):
         async def send_telegram(text, **kw):
             pass
 
-        await order_handler.handle_advice_response(
-            "승인 1", redis=redis, jarvis_chat_fn=jarvis_chat,
-            send_telegram_fn=send_telegram, session_id="s")
+        with patch.object(order_handler, "datetime", _FixedMarketHoursDatetime):
+            await order_handler.handle_advice_response(
+                "승인 1", redis=redis, jarvis_chat_fn=jarvis_chat,
+                send_telegram_fn=send_telegram, session_id="s")
 
         self.assertEqual(captured.get("_order_source_tag"), "advice_approved")
 

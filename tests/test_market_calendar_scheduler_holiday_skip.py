@@ -130,5 +130,76 @@ class TestUnifiedDailyReportSkipsOnHolidayAndWeekend(unittest.IsolatedAsyncioTes
         mock_send.assert_not_awaited()
 
 
+class TestSchedulerSkipsMorningScanOnHoliday(unittest.IsolatedAsyncioTestCase):
+    """[AT] fix/morning-scan-fallback: 08:30 전종목 스캔 블록도 휴장일에는 예약되지 않아야
+    한다(= 스캔을 안 하므로 실패 알림도 안 나간다). 로직은 `_jarvis_scheduler()`의
+    `now.weekday() >= 5 or not is_trading_day(today)` 공통 분기라 TestSchedulerSkipsClosingBlockOnHoliday
+    와 동일한 틱 실행 헬퍼를 쓴다(클래스 분리 — 서로 다른 블록의 mock 대상을 섞지 않기 위함)."""
+
+    async def _run_one_tick(self, frozen_datetime):
+        created_coros = []
+
+        def fake_create_task(coro):
+            created_coros.append(coro)
+            return MagicMock()
+
+        calls = {"n": 0}
+
+        async def fake_sleep(_seconds):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise _StopLoop()
+
+        patches = [
+            patch.object(dm, "datetime", frozen_datetime),
+            patch.object(dm, "redis_client", _FakeRedisGate()),
+            patch("asyncio.sleep", new=fake_sleep),
+            patch("asyncio.create_task", new=fake_create_task),
+            patch.object(dm, "_send_telegram", new=AsyncMock()),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in reversed(patches)])
+
+        with self.assertRaises(_StopLoop):
+            await dm._jarvis_scheduler()
+
+        for coro in created_coros:
+            coro.close()
+
+    async def test_confirmed_holiday_monday_skips_morning_scan(self):
+        """2026-10-05(월, 개천절 대체공휴일) 08:30 — 전종목 스캔이 호출되지 않는다."""
+        mock_scanner = AsyncMock(name="_jarvis_stock_scanner")
+        mock_analysis = AsyncMock(name="_jarvis_auto_analysis")
+        mock_plan = AsyncMock(name="_jarvis_daily_plan")
+        with patch.object(dm, "_jarvis_stock_scanner", mock_scanner), \
+             patch.object(dm, "_jarvis_auto_analysis", mock_analysis), \
+             patch.object(dm, "_jarvis_daily_plan", mock_plan):
+            await self._run_one_tick(_frozen_datetime_at(2026, 10, 5, 8, 30))
+        mock_scanner.assert_not_called()
+
+    async def test_saturday_skips_morning_scan(self):
+        """토요일 08:30 — 주말이므로 전종목 스캔이 호출되지 않는다."""
+        mock_scanner = AsyncMock(name="_jarvis_stock_scanner")
+        mock_analysis = AsyncMock(name="_jarvis_auto_analysis")
+        mock_plan = AsyncMock(name="_jarvis_daily_plan")
+        with patch.object(dm, "_jarvis_stock_scanner", mock_scanner), \
+             patch.object(dm, "_jarvis_auto_analysis", mock_analysis), \
+             patch.object(dm, "_jarvis_daily_plan", mock_plan):
+            await self._run_one_tick(_frozen_datetime_at(2026, 10, 3, 8, 30))
+        mock_scanner.assert_not_called()
+
+    async def test_plain_weekday_still_schedules_morning_scan(self):
+        """휴장일 가드를 추가해도 정상 평일 08:30 스캔은 그대로 실행된다(회귀 아님)."""
+        mock_scanner = AsyncMock(name="_jarvis_stock_scanner")
+        mock_analysis = AsyncMock(name="_jarvis_auto_analysis")
+        mock_plan = AsyncMock(name="_jarvis_daily_plan")
+        with patch.object(dm, "_jarvis_stock_scanner", mock_scanner), \
+             patch.object(dm, "_jarvis_auto_analysis", mock_analysis), \
+             patch.object(dm, "_jarvis_daily_plan", mock_plan):
+            await self._run_one_tick(_frozen_datetime_at(2026, 10, 6, 8, 30))
+        mock_scanner.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

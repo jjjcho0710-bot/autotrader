@@ -91,7 +91,12 @@ async def handle_advice_response(
         await send_telegram_fn(out, dest="personal")
         return out
 
-    sub = await jarvis_chat_fn({"message": cmd, "session_id": session_id, "_no_mirror": True})
+    # _order_source_tag: 능동 제안을 승인해 재진입하는 경로임을 표시 — _jarvis_chat_impl이
+    # 읽어 RouterContext.order_source_tag로 넘기고, handle_trade_command가 매매일지/매매기록에
+    # "제안승인"/"ADVICE_APPROVED" 태그를 붙여 완전 수동 직접지시와 구분한다
+    # ([AT] feat/scoring-improvement).
+    sub = await jarvis_chat_fn({"message": cmd, "session_id": session_id, "_no_mirror": True,
+                                 "_order_source_tag": "advice_approved"})
     rep = sub.get("reply") or sub.get("error") or "실행 결과 없음"
     out = f"✅ 제안 {n} 승인 → 실행: {cmd}\n{rep}"
     await send_telegram_fn(out, dest="personal")
@@ -226,9 +231,15 @@ async def handle_trade_command(
     user_msg: str, *, pool: Any, redis: Any, universe: Any, get_kis_token_fn, config: Any,
     kis_order_fn, get_stock_positions_fn, send_telegram_fn, log_journal_fn,
     get_balance_fn=None, get_recent_ohlcv_fn=None, get_market_warning_fn=None,
-    get_quote_fn=None, invalidate_cache_fn=None,
+    get_quote_fn=None, invalidate_cache_fn=None, order_source_tag: str = "chat",
 ) -> Optional[str]:
-    """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None"""
+    """채팅에서 '종목 N주 매수/매도' 명령 → 실제 KIS 주문 실행. 해당 없으면 None
+
+    order_source_tag: "chat"(기본, 완전 수동 직접지시) 또는 "advice_approved"(능동 제안을
+    "승인 N"으로 승인해 재진입한 경로 — order_handler.handle_advice_response가 주입).
+    매매일지/매매기록에 쓰는 전략·판정 태그를 이 값으로 구분해, 사람이 처음부터 직접 지시한
+    주문과 시스템이 먼저 제안해 승인만 받은 주문을 데이터에서 분리한다
+    ([AT] feat/scoring-improvement)."""
     from common.telegram import CHANNEL_SLIM  # 지연 임포트(테스트 환경에 aiohttp 없어도 동작)
     msg = user_msg.strip()
     is_buy = bool(re.search(r"(매수|사자|사줘|사라)", msg))
@@ -246,6 +257,10 @@ async def handle_trade_command(
 
     action = "buy" if is_buy else "sell"
     action_kr = "매수" if is_buy else "매도"
+    is_advice_approved = order_source_tag == "advice_approved"
+    _strategy_tag = "제안승인" if is_advice_approved else "수동지시"
+    _decision_tag = "ADVICE_APPROVED" if is_advice_approved else "MANUAL"
+    _decision_tag_uncertain = _decision_tag + "_UNCERTAIN_FILLED"
 
     # 현재가 — dashboard의 KIS 속도제한 대응 시세 조회(_fetch_kis_inquire_price →
     # _kis_quote_get, 최대 2회 재시도)를 RouterContext로 주입받아 재사용한다
@@ -356,8 +371,9 @@ async def handle_trade_command(
             async with pool.acquire() as conn:
                 await conn.execute("""
                     INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
-                    VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,'수동지시',$6)
-                """, symbol, action.upper(), float(price), float(qty), float(price * qty), pnl)
+                    VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
+                """, symbol, action.upper(), float(price), float(qty), float(price * qty),
+                    _strategy_tag, pnl)
         except Exception:
             pass
         # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
@@ -368,14 +384,14 @@ async def handle_trade_command(
             pass
         await _invalidate_cache(invalidate_cache_fn)
         await send_telegram_fn(
-            f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 (수동지시)</b>\n"
+            f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 ({_strategy_tag})</b>\n"
             f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",
             dest="personal")
         if not CHANNEL_SLIM:
             await send_telegram_fn(
                 _fill_channel_summary(name, symbol, action_kr, qty, price, pnl_rate), dest="channel")
-        await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
-                              user_msg[:200], "MANUAL", "사용자 직접 지시",
+        await log_journal_fn("stock_trader", symbol, name, action, _strategy_tag,
+                              user_msg[:200], _decision_tag, "사용자 직접 지시" if not is_advice_approved else "능동 제안 승인",
                               True, True, price, qty, source="chat")
         return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
                 f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}")
@@ -397,9 +413,9 @@ async def handle_trade_command(
                 async with pool.acquire() as conn:
                     await conn.execute("""
                         INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
-                        VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,'수동지시(응답지연)',$6)
+                        VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
                     """, symbol, action.upper(), float(price), float(diff_qty),
-                        float(price) * diff_qty, pnl)
+                        float(price) * diff_qty, _strategy_tag + "(응답지연)", pnl)
             except Exception:
                 pass
             try:
@@ -414,8 +430,9 @@ async def handle_trade_command(
             if not CHANNEL_SLIM:
                 await send_telegram_fn(
                     _fill_channel_summary(name, symbol, action_kr, diff_qty, price, pnl_rate), dest="channel")
-            await log_journal_fn("stock_trader", symbol, name, action, "수동지시",
-                                  user_msg[:200], "MANUAL_UNCERTAIN_FILLED", "사용자 직접 지시(응답지연 체결확인)",
+            await log_journal_fn("stock_trader", symbol, name, action, _strategy_tag,
+                                  user_msg[:200], _decision_tag_uncertain,
+                                  "사용자 직접 지시(응답지연 체결확인)" if not is_advice_approved else "능동 제안 승인(응답지연 체결확인)",
                                   True, True, price, diff_qty, source="chat")
             return (f"✅ 체결 확인(응답 지연) — {name}({symbol}) {diff_qty}주 {action_kr} "
                     f"— {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}")

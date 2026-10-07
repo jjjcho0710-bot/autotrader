@@ -72,6 +72,7 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V008__stark_decisions_features_and_symbol_index.sql",
                 "V009__data_baseline_and_reliable_views.sql",
                 "V010__position_management_policy.sql",
+                "V011__widen_jarvis_decision_column.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -118,7 +119,7 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 10, "마이그레이션 파일 10개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 11, "마이그레이션 파일 11개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
@@ -151,7 +152,10 @@ class TestMigrationRoundTrip(unittest.TestCase):
         # V010(jarvis_notes INSERT/DELETE)은 테이블 생성/삭제가 없어 tables/indexes
         # 상태에는 영향을 주지 않는다(데이터 마이그레이션만 포함).
 
-        # Down: V010 -> V001 역순
+        # V011(jarvis_decision 컬럼 타입 변경)도 CREATE/DROP TABLE·INDEX가 아니라서
+        # tables/indexes 상태에는 영향을 주지 않는다.
+
+        # Down: V011 -> V001 역순
         for version, _up_sql, down_sql in reversed(self.migrations):
             apply_sql_to_state(down_sql, tables, indexes)
 
@@ -208,6 +212,24 @@ class TestMigrationRoundTrip(unittest.TestCase):
         self.assertEqual(tables, {"jarvis_notes"})
         apply_sql_to_state(down_sql, tables, indexes)
         self.assertEqual(tables, {"jarvis_notes"})
+
+    def test_v011_widens_jarvis_decision_column(self):
+        """V011: trade_journal.jarvis_decision을 VARCHAR(10)->VARCHAR(20)으로 넓힌다.
+        "EXECUTE_SMALL"(13자) INSERT가 매번 실패하던 문제의 수정. 테이블/인덱스
+        생성·삭제가 없는 컬럼 타입 변경이라 tables/indexes 상태에는 영향이 없다."""
+        _version, up_sql, down_sql = next(
+            m for m in self.migrations if m[0].startswith("V011")
+        )
+        self.assertIn("trade_journal", up_sql)
+        self.assertIn("jarvis_decision", up_sql)
+        self.assertIn("VARCHAR(20)", up_sql)
+        self.assertIn("VARCHAR(10)", down_sql)
+
+        tables, indexes = {"trade_journal"}, set()
+        apply_sql_to_state(up_sql, tables, indexes)
+        self.assertEqual(tables, {"trade_journal"})
+        apply_sql_to_state(down_sql, tables, indexes)
+        self.assertEqual(tables, {"trade_journal"})
 
 
 if __name__ == "__main__":

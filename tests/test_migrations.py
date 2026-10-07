@@ -73,6 +73,7 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V009__data_baseline_and_reliable_views.sql",
                 "V010__position_management_policy.sql",
                 "V011__widen_jarvis_decision_column.sql",
+                "V012__widen_jarvis_decision_column_40.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -119,7 +120,7 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 11, "마이그레이션 파일 11개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 12, "마이그레이션 파일 12개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
@@ -152,10 +153,10 @@ class TestMigrationRoundTrip(unittest.TestCase):
         # V010(jarvis_notes INSERT/DELETE)은 테이블 생성/삭제가 없어 tables/indexes
         # 상태에는 영향을 주지 않는다(데이터 마이그레이션만 포함).
 
-        # V011(jarvis_decision 컬럼 타입 변경)도 CREATE/DROP TABLE·INDEX가 아니라서
+        # V011/V012(jarvis_decision 컬럼 타입 변경)도 CREATE/DROP TABLE·INDEX가 아니라서
         # tables/indexes 상태에는 영향을 주지 않는다.
 
-        # Down: V011 -> V001 역순
+        # Down: V012 -> V001 역순
         for version, _up_sql, down_sql in reversed(self.migrations):
             apply_sql_to_state(down_sql, tables, indexes)
 
@@ -230,6 +231,40 @@ class TestMigrationRoundTrip(unittest.TestCase):
         self.assertEqual(tables, {"trade_journal"})
         apply_sql_to_state(down_sql, tables, indexes)
         self.assertEqual(tables, {"trade_journal"})
+
+    def test_v012_widens_jarvis_decision_column_to_40(self):
+        """V012([AT] feat/scoring-improvement): trade_journal.jarvis_decision을
+        VARCHAR(20)->VARCHAR(40)으로 넓힌다. ADVICE_APPROVED_UNCERTAIN_FILLED(32자)·
+        PROPOSE_APPROVED_UNCERTAIN_FILLED(33자) INSERT가 20자 한도를 넘어 실패하던
+        문제의 수정. V011은 수정하지 않고 새 마이그레이션으로 추가했다."""
+        _version, up_sql, down_sql = next(
+            m for m in self.migrations if m[0].startswith("V012")
+        )
+        self.assertIn("trade_journal", up_sql)
+        self.assertIn("jarvis_decision", up_sql)
+        self.assertIn("VARCHAR(40)", up_sql)
+        self.assertIn("VARCHAR(20)", down_sql)
+        # 여러 번 실행해도 안전해야 함 — 이미 40자 이상이면 건너뛰는 가드가 있어야 한다
+        self.assertIn("character_maximum_length", up_sql)
+
+        tables, indexes = {"trade_journal"}, set()
+        apply_sql_to_state(up_sql, tables, indexes)
+        self.assertEqual(tables, {"trade_journal"})
+        apply_sql_to_state(down_sql, tables, indexes)
+        self.assertEqual(tables, {"trade_journal"})
+
+    def test_new_decision_labels_fit_within_varchar_40(self):
+        """이 브랜치에서 trade_journal.jarvis_decision에 새로 쓰는 라벨들이 V012의
+        VARCHAR(40) 한도 안에 들어가는지 직접 확인([AT] feat/scoring-improvement)."""
+        new_labels = [
+            "MANUAL_UNCERTAIN_FILLED",
+            "ADVICE_APPROVED", "ADVICE_APPROVED_UNCERTAIN_FILLED",
+            "PROPOSE_APPROVED_UNCERTAIN_FILLED",
+        ]
+        for label in new_labels:
+            self.assertLessEqual(len(label), 40, f"{label}({len(label)}자)가 VARCHAR(40)을 넘음")
+        # 적어도 하나는 기존 V011의 VARCHAR(20) 한도를 넘어야 재현 의미가 있음
+        self.assertTrue(any(len(label) > 20 for label in new_labels))
 
 
 if __name__ == "__main__":

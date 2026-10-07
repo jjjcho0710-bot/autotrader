@@ -1343,8 +1343,31 @@ async def _jarvis_daily_plan():
         logger.error(f"작전 수립 오류: {e}")
 
 
+# 매수 적중/SKIP 기회놓침 판정 기준 — 상승폭 조건과 무관하게 모든 판정에서 동일한 폭을 쓴다
+# (_score_journal/_jarvis_weekend_study_report/_training_summary_raw 공통, [AT] feat/scoring-improvement.
+# 이전엔 EXECUTE 0.5% vs SKIP 1.0%로 서로 달랐다)
+SCORE_HIT_THRESHOLD_PCT = 0.5
+
+# STARK 자체 판단(EXECUTE/EXECUTE_SMALL) 외에 사람이 개입한 매수 판단 — 채팅 직접 지시(MANUAL),
+# 능동 제안 승인(ADVICE_APPROVED), 매수 제안 승인(PROPOSE_APPROVED). 채점에선 EXECUTE와 같은
+# 기준으로 포함하되 요약에서 STARK 판단과 분리해 표시한다([AT] feat/scoring-improvement)
+_HUMAN_BUY_DECISIONS = (
+    "MANUAL", "MANUAL_UNCERTAIN_FILLED",
+    "ADVICE_APPROVED", "ADVICE_APPROVED_UNCERTAIN_FILLED",
+    "PROPOSE_APPROVED", "PROPOSE_APPROVED_UNCERTAIN_FILLED",
+)
+_STARK_BUY_DECISIONS = ("EXECUTE", "EXECUTE_SMALL")
+_ACTIONED_DECISIONS = _STARK_BUY_DECISIONS + _HUMAN_BUY_DECISIONS
+
+
+def _journal_row_rank(row) -> int:
+    """종목·날짜별 대표 판단 선정용 우선순위 — 실제 행동(매수 체결/승인)이 있었던 판단을
+    SKIP보다 우선한다([AT] feat/scoring-improvement)."""
+    return 1 if row["jarvis_decision"] in _ACTIONED_DECISIONS else 0
+
+
 async def _score_journal() -> str:
-    """오늘의 판단(SKIP/EXECUTE)을 당일 종가로 채점 → 요약 반환"""
+    """오늘의 판단(SKIP/EXECUTE/사람 개입 매수)을 당일 종가로 채점 → 요약 반환"""
     try:
         from common.telegram import CHANNEL_SLIM
         async with db_pool.acquire() as conn:
@@ -1353,6 +1376,7 @@ async def _score_journal() -> str:
                 FROM trade_journal
                 WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
                   AND bot='stock_trader' AND eval_at IS NULL AND price > 0
+                ORDER BY ts ASC
             """)
         if not rows:
             # 오늘 판단 자체가 0건인지 확인 → 침묵 대신 명시 보고
@@ -1370,7 +1394,8 @@ async def _score_journal() -> str:
             return ""
         import ssl as _ssl
         _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
-        scored = {"exec_hit": 0, "exec_miss": 0, "skip_good": 0, "skip_missed": 0}
+        scored = {"exec_hit": 0, "exec_miss": 0, "skip_good": 0, "skip_missed": 0,
+                  "human_hit": 0, "human_miss": 0}
         lines = []
         async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
             # 종목별 종가 1회 조회
@@ -1390,6 +1415,9 @@ async def _score_journal() -> str:
                     closes[sym] = 0
                 await asyncio.sleep(0.3)
         async with db_pool.acquire() as conn:
+            # 종가 평가(eval_price/eval_pnl_rate)는 오늘 기록된 모든 판단 행에 매긴다 — 중복
+            # 판단이라도 각 행은 다시 채점 대상(eval_at IS NULL)에 걸리지 않도록 전부 갱신해야
+            # 한다([AT] feat/scoring-improvement).
             for r in rows:
                 close = closes.get(r["symbol"], 0)
                 if close <= 0:
@@ -1399,15 +1427,36 @@ async def _score_journal() -> str:
                     UPDATE trade_journal SET eval_price=$1, eval_pnl_rate=$2, eval_at=NOW()
                     WHERE id=$3
                 """, float(close), round(rate, 2), r["id"])
+
+            # 종목·날짜별 1건으로 집계 — 같은 종목이 하루에 여러 번 판단되면(장중 반복 스캔)
+            # 채점 요약이 중복으로 쌓이는 문제 방지. 실제 행동(매수 체결/승인)이 있었던 판단을
+            # SKIP보다 우선하고, 동일 우선순위면 ORDER BY ts ASC로 가장 늦게 기록된 판단이
+            # 그 종목의 대표값이 된다([AT] feat/scoring-improvement).
+            best_by_symbol = {}
+            for r in rows:
+                if closes.get(r["symbol"], 0) <= 0:
+                    continue
+                sym = r["symbol"]
+                cur = best_by_symbol.get(sym)
+                if cur is None or _journal_row_rank(r) >= _journal_row_rank(cur):
+                    best_by_symbol[sym] = r
+
+            for r in best_by_symbol.values():
+                close = closes[r["symbol"]]
+                rate = (close - float(r["price"])) / float(r["price"]) * 100
                 dec = r["jarvis_decision"]
                 nm = r["name"] or r["symbol"]
                 good = None
-                if dec in ("EXECUTE", "EXECUTE_SMALL") and r["action"] == "buy":
-                    if rate >= 0.5: scored["exec_hit"] += 1; tag = "✅적중"; good = True
+                if dec in _STARK_BUY_DECISIONS and r["action"] == "buy":
+                    if rate >= SCORE_HIT_THRESHOLD_PCT: scored["exec_hit"] += 1; tag = "✅적중"; good = True
                     else: scored["exec_miss"] += 1; tag = "❌빗나감"; good = False
                     lines.append(f"매수 {nm}: 신호가 대비 {rate:+.1f}% {tag}")
+                elif dec in _HUMAN_BUY_DECISIONS and r["action"] == "buy":
+                    if rate >= SCORE_HIT_THRESHOLD_PCT: scored["human_hit"] += 1; tag = "✅적중"; good = True
+                    else: scored["human_miss"] += 1; tag = "❌빗나감"; good = False
+                    lines.append(f"매수(개입) {nm}: 신호가 대비 {rate:+.1f}% {tag}")
                 elif dec == "SKIP" and r["action"] == "buy":
-                    if rate >= 1.0: scored["skip_missed"] += 1; tag = "⚠️기회놓침"; good = False
+                    if rate >= SCORE_HIT_THRESHOLD_PCT: scored["skip_missed"] += 1; tag = "⚠️기회놓침"; good = False
                     else: scored["skip_good"] += 1; tag = "✅잘거름"; good = True
                     lines.append(f"SKIP {nm}: 이후 {rate:+.1f}% {tag}")
                 # 원칙별 성과 누적
@@ -1426,9 +1475,13 @@ async def _score_journal() -> str:
         total = sum(scored.values())
         if total == 0:
             return ""
+        human_total = scored["human_hit"] + scored["human_miss"]
         summary = (f"📝 오늘 판단 채점 ({total}건)\n"
+                   f"[STARK 자체 판단]\n"
                    f"매수 적중 {scored['exec_hit']} / 빗나감 {scored['exec_miss']}\n"
                    f"SKIP 잘거름 {scored['skip_good']} / 기회놓침 {scored['skip_missed']}\n"
+                   + (f"[사람 개입 매수]\n적중 {scored['human_hit']} / 빗나감 {scored['human_miss']}\n"
+                      if human_total else "")
                    + "\n".join(lines[:8]))
         try:
             await redis_client.setex("jarvis:score_today", 3600 * 6, summary)
@@ -1452,8 +1505,10 @@ async def _score_then_review():
 # jarvis_notes(lesson)에 자동 저장하는 동작을 끈다(기본값, [AT] fix/lesson-hygiene).
 # 판단 채점 자체가 SKIP 기준(+1%)과 매수 기준(+0.5%)이 비대칭이라 "기회 놓침을 최소화하라"는
 # 취지의 편향된 교훈이 매일 재생성됐다(10/2 PM이 교훈 10건을 is_active=FALSE로 꺼도 다음 날
-# 같은 취지가 다시 저장되는 순환). 복기 텔레그램 메시지 전송은 그대로 유지하고 DB 저장만
-# 건너뛴다 — 켜면(True) 기존 동작 그대로 저장된다.
+# 같은 취지가 다시 저장되는 순환). [AT] feat/scoring-improvement에서 두 기준을
+# SCORE_HIT_THRESHOLD_PCT(0.5%)로 통일해 비대칭 자체는 해소했지만, 자동저장 재활성화는
+# 별도 PM 판단이 필요해 플래그는 그대로 False로 둔다. 복기 텔레그램 메시지 전송은 그대로
+# 유지하고 DB 저장만 건너뛴다 — 켜면(True) 기존 동작 그대로 저장된다.
 LESSON_AUTOSAVE_ENABLED = False
 
 
@@ -1551,17 +1606,17 @@ async def _jarvis_weekend_study_report():
                 SELECT COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL')) AS ex,
                        COUNT(*) FILTER (WHERE jarvis_decision='SKIP') AS sk,
-                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0) AS missed,
-                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate IS NOT NULL AND eval_pnl_rate < 1.0) AS good_skip
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate >= $1) AS missed,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate IS NOT NULL AND eval_pnl_rate < $1) AS good_skip
                 FROM trade_journal
-                WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'""")
+                WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'""", SCORE_HIT_THRESHOLD_PCT)
             # 반복 SKIP-상승 종목 상위 (1회성 SKIP은 "반복"이 아니므로 제외)
             miss_rows = await conn.fetch("""
                 SELECT COALESCE(name, symbol) AS nm, COUNT(*) AS n, AVG(eval_pnl_rate) AS avg_r
                 FROM trade_journal
                 WHERE bot='stock_trader' AND ts > NOW() - INTERVAL '7 days'
-                  AND jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0
-                GROUP BY COALESCE(name, symbol) HAVING COUNT(*) >= 2 ORDER BY n DESC LIMIT 3""")
+                  AND jarvis_decision='SKIP' AND eval_pnl_rate >= $1
+                GROUP BY COALESCE(name, symbol) HAVING COUNT(*) >= 2 ORDER BY n DESC LIMIT 3""", SCORE_HIT_THRESHOLD_PCT)
             # 이번 주 새로 생긴 교훈 — 비활성화된 교훈은 주말 학습보고에도 노출하지 않는다
             # ([AT] fix/lesson-hygiene)
             lessons = await conn.fetch("""
@@ -4496,6 +4551,7 @@ async def _jarvis_chat_impl(body: dict):
         get_market_warning_fn=_get_market_warning_for_gate,
         get_quote_fn=_fetch_kis_inquire_price,
         invalidate_positions_cache_fn=invalidate_stock_positions_cache,
+        order_source_tag=body.get("_order_source_tag") or "chat",
     )
 
     try:
@@ -5729,14 +5785,14 @@ async def _training_summary_raw(days: int = 14):
                 WHERE category='lesson' AND is_active=TRUE ORDER BY created_at DESC LIMIT 20""")
             daily = await conn.fetch("""
                 SELECT DATE(ts AT TIME ZONE 'Asia/Seoul') AS d,
-                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL') AND eval_pnl_rate >= 0.5)  AS exec_hit,
-                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL') AND eval_pnl_rate < 0.5)   AS exec_miss,
-                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate >= 1.0)     AS skip_missed,
-                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate < 1.0)      AS skip_good,
+                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL') AND eval_pnl_rate >= $2)  AS exec_hit,
+                       COUNT(*) FILTER (WHERE jarvis_decision IN ('EXECUTE','EXECUTE_SMALL') AND eval_pnl_rate < $2)   AS exec_miss,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate >= $2)     AS skip_missed,
+                       COUNT(*) FILTER (WHERE jarvis_decision='SKIP' AND eval_pnl_rate < $2)      AS skip_good,
                        COUNT(*) AS total
                 FROM trade_journal
                 WHERE ts >= NOW() - ($1 || ' days')::interval AND eval_at IS NOT NULL
-                GROUP BY 1 ORDER BY 1 DESC""", str(days))
+                GROUP BY 1 ORDER BY 1 DESC""", str(days), SCORE_HIT_THRESHOLD_PCT)
         return {"success": True,
                 "lessons": [{"content": r["content"], "ts": r["created_at"].isoformat()} for r in lessons],
                 "daily": [{"date": str(r["d"]), "exec_hit": r["exec_hit"], "exec_miss": r["exec_miss"],

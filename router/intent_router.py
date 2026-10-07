@@ -71,6 +71,11 @@ class RouterContext:
     # (dashboard/main.py.invalidate_stock_positions_cache — [AT] order-result-reconcile).
     # None이면 redis 캐시만 지우고 재조회한다(메모리 캐시 TTL 10초 이내엔 옛 값일 수 있음).
     invalidate_positions_cache_fn: Optional[Callable[..., Any]] = None
+    # 채팅 직접 매매 지시(handle_trade_command)의 매매일지 태그 구분용 — "chat"(기본, 완전
+    # 수동 직접지시)과 "advice_approved"(능동 제안 승인 경로, order_handler.handle_advice_response
+    # 가 재진입 시 주입)를 구분해 채점에서 직접지시와 승인 체결을 분리할 수 있게 한다
+    # ([AT] feat/scoring-improvement).
+    order_source_tag: str = "chat"
 
 
 async def route_early(user_msg: str, ctx: RouterContext) -> Optional[str]:
@@ -146,7 +151,8 @@ async def route_late(user_msg: str, ctx: RouterContext) -> Optional[str]:
         log_journal_fn=ctx.log_journal, get_balance_fn=ctx.get_balance_fn,
         get_recent_ohlcv_fn=ctx.get_recent_ohlcv_fn,
         get_market_warning_fn=ctx.get_market_warning_fn, get_quote_fn=ctx.get_quote_fn,
-        invalidate_cache_fn=ctx.invalidate_positions_cache_fn)
+        invalidate_cache_fn=ctx.invalidate_positions_cache_fn,
+        order_source_tag=ctx.order_source_tag)
     if reply is not None:
         return reply
 

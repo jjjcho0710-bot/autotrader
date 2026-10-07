@@ -496,6 +496,13 @@ class FakeOrderConfig:
 
 
 class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # get_buy_lock()은 모듈 전역 싱글톤이라 이벤트루프에 바인딩된다 — 테스트마다 새
+        # 이벤트루프를 쓰는 IsolatedAsyncioTestCase에서는 매 테스트 시작 시 리셋해야
+        # 다른 테스트 파일에서 만들어진 락이 남아 "bound to a different event loop"
+        # 오류가 나지 않는다([AT] fix/buy-lock-chat-path).
+        execution_guard.reset_buy_lock()
+
     async def test_buy_success_sends_personal_and_channel_when_slim_off(self):
         """CHANNEL_SLIM=False(되돌림)이면 기존처럼 개인방+채널 둘 다 간다."""
         universe = Universe(None)
@@ -590,10 +597,13 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
         async def send_telegram(text, **kw):
             sent.append({"text": text, "dest": kw.get("dest")})
 
+        async def get_positions():
+            return {"success": True, "data": []}
+
         with patch("common.telegram.CHANNEL_SLIM", False):
             reply = await order_handler.handle_proposal_response(
                 "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
-                send_telegram_fn=send_telegram)
+                send_telegram_fn=send_telegram, get_positions_fn=get_positions)
 
         self.assertIn("매수 체결", reply)
         self.assertEqual(len(sent), 2)
@@ -617,9 +627,12 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
         async def send_telegram(text, **kw):
             sent.append({"text": text, "dest": kw.get("dest")})
 
+        async def get_positions():
+            return {"success": True, "data": []}
+
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
-            send_telegram_fn=send_telegram)
+            send_telegram_fn=send_telegram, get_positions_fn=get_positions)
 
         self.assertIn("매수 체결", reply)
         self.assertEqual(len(sent), 1)

@@ -24,7 +24,11 @@ from common.position_sizing import (
     volatility_multiplier,
 )
 from stark.execution_guard import (
+    CHAT_BUY_LOCK_WAIT_SEC,
+    BuyLockTimeout,
     buy_gate,
+    buy_lock_scope,
+    check_buy_position_limits,
     check_order_uncertain_block,
     get_held_qty,
     reconcile_uncertain_order,
@@ -138,62 +142,88 @@ async def handle_proposal_response(
             await redis.delete(f"proposal:{symbol}")
             return f"❌ {target['name']} 매수 제안 거절 처리했어요."
 
-        # 직전 같은 종목 매수 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
-        if await check_order_uncertain_block(symbol, True, redis):
-            return f"⏳ {target['name']} 직전 주문 결과 확인 중 — 잠시 후 다시 시도해주세요"
+        async def _execute_approval() -> str:
+            # 직전 같은 종목 매수 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
+            if await check_order_uncertain_block(symbol, True, redis):
+                return f"⏳ {target['name']} 직전 주문 결과 확인 중 — 잠시 후 다시 시도해주세요"
 
-        # 승인 → 실제 매수 (주문 전 보유 수량을 응답불명 시 체결 재확인용으로 미리 조회)
-        pre_qty = await get_held_qty(symbol, get_positions_fn) if get_positions_fn else None
-        order = await kis_order_fn(symbol, int(target["price"]), int(target["qty"]), True)
-        await redis.delete(f"proposal:{symbol}")
-        if order.get("success"):
-            await _invalidate_cache(invalidate_cache_fn)
-            await log_journal_fn("stock_trader", symbol, target["name"], "buy",
-                                  target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
-                                  target.get("reason", ""), True, True,
-                                  int(target["price"]), int(target["qty"]))
-            msg = (f"✅ <b>{target['name']} 매수 체결 (주인 승인)</b>\n"
-                   f"{target['qty']}주 @ {int(target['price']):,}원")
-            await send_telegram_fn(msg, dest="personal")
-            if not CHANNEL_SLIM:
-                await send_telegram_fn(
-                    _fill_channel_summary(target["name"], symbol, "매수", target["qty"], float(target["price"])),
-                    dest="channel")
-            return msg.replace("<b>", "").replace("</b>", "")
+            # 보유 종목수 한도(fail-closed) + 물타기 정책 — 신호 경로(execute())·채팅 직접매수
+            # 경로(buy_gate)와 동일한 안전장치를 제안 승인 매수에도 적용한다. 이 경로는
+            # 지금까지 이 검사 자체가 없어 한도를 넘는 매수가 그대로 나갈 수 있었다
+            # ([AT] fix/buy-lock-chat-path).
+            if get_positions_fn is None:
+                logger.error(f"제안 승인 매수 의존성 누락(fail-closed) [{symbol}]: get_positions_fn=X")
+                return f"⛔ {target['name']} 종목 상태 확인 실패 — 잠시 후 다시 시도"
+            position_blocked = await check_buy_position_limits(
+                symbol, float(target["price"]), pool=pool, redis=redis, bot="stock_trader",
+                get_positions_fn=get_positions_fn,
+            )
+            if position_blocked:
+                logger.info(f"⛔ 제안 승인 매수 차단 [{symbol}] {position_blocked['blocked']}: {position_blocked['reason']}")
+                await redis.delete(f"proposal:{symbol}")
+                return f"⛔ {position_blocked['reason']}"
 
-        if order.get("uncertain") and get_positions_fn is not None:
-            recon = await reconcile_uncertain_order(
-                symbol, True, pre_qty=pre_qty, get_positions_fn=get_positions_fn, redis=redis,
-                invalidate_cache_fn=invalidate_cache_fn)
-            if recon["status"] == "filled":
-                diff_qty = int(round(recon.get("qty_diff") or target["qty"]))
-                if pool:
-                    try:
-                        async with pool.acquire() as conn:
-                            await conn.execute("""
-                                INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
-                                VALUES ('stock_trader','stock',$1,'BUY',$2,$3,$4,$5,NULL)
-                            """, symbol, float(target["price"]), float(diff_qty),
-                                float(target["price"]) * diff_qty, target.get("strategy", "제안"))
-                    except Exception:
-                        pass
+            # 승인 → 실제 매수 (주문 전 보유 수량을 응답불명 시 체결 재확인용으로 미리 조회)
+            pre_qty = await get_held_qty(symbol, get_positions_fn) if get_positions_fn else None
+            order = await kis_order_fn(symbol, int(target["price"]), int(target["qty"]), True)
+            await redis.delete(f"proposal:{symbol}")
+            if order.get("success"):
+                await _invalidate_cache(invalidate_cache_fn)
                 await log_journal_fn("stock_trader", symbol, target["name"], "buy",
-                                      target.get("strategy", "제안"), "주인 승인(응답지연)",
-                                      "PROPOSE_APPROVED_UNCERTAIN_FILLED",
+                                      target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
                                       target.get("reason", ""), True, True,
-                                      int(target["price"]), diff_qty)
-                msg = (f"✅ <b>{target['name']} 매수 체결 확인 (응답 지연, 주인 승인)</b>\n"
-                       f"{diff_qty}주 @ {int(target['price']):,}원")
+                                      int(target["price"]), int(target["qty"]))
+                msg = (f"✅ <b>{target['name']} 매수 체결 (주인 승인)</b>\n"
+                       f"{target['qty']}주 @ {int(target['price']):,}원")
                 await send_telegram_fn(msg, dest="personal")
                 if not CHANNEL_SLIM:
                     await send_telegram_fn(
-                        _fill_channel_summary(target["name"], symbol, "매수", diff_qty, float(target["price"])),
+                        _fill_channel_summary(target["name"], symbol, "매수", target["qty"], float(target["price"])),
                         dest="channel")
                 return msg.replace("<b>", "").replace("</b>", "")
-            return (f"⚠️ {target['name']} 주문 결과 불명 — 보유 수량 변화 없음. "
-                    f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
 
-        return f"❌ 매수 실패: {order.get('error') or '사유 미확인'}"
+            if order.get("uncertain") and get_positions_fn is not None:
+                recon = await reconcile_uncertain_order(
+                    symbol, True, pre_qty=pre_qty, get_positions_fn=get_positions_fn, redis=redis,
+                    invalidate_cache_fn=invalidate_cache_fn)
+                if recon["status"] == "filled":
+                    diff_qty = int(round(recon.get("qty_diff") or target["qty"]))
+                    if pool:
+                        try:
+                            async with pool.acquire() as conn:
+                                await conn.execute("""
+                                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                                    VALUES ('stock_trader','stock',$1,'BUY',$2,$3,$4,$5,NULL)
+                                """, symbol, float(target["price"]), float(diff_qty),
+                                    float(target["price"]) * diff_qty, target.get("strategy", "제안"))
+                        except Exception:
+                            pass
+                    await log_journal_fn("stock_trader", symbol, target["name"], "buy",
+                                          target.get("strategy", "제안"), "주인 승인(응답지연)",
+                                          "PROPOSE_APPROVED_UNCERTAIN_FILLED",
+                                          target.get("reason", ""), True, True,
+                                          int(target["price"]), diff_qty)
+                    msg = (f"✅ <b>{target['name']} 매수 체결 확인 (응답 지연, 주인 승인)</b>\n"
+                           f"{diff_qty}주 @ {int(target['price']):,}원")
+                    await send_telegram_fn(msg, dest="personal")
+                    if not CHANNEL_SLIM:
+                        await send_telegram_fn(
+                            _fill_channel_summary(target["name"], symbol, "매수", diff_qty, float(target["price"])),
+                            dest="channel")
+                    return msg.replace("<b>", "").replace("</b>", "")
+                return (f"⚠️ {target['name']} 주문 결과 불명 — 보유 수량 변화 없음. "
+                        f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
+
+            return f"❌ 매수 실패: {order.get('error') or '사유 미확인'}"
+
+        # 매수 판단과 주문을 신호/채팅 직접매수와 같은 Lock으로 직렬화 — 다른 매수가 처리
+        # 중이면 기다리되, 무한정 대기하지 않고 타임아웃 시 주문을 진행하지 않는다
+        # ([AT] fix/buy-lock-chat-path).
+        try:
+            async with buy_lock_scope(True, timeout=CHAT_BUY_LOCK_WAIT_SEC):
+                return await _execute_approval()
+        except BuyLockTimeout:
+            return f"⏳ {target['name']} 다른 매수 처리 중 — 잠시 후 다시 시도해주세요"
     except Exception as pe:
         logger.warning(f"제안 승인 처리 오류: {pe}")
         return None
@@ -284,159 +314,171 @@ async def handle_trade_command(
     if price <= 0:
         return f"⚠️ {name}({symbol}) 현재가 조회 실패 — 주문 불가"
 
-    # 매수 안전장치 관문 — 신호 경로(stark/execution_guard.precheck + execute())와 동일한
-    # 악재공시·당일 손절 2회·실패 억제·물타기·보유종목수 한도·투자경고/VI 차단을 채팅 직접
-    # 매수에도 적용한다(PM 지시, [AT] buy-gate-unification). "한도무시"는 사이징 금액
-    # 한도만 무시할 뿐 이 안전 차단은 넘지 못한다 — 사이징보다 먼저 검사한다.
-    if is_buy:
-        gate_blocked = await buy_gate(
-            symbol, price, pool=pool, redis=redis, bot="stock_trader",
-            get_positions_fn=get_stock_positions_fn, get_market_warning_fn=get_market_warning_fn,
-        )
-        if gate_blocked:
-            logger.info(f"⛔ 채팅 매수 차단 [{symbol}] {gate_blocked['blocked']}: {gate_blocked['reason']}")
-            return f"⛔ {gate_blocked['reason']}"
+    async def _execute_trade() -> str:
+        # 매수 안전장치 관문 — 신호 경로(stark/execution_guard.precheck + execute())와 동일한
+        # 악재공시·당일 손절 2회·실패 억제·물타기·보유종목수 한도·투자경고/VI 차단을 채팅 직접
+        # 매수에도 적용한다(PM 지시, [AT] buy-gate-unification). "한도무시"는 사이징 금액
+        # 한도만 무시할 뿐 이 안전 차단은 넘지 못한다 — 사이징보다 먼저 검사한다.
+        if is_buy:
+            gate_blocked = await buy_gate(
+                symbol, price, pool=pool, redis=redis, bot="stock_trader",
+                get_positions_fn=get_stock_positions_fn, get_market_warning_fn=get_market_warning_fn,
+            )
+            if gate_blocked:
+                logger.info(f"⛔ 채팅 매수 차단 [{symbol}] {gate_blocked['blocked']}: {gate_blocked['reason']}")
+                return f"⛔ {gate_blocked['reason']}"
 
-    # 수량 (+ 매도 시 손익 계산용 평단가 조회)
-    avg_price = 0.0
-    if all_sell and not qty_m:
-        try:
-            pos = await get_stock_positions_fn()
-        except Exception as e:
-            logger.warning(f"수동주문 보유 수량 조회 실패 [{symbol}]: {e}")
-            return f"⚠️ {name}({symbol}) 종목 조회에 실패했습니다. 잠시 후 다시 시도해주세요"
-        pos_row = next((p for p in pos.get("data", []) if p["symbol"] == symbol), None)
-        qty = int(pos_row["qty"]) if pos_row else 0
-        if qty <= 0:
-            return f"⚠️ {name}({symbol}) 보유 수량이 없어요"
-        if is_sell and pos_row:
-            avg_price = float(pos_row.get("avg_price", 0) or 0)
-    else:
-        qty = int(qty_m.group(1))
-        if is_sell:
+        # 수량 (+ 매도 시 손익 계산용 평단가 조회)
+        avg_price = 0.0
+        if all_sell and not qty_m:
             try:
                 pos = await get_stock_positions_fn()
-                pos_row = next((p for p in pos.get("data", []) if p["symbol"] == symbol), None)
-                avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
             except Exception as e:
-                logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
-                avg_price = 0.0
-
-    # 매수 사이징 한도 적용 (PM 승인, 2026-09-30 리스크 기반 사이징을 채팅 직접 매매에도 적용).
-    # "한도무시" 키워드가 있으면 사용자가 의도적으로 한도를 넘기는 것이므로 조정하지 않는다.
-    sizing_note = ""
-    if is_buy:
-        if "한도무시" in msg:
-            sizing_note = "\n⚠️ 한도무시 적용"
+                logger.warning(f"수동주문 보유 수량 조회 실패 [{symbol}]: {e}")
+                return f"⚠️ {name}({symbol}) 종목 조회에 실패했습니다. 잠시 후 다시 시도해주세요"
+            pos_row = next((p for p in pos.get("data", []) if p["symbol"] == symbol), None)
+            qty = int(pos_row["qty"]) if pos_row else 0
+            if qty <= 0:
+                return f"⚠️ {name}({symbol}) 보유 수량이 없어요"
+            if is_sell and pos_row:
+                avg_price = float(pos_row.get("avg_price", 0) or 0)
         else:
-            requested_qty = qty
-            try:
-                max_amount = await _compute_buy_sizing_cap(
-                    config=config, get_balance_fn=get_balance_fn,
-                    get_recent_ohlcv_fn=get_recent_ohlcv_fn, symbol=symbol, cur_price=price,
-                )
-            except Exception as e:
-                # get_balance_fn 미주입(테스트 전용 분기)과 달리, 운영 경로에서 한도 계산이
-                # 예외로 실패하면 한도 없이 조용히 주문이 나가면 안 되므로 알려야 한다.
-                logger.warning(f"수동주문 사이징 한도 계산 실패 [{symbol}]: {e}")
-                await send_telegram_fn(f"⚠️ [{name}] 사이징 한도 계산 실패 — 한도 미적용 ({e})", dest="personal")
-                max_amount = None
-                sizing_note = "\n⚠️ 사이징 한도 계산 실패 — 한도 미적용"
-            if max_amount is not None and price * qty > max_amount:
-                qty = int(max_amount // price)
-                if qty <= 0:
-                    return (f"⚠️ 사이징 한도(약 {max_amount / 10000:,.0f}만원) 초과로 "
-                            f"1주도 매수 불가 — 고가 종목")
-                sizing_note = f"\n요청 {requested_qty}주 → 사이징 한도로 {qty}주로 조정"
+            qty = int(qty_m.group(1))
+            if is_sell:
+                try:
+                    pos = await get_stock_positions_fn()
+                    pos_row = next((p for p in pos.get("data", []) if p["symbol"] == symbol), None)
+                    avg_price = float(pos_row.get("avg_price", 0) or 0) if pos_row else 0.0
+                except Exception as e:
+                    logger.warning(f"매도 손익 계산용 평단가 조회 실패 [{symbol}]: {e}")
+                    avg_price = 0.0
 
-    # 직전 같은 종목·같은 방향 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
-    if redis is not None and await check_order_uncertain_block(symbol, is_buy, redis):
-        return f"⏳ {name}({symbol}) 직전 주문 결과 확인 중 — 잠시 후 다시 시도해주세요"
+        # 매수 사이징 한도 적용 (PM 승인, 2026-09-30 리스크 기반 사이징을 채팅 직접 매매에도 적용).
+        # "한도무시" 키워드가 있으면 사용자가 의도적으로 한도를 넘기는 것이므로 조정하지 않는다.
+        sizing_note = ""
+        if is_buy:
+            if "한도무시" in msg:
+                sizing_note = "\n⚠️ 한도무시 적용"
+            else:
+                requested_qty = qty
+                try:
+                    max_amount = await _compute_buy_sizing_cap(
+                        config=config, get_balance_fn=get_balance_fn,
+                        get_recent_ohlcv_fn=get_recent_ohlcv_fn, symbol=symbol, cur_price=price,
+                    )
+                except Exception as e:
+                    # get_balance_fn 미주입(테스트 전용 분기)과 달리, 운영 경로에서 한도 계산이
+                    # 예외로 실패하면 한도 없이 조용히 주문이 나가면 안 되므로 알려야 한다.
+                    logger.warning(f"수동주문 사이징 한도 계산 실패 [{symbol}]: {e}")
+                    await send_telegram_fn(f"⚠️ [{name}] 사이징 한도 계산 실패 — 한도 미적용 ({e})", dest="personal")
+                    max_amount = None
+                    sizing_note = "\n⚠️ 사이징 한도 계산 실패 — 한도 미적용"
+                if max_amount is not None and price * qty > max_amount:
+                    qty = int(max_amount // price)
+                    if qty <= 0:
+                        return (f"⚠️ 사이징 한도(약 {max_amount / 10000:,.0f}만원) 초과로 "
+                                f"1주도 매수 불가 — 고가 종목")
+                    sizing_note = f"\n요청 {requested_qty}주 → 사이징 한도로 {qty}주로 조정"
 
-    # 응답불명 시 체결 재확인용 — 주문 전 보유 수량을 미리 조회해 둔다
-    pre_qty = await get_held_qty(symbol, get_stock_positions_fn) if get_stock_positions_fn else None
+        # 직전 같은 종목·같은 방향 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
+        if redis is not None and await check_order_uncertain_block(symbol, is_buy, redis):
+            return f"⏳ {name}({symbol}) 직전 주문 결과 확인 중 — 잠시 후 다시 시도해주세요"
 
-    result = await kis_order_fn(symbol, price, qty, is_buy)
+        # 응답불명 시 체결 재확인용 — 주문 전 보유 수량을 미리 조회해 둔다
+        pre_qty = await get_held_qty(symbol, get_stock_positions_fn) if get_stock_positions_fn else None
 
-    if result.get("success"):
-        pnl = None
-        pnl_rate = None
-        pnl_text = ""
-        if is_sell and avg_price > 0:
-            pnl = (price - avg_price) * qty
-            pnl_rate = (price - avg_price) / avg_price * 100
-            pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
+        result = await kis_order_fn(symbol, price, qty, is_buy)
 
-        try:
-            async with pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
-                    VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
-                """, symbol, action.upper(), float(price), float(qty), float(price * qty),
-                    _strategy_tag, pnl)
-        except Exception:
-            pass
-        # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
-        try:
-            for k in ("cache:positions:stock", "cache:account:stock"):
-                await redis.delete(k)
-        except Exception:
-            pass
-        await _invalidate_cache(invalidate_cache_fn)
-        await send_telegram_fn(
-            f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 ({_strategy_tag})</b>\n"
-            f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",
-            dest="personal")
-        if not CHANNEL_SLIM:
-            await send_telegram_fn(
-                _fill_channel_summary(name, symbol, action_kr, qty, price, pnl_rate), dest="channel")
-        await log_journal_fn("stock_trader", symbol, name, action, _strategy_tag,
-                              user_msg[:200], _decision_tag, "사용자 직접 지시" if not is_advice_approved else "능동 제안 승인",
-                              True, True, price, qty, source="chat")
-        return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
-                f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}")
-
-    if result.get("uncertain") and get_stock_positions_fn is not None:
-        recon = await reconcile_uncertain_order(
-            symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_stock_positions_fn, redis=redis,
-            invalidate_cache_fn=invalidate_cache_fn)
-        if recon["status"] == "filled":
-            diff_qty = int(round(recon.get("qty_diff") or qty))
+        if result.get("success"):
             pnl = None
             pnl_rate = None
             pnl_text = ""
             if is_sell and avg_price > 0:
-                pnl = (price - avg_price) * diff_qty
+                pnl = (price - avg_price) * qty
                 pnl_rate = (price - avg_price) / avg_price * 100
                 pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
+
             try:
                 async with pool.acquire() as conn:
                     await conn.execute("""
                         INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
                         VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
-                    """, symbol, action.upper(), float(price), float(diff_qty),
-                        float(price) * diff_qty, _strategy_tag + "(응답지연)", pnl)
+                    """, symbol, action.upper(), float(price), float(qty), float(price * qty),
+                        _strategy_tag, pnl)
             except Exception:
                 pass
+            # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
             try:
                 for k in ("cache:positions:stock", "cache:account:stock"):
                     await redis.delete(k)
             except Exception:
                 pass
+            await _invalidate_cache(invalidate_cache_fn)
             await send_telegram_fn(
-                f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 확인 (응답 지연)</b>\n"
-                f"가격: {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}",
+                f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 ({_strategy_tag})</b>\n"
+                f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",
                 dest="personal")
             if not CHANNEL_SLIM:
                 await send_telegram_fn(
-                    _fill_channel_summary(name, symbol, action_kr, diff_qty, price, pnl_rate), dest="channel")
+                    _fill_channel_summary(name, symbol, action_kr, qty, price, pnl_rate), dest="channel")
             await log_journal_fn("stock_trader", symbol, name, action, _strategy_tag,
-                                  user_msg[:200], _decision_tag_uncertain,
-                                  "사용자 직접 지시(응답지연 체결확인)" if not is_advice_approved else "능동 제안 승인(응답지연 체결확인)",
-                                  True, True, price, diff_qty, source="chat")
-            return (f"✅ 체결 확인(응답 지연) — {name}({symbol}) {diff_qty}주 {action_kr} "
-                    f"— {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}")
-        return (f"⚠️ {name}({symbol}) 주문 결과 불명 — 보유 수량 변화 없음. "
-                f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
+                                  user_msg[:200], _decision_tag, "사용자 직접 지시" if not is_advice_approved else "능동 제안 승인",
+                                  True, True, price, qty, source="chat")
+            return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
+                    f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}")
 
-    return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error') or '사유 미확인'}"
+        if result.get("uncertain") and get_stock_positions_fn is not None:
+            recon = await reconcile_uncertain_order(
+                symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_stock_positions_fn, redis=redis,
+                invalidate_cache_fn=invalidate_cache_fn)
+            if recon["status"] == "filled":
+                diff_qty = int(round(recon.get("qty_diff") or qty))
+                pnl = None
+                pnl_rate = None
+                pnl_text = ""
+                if is_sell and avg_price > 0:
+                    pnl = (price - avg_price) * diff_qty
+                    pnl_rate = (price - avg_price) / avg_price * 100
+                    pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                            VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
+                        """, symbol, action.upper(), float(price), float(diff_qty),
+                            float(price) * diff_qty, _strategy_tag + "(응답지연)", pnl)
+                except Exception:
+                    pass
+                try:
+                    for k in ("cache:positions:stock", "cache:account:stock"):
+                        await redis.delete(k)
+                except Exception:
+                    pass
+                await send_telegram_fn(
+                    f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 확인 (응답 지연)</b>\n"
+                    f"가격: {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}",
+                    dest="personal")
+                if not CHANNEL_SLIM:
+                    await send_telegram_fn(
+                        _fill_channel_summary(name, symbol, action_kr, diff_qty, price, pnl_rate), dest="channel")
+                await log_journal_fn("stock_trader", symbol, name, action, _strategy_tag,
+                                      user_msg[:200], _decision_tag_uncertain,
+                                      "사용자 직접 지시(응답지연 체결확인)" if not is_advice_approved else "능동 제안 승인(응답지연 체결확인)",
+                                      True, True, price, diff_qty, source="chat")
+                return (f"✅ 체결 확인(응답 지연) — {name}({symbol}) {diff_qty}주 {action_kr} "
+                        f"— {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}")
+            return (f"⚠️ {name}({symbol}) 주문 결과 불명 — 보유 수량 변화 없음. "
+                    f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
+
+        return f"❌ {name}({symbol}) {action_kr} 주문 실패: {result.get('error') or '사유 미확인'}"
+
+    # 매수 판단과 주문을 신호 경로(stark/execution_guard.execute())와 같은 Lock으로
+    # 직렬화한다 — 보유 종목수 확인부터 주문 체결 반영까지가 한 락 안에 들어와야 동시에
+    # 들어온 신호 매수와 채팅 매수가 둘 다 한도 체크를 통과해 한도를 넘기는 걸 막을 수 있다.
+    # 매도는 이 락과 무관하게 즉시 진행된다(손절·익절이 매수 처리 대기 때문에 지연되면
+    # 안 됨, [AT] fix/buy-lock-chat-path).
+    try:
+        async with buy_lock_scope(is_buy, timeout=CHAT_BUY_LOCK_WAIT_SEC):
+            return await _execute_trade()
+    except BuyLockTimeout:
+        return f"⏳ {name}({symbol}) 다른 매수 처리 중 — 잠시 후 다시 시도해주세요"

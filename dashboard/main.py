@@ -700,12 +700,27 @@ async def _jarvis_stock_scanner():
         except Exception as e:
             logger.warning(f"🔍 거래일 확인 실패: {e}")
 
+        # 티커 목록 조회가 끝까지 실패할 경우의 최후 폴백 — DB 종목 유니버스(stocks 테이블).
+        # pykrx 재시도도 KRX 자체가 막힌 상황이라 소용없을 수 있으므로, 그날 전체를
+        # 빈 목록으로 흘려보내지 않도록 미리 조회해둔다.
+        db_universe_symbols = []
+        try:
+            async with db_pool.acquire() as conn:
+                db_universe_symbols = [r["symbol"] for r in await conn.fetch(
+                    "SELECT symbol FROM stocks WHERE is_active=TRUE"
+                )]
+            logger.info(f"🔍 DB 종목 유니버스 폴백 준비: {len(db_universe_symbols)}개")
+        except Exception as e:
+            logger.warning(f"🔍 DB 종목 유니버스 조회 실패(무시): {e}")
+
         loop = asyncio.get_event_loop()
 
         def _scan():
             import time as _t
             results = []
             stats = {"total": 0, "no_data": 0, "low_price": 0, "scored": 0, "err": 0}
+            fallback_markets = []
+            db_universe_used = False
             for market in ["KOSPI", "KOSDAQ"]:
                 # KRX가 간헐적으로 빈 응답 반환 → 최대 3회 재시도
                 tickers = []
@@ -720,8 +735,18 @@ async def _jarvis_stock_scanner():
                     _t.sleep(3)
                 logger.info(f"🔍 {market} 종목 수: {len(tickers)}")
                 if not tickers:
-                    logger.error(f"🔍 {market} 티커 목록 조회 최종 실패 — 스킵")
-                    continue
+                    # DB 종목 유니버스는 시장 구분 없이 전체를 담고 있으므로 한 번만 사용한다
+                    # (양쪽 다 실패해도 같은 유니버스를 두 번 스캔하지 않도록).
+                    if db_universe_used:
+                        logger.error(f"🔍 {market} 티커 목록 조회 최종 실패 — 스킵(DB 유니버스는 이미 사용)")
+                        continue
+                    if not db_universe_symbols:
+                        logger.error(f"🔍 {market} 티커 목록 조회 최종 실패 — DB 유니버스도 없음, 스킵")
+                        continue
+                    logger.error(f"🔍 {market} 티커 목록 조회 최종 실패 — DB 종목 유니버스로 대체")
+                    tickers = db_universe_symbols
+                    db_universe_used = True
+                    fallback_markets.append(market)
                 try:
                     for ticker in tickers:  # 전체 종목
                         stats["total"] += 1
@@ -824,26 +849,35 @@ async def _jarvis_stock_scanner():
                     continue
             logger.info(f"🔍 스캔 통계: 전체 {stats['total']} · 데이터부족 {stats['no_data']} · "
                         f"동전주 {stats['low_price']} · 통과 {stats['scored']} · 오류 {stats['err']}")
-            return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
+            return sorted(results, key=lambda x: x["score"], reverse=True)[:20], fallback_markets
 
-        candidates = await loop.run_in_executor(None, _scan)
+        candidates, fallback_markets = await loop.run_in_executor(None, _scan)
+
+        fallback_notes = []
+        if fallback_markets:
+            fallback_notes.append(f"⚠️ {'/'.join(fallback_markets)} 종목목록 조회 실패 → DB 유니버스 대체")
 
         if not candidates:
             logger.warning("🔍 pykrx 스캔 실패/0종목 → KIS API 폴백 스캔 시도")
             candidates = await _kis_scan_candidates()
+            fallback_notes.append("⚠️ pykrx 스캔 0종목 → KIS API 폴백 사용")
 
         if candidates is None:
             # 스캔 자체 실패 → 기존 watchlist 보존
             logger.error("🔍 스캔 실패 — 기존 watchlist 유지")
-            await _send_telegram(f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n⚠️ 스캔 실패 (기존 감시종목 유지)", dest="personal")
+            note = ("\n".join(fallback_notes) + "\n") if fallback_notes else ""
+            await _send_telegram(
+                f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n{note}⚠️ 스캔 실패 (기존 감시종목 유지)",
+                dest="personal")
             return
 
         if not candidates:
             # 스캔은 성공했으나 통과 종목 없음 → 잔재 정리
             cleaned = await _cleanup_scanner_watchlist()
             logger.info(f"🔍 스캔 완료: 유망 종목 없음 (잔재 {cleaned}개 정리)")
+            note = ("\n".join(fallback_notes) + "\n") if fallback_notes else ""
             await _send_telegram(
-                f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n유망 종목 없음"
+                f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n{note}유망 종목 없음"
                 + (f" · 기존 {cleaned}종목 해제" if cleaned else ""),
                 dest="personal"
             )
@@ -897,6 +931,8 @@ async def _jarvis_stock_scanner():
                     added.append(f"  {gc}{c['name']}({c['symbol']}) {c['close']:,}원 {c['change']:+.1f}%{rsi_tag}{mom_tag}")
 
         msg = f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n"
+        if fallback_notes:
+            msg += "\n".join(fallback_notes) + "\n"
         msg += f"총 {len(candidates)}종목 선정 (재선정)"
         if deactivated:
             msg += f" · 기존 {deactivated}종목 해제"

@@ -17,6 +17,7 @@ LLM을 호출하지 않는다. execute()는 decision_engine이 이미 내린 판
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("stark.execution_guard")
@@ -42,12 +43,25 @@ class AsyncRLock:
         self._owner: Optional[asyncio.Task] = None
         self._count = 0
 
-    async def acquire(self) -> bool:
+    async def acquire(self, timeout: Optional[float] = None) -> bool:
+        """timeout(초) 안에 못 얻으면 False를 반환한다(None이면 무제한 대기).
+
+        타임아웃 래핑은 내부 asyncio.Lock().acquire()만 감싼다 — asyncio.wait_for()는
+        코루틴을 받으면 내부적으로 새 Task로 스케줄링하므로, 이 메서드 전체를 wait_for로
+        감싸면 current_task()가 바깥 태스크가 아닌 wait_for가 만든 임시 태스크를 가리키게
+        되어 owner가 잘못 기록되고(릴리스 시 "Cannot release un-acquired lock") 터진다.
+        asyncio.Lock 자체는 소유자 개념이 없어 내부 acquire만 감싸는 건 안전하다."""
         me = asyncio.current_task()
         if self._owner == me:
             self._count += 1
             return True
-        await self._lock.acquire()
+        if timeout is None:
+            await self._lock.acquire()
+        else:
+            try:
+                await asyncio.wait_for(self._lock.acquire(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return False
         self._owner = me
         self._count = 1
         return True
@@ -83,6 +97,37 @@ def reset_buy_lock() -> None:
     """테스트 또는 이벤트루프 격리용 lock 리셋"""
     global _buy_lock
     _buy_lock = None
+
+
+class BuyLockTimeout(Exception):
+    """매수 락 획득 대기 시간 초과 — 다른 매수가 이미 처리 중이니 호출부는 주문을 보류해야
+    한다([AT] fix/buy-lock-chat-path)."""
+
+
+# 채팅 직접매수·제안 승인 매수가 락 획득을 무한정 기다리지 않도록 두는 상한(초). KIS 주문
+# 타임아웃(10s) + 토큰 만료 시 강제 재발급 후 1회 재시도(추가 최대 10s)를 합친 최악의 집행
+# 시간을 버틸 수 있도록 여유를 둔다.
+CHAT_BUY_LOCK_WAIT_SEC = 25.0
+
+
+@asynccontextmanager
+async def buy_lock_scope(active: bool, timeout: Optional[float] = None):
+    """매수 경로(신호·채팅 직접매수·제안 승인)가 공유하는 get_buy_lock() 진입 범위.
+
+    active=False(매도 등)면 락을 전혀 잡지 않는다 — 매도는 매수 처리와 무관하게 즉시
+    진행돼야 한다(손절·익절이 매수 락 대기 때문에 지연되면 안 됨).
+    timeout을 주면 그 시간 안에 못 얻었을 때 BuyLockTimeout을 던진다(None이면 신호 경로처럼
+    매수 판단을 절대 건너뛰면 안 되는 경로용으로 무제한 대기한다)."""
+    if not active:
+        yield
+        return
+    lock = get_buy_lock()
+    if not await lock.acquire(timeout=timeout):
+        raise BuyLockTimeout()
+    try:
+        yield
+    finally:
+        await lock.release()
 
 
 async def _get_max_positions(pool: Any, default: int = 5) -> int:
@@ -539,8 +584,9 @@ async def execute(
     reply = decision.get("reply", "")
     is_buy = action in ("buy", "BUY")
 
-    # (2) 매수 판단과 주문을 하나의 Lock으로 직렬화
-    async with get_buy_lock():
+    # (2) 매수 판단과 주문을 하나의 Lock으로 직렬화 — 매도는 이 락과 무관하게 즉시 진행된다
+    # (손절·익절이 매수 처리 대기 때문에 지연되면 안 됨, [AT] fix/buy-lock-chat-path).
+    async with buy_lock_scope(is_buy):
         # (0) 직전 같은 종목·같은 방향 주문이 응답불명(uncertain) 상태로 끝나 재확인 대기
         # 중이면 중복 주문을 막는다 ([AT] order-result-reconcile)
         if redis is not None and await check_order_uncertain_block(symbol, is_buy, redis):

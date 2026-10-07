@@ -28,6 +28,7 @@ except ImportError:
 
 from market.universe import Universe  # noqa: E402
 from router.handlers import order_handler  # noqa: E402
+from stark import execution_guard  # noqa: E402
 
 
 class FakePriceResponse:
@@ -187,6 +188,13 @@ class TestHandleAdviceResponse(unittest.IsolatedAsyncioTestCase):
 
 
 class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # get_buy_lock()은 모듈 전역 싱글톤 asyncio.Lock이라 이벤트루프에 바인딩된다.
+        # IsolatedAsyncioTestCase는 테스트마다 새 이벤트루프를 쓰므로, 이전 테스트에서
+        # 만들어진 락을 그대로 두면 "bound to a different event loop" 오류가 난다
+        # ([AT] fix/buy-lock-chat-path — 이 핸들러가 락을 쓰게 되면서 필요해짐).
+        execution_guard.reset_buy_lock()
+
     async def test_no_trigger_keyword_returns_none(self):
         reply = await order_handler.handle_proposal_response(
             "오늘 날씨 어때", redis=FakeRedis(), kis_order_fn=None, log_journal_fn=None, send_telegram_fn=None)
@@ -225,8 +233,12 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
         async def send_telegram(text, **kw):
             sent.append(text)
 
+        async def get_positions():
+            return {"success": True, "data": []}
+
         reply = await order_handler.handle_proposal_response(
-            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=send_telegram)
+            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+            send_telegram_fn=send_telegram, get_positions_fn=get_positions)
         self.assertIn("매수 체결", reply)
         self.assertEqual(len(logged), 1)
         # 매수 체결은 개인방(전체 메시지)으로 간다. CHANNEL_SLIM=True(기본, [AT] feat/channel-slim)
@@ -246,12 +258,70 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
         async def log_journal(*args, **kwargs):
             pass
 
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        reply = await order_handler.handle_proposal_response(
+            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=None,
+            get_positions_fn=get_positions)
+        self.assertIn("매수 실패", reply)
+
+    async def test_approve_blocks_fail_closed_when_positions_fn_missing(self):
+        """get_positions_fn 미주입 시 한도 확인 불가로 매수를 차단해야 한다(fail-closed,
+        [AT] fix/buy-lock-chat-path — 이 경로는 원래 한도체크 자체가 없었다)."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 1}),
+        })
+        orders = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def log_journal(*args, **kwargs):
+            pass
+
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=None)
-        self.assertIn("매수 실패", reply)
+        self.assertIn("⛔", reply)
+        self.assertEqual(len(orders), 0)
+
+    async def test_approve_blocked_by_max_positions_limit(self):
+        """제안 승인 매수도 보유 종목수 한도를 넘기면 차단돼야 한다 — 이전엔 이 경로에
+        한도체크가 전혀 없어 주문이 그대로 나갔다([AT] fix/buy-lock-chat-path)."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 1}),
+        })
+        orders = []
+        held = [{"symbol": f"{100000+i:06d}", "qty": 1} for i in range(5)]
+
+        async def kis_order(symbol, price, qty, is_buy):
+            orders.append((symbol, price, qty, is_buy))
+            return {"success": True}
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def get_positions():
+            return {"success": True, "data": list(held)}
+
+        reply = await order_handler.handle_proposal_response(
+            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=None,
+            get_positions_fn=get_positions, pool=FakePool())
+        self.assertIn("한도", reply)
+        self.assertEqual(len(orders), 0)
 
 
 class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # get_buy_lock()은 모듈 전역 싱글톤이라 이벤트루프에 바인딩된다 — 테스트마다
+        # 새 이벤트루프를 쓰는 IsolatedAsyncioTestCase에서는 매 테스트 시작 시 리셋해야
+        # 이전 테스트의 락이 남아 "bound to a different event loop" 오류가 나지 않는다
+        # ([AT] fix/buy-lock-chat-path).
+        execution_guard.reset_buy_lock()
+
     async def test_no_buy_sell_keyword_returns_none(self):
         reply = await order_handler.handle_trade_command(
             "안녕", pool=None, redis=None, universe=Universe(None), get_kis_token_fn=None,

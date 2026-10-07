@@ -124,67 +124,80 @@ universe: Universe = Universe(None)
 # ── KIS 토큰 캐시 ──────────────────────────────────────
 import aiohttp as _aiohttp
 _kis_token_cache: dict = {"token": "", "expires": 0}
+_kis_token_lock: Optional[asyncio.Lock] = None
 
 async def get_kis_token(force_new: bool = False) -> str:
-    """KIS 액세스 토큰 — Redis 캐시 우선 (force_new=True면 강제 재발급)"""
+    """KIS 액세스 토큰 — Redis 캐시 우선 (force_new=True면 강제 재발급).
+    모든 KIS 호출 경로가 이 함수를 통해서만 토큰을 받아야 한다 — 발급은 락으로
+    직렬화해 동시에 여러 호출이 들어와도 실제 발급은 한 번만 일어난다."""
+    global _kis_token_lock
     import time
     now = time.time()
 
     redis_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
-    if force_new:
-        _kis_token_cache["token"] = None
-        _kis_token_cache["expires"] = 0
+
+    # 1. 메모리 캐시 확인 (락 없이 빠른 경로)
+    if not force_new and _kis_token_cache["token"] and now < _kis_token_cache["expires"]:
+        return _kis_token_cache["token"]
+
+    if _kis_token_lock is None:
+        _kis_token_lock = asyncio.Lock()
+
+    async with _kis_token_lock:
+        now = time.time()
+        if force_new:
+            _kis_token_cache["token"] = None
+            _kis_token_cache["expires"] = 0
+            try:
+                if redis_client:
+                    await redis_client.delete(redis_key)
+            except Exception:
+                pass
+        elif _kis_token_cache["token"] and now < _kis_token_cache["expires"]:
+            # 락을 기다리는 동안 다른 호출이 이미 발급을 끝냈으면 그 결과를 재사용
+            return _kis_token_cache["token"]
+
+        # 2. Redis 캐시 확인 (모의투자/실전 구분)
         try:
-            if redis_client:
-                await redis_client.delete(redis_key)
+            if redis_client and not force_new:
+                cached = await redis_client.get(redis_key)
+                if cached:
+                    token = cached if isinstance(cached, str) else cached.decode('utf-8')
+                    _kis_token_cache["token"] = token
+                    _kis_token_cache["expires"] = now + 82800  # 23시간
+                    return token
         except Exception:
             pass
 
-    # 1. 메모리 캐시 확인
-    if _kis_token_cache["token"] and now < _kis_token_cache["expires"]:
-        return _kis_token_cache["token"]
-
-    # 2. Redis 캐시 확인 (모의투자/실전 구분)
-    try:
-        if redis_client and not force_new:
-            cached = await redis_client.get(redis_key)
-            if cached:
-                token = cached if isinstance(cached, str) else cached.decode('utf-8')
-                _kis_token_cache["token"] = token
-                _kis_token_cache["expires"] = now + 82800  # 23시간
+        # 3. 새 토큰 발급
+        try:
+            import ssl as _ssl_mod
+            _ssl_ctx = _ssl_mod.create_default_context()
+            _ssl_ctx.check_hostname = False
+            _ssl_ctx.verify_mode = _ssl_mod.CERT_NONE
+            base = config.kis_base_url
+            async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_ssl_ctx)) as session:
+                res = await session.post(f"{base}/oauth2/tokenP", json={
+                    "grant_type": "client_credentials",
+                    "appkey": config.kis_app_key,
+                    "appsecret": config.kis_app_secret,
+                }, timeout=_aiohttp.ClientTimeout(total=10))
+                data = await res.json()
+                token = data.get("access_token", "")
+                if token:
+                    _kis_token_cache["token"] = token
+                    _kis_token_cache["expires"] = now + 82800  # 23시간
+                    # Redis에 저장
+                    try:
+                        if redis_client:
+                            save_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
+                            await redis_client.setex(save_key, 82800, token)
+                    except Exception:
+                        pass
                 return token
-    except Exception:
-        pass
-
-    # 3. 새 토큰 발급
-    try:
-        import ssl as _ssl_mod
-        _ssl_ctx = _ssl_mod.create_default_context()
-        _ssl_ctx.check_hostname = False
-        _ssl_ctx.verify_mode = _ssl_mod.CERT_NONE
-        base = config.kis_base_url
-        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_ssl_ctx)) as session:
-            res = await session.post(f"{base}/oauth2/tokenP", json={
-                "grant_type": "client_credentials",
-                "appkey": config.kis_app_key,
-                "appsecret": config.kis_app_secret,
-            }, timeout=_aiohttp.ClientTimeout(total=10))
-            data = await res.json()
-            token = data.get("access_token", "")
-            if token:
-                _kis_token_cache["token"] = token
-                _kis_token_cache["expires"] = now + 82800  # 23시간
-                # Redis에 저장
-                try:
-                    if redis_client:
-                        save_key = "kis:paper_token" if config.KIS_IS_PAPER else "kis:access_token"
-                        await redis_client.setex(save_key, 82800, token)
-                except Exception:
-                    pass
-            return token
-    except Exception as e:
-        logger.error(f"KIS 토큰 발급 실패: {e}")
-        return _kis_token_cache.get("token", "")
+        except Exception as e:
+            logger.error(f"KIS 토큰 발급 실패: {e}")
+            return _kis_token_cache.get("token", "")
 
 def _code_to_name_sync(code: str) -> str:
     """메모리 캐시만으로 즉시 조회 (동기, DB 접근 없음) — 실패 시 code 그대로 반환.
@@ -3090,19 +3103,12 @@ async def get_single_price(symbol: str):
         import aiohttp as http
         base_url = config.kis_base_url
 
-        # 토큰 발급
+        # 토큰 발급 — 공용 캐시(get_kis_token) 재사용, 매 호출마다 재발급하지 않음
+        token = await get_kis_token()
+        if not token:
+            return {"success": False, "error": "KIS 토큰 발급 실패"}
+
         async with http.ClientSession() as sess:
-            token_res = await sess.post(f"{base_url}/oauth2/tokenP", json={
-                "grant_type": "client_credentials",
-                "appkey": config.kis_app_key,
-                "appsecret": config.kis_app_secret,
-            })
-            token_data = await token_res.json()
-            token = token_data.get("access_token", "")
-
-            if not token:
-                return {"success": False, "error": "KIS 토큰 발급 실패"}
-
             # 현재가 조회
             headers = {
                 "authorization": f"Bearer {token}",
@@ -5156,13 +5162,9 @@ async def _ask_gemini_direct(message: str, trades_since: Optional[datetime] = No
                 try:
                     import aiohttp as http
                     base_url = config.kis_base_url
+                    # 토큰 발급 — 공용 캐시(get_kis_token) 재사용, 매 호출마다 재발급하지 않음
+                    token = await get_kis_token()
                     async with http.ClientSession() as sess:
-                        tr = await sess.post(f"{base_url}/oauth2/tokenP", json={
-                            "grant_type": "client_credentials",
-                            "appkey": config.kis_app_key,
-                            "appsecret": config.kis_app_secret,
-                        })
-                        token = (await tr.json()).get("access_token", "")
                         hdrs = {"authorization": f"Bearer {token}",
                                 "appkey": config.kis_app_key,
                                 "appsecret": config.kis_app_secret,
@@ -5507,14 +5509,9 @@ async def _get_stock_balance_raw():
         try:
             import aiohttp as http
             base = config.kis_base_url
+            # 토큰 발급 — 공용 캐시(get_kis_token) 재사용, 매 호출마다 재발급하지 않음
+            token = await get_kis_token()
             async with http.ClientSession() as session:
-                token_res = await session.post(f"{base}/oauth2/tokenP", json={
-                    "grant_type": "client_credentials",
-                    "appkey": config.kis_app_key,
-                    "appsecret": config.kis_app_secret,
-                })
-                token_data = await token_res.json()
-                token = token_data.get("access_token", "")
                 headers = {
                     "authorization": f"Bearer {token}",
                     "appkey": config.kis_app_key,

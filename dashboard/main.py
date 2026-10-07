@@ -1403,14 +1403,20 @@ def _journal_row_rank(row) -> int:
 
 
 async def _score_journal() -> str:
-    """오늘의 판단(SKIP/EXECUTE/사람 개입 매수)을 당일 종가로 채점 → 요약 반환"""
+    """오늘의 판단(SKIP/EXECUTE/사람 개입 매수)을 당일 종가로 채점 → 요약 반환.
+
+    eval_at IS NULL인 행은 날짜를 오늘로만 제한하지 않고 최근 3일까지 포함한다 — KIS
+    종가 조회가 실패(속도제한 등)해 그날 채점을 못 받은 행이 다음 채점 실행 때 다시
+    시도되게 하기 위함([AT] fix/score-close-lookup). 과거 행도 조회 시점의 현재가로
+    채점되므로 당일 종가 대비로는 근사치이지만, 영구히 채점 불가 상태로 남는 것보다
+    낫다."""
     try:
         from common.telegram import CHANNEL_SLIM
         async with db_pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT id, symbol, name, action, jarvis_decision, price, principles
                 FROM trade_journal
-                WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') >= (NOW() AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '3 day'
                   AND bot='stock_trader' AND eval_at IS NULL AND price > 0
                 ORDER BY ts ASC
             """)
@@ -1433,23 +1439,36 @@ async def _score_journal() -> str:
         scored = {"exec_hit": 0, "exec_miss": 0, "skip_good": 0, "skip_missed": 0,
                   "human_hit": 0, "human_miss": 0}
         lines = []
+        sym_names = {}
+        for r in rows:
+            sym_names.setdefault(r["symbol"], r["name"] or r["symbol"])
+        failed_syms = []
         async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
-            # 종목별 종가 1회 조회
+            # 종목별 종가 1회 조회 — KIS 속도제한(EGW00201, "초당 거래건수 초과") 응답은
+            # _kis_quote_get이 자동으로 감지해 0.7초 후 최대 2회 재시도한다. 기존엔 이 재시도가
+            # 없어 속도제한에 걸린 종목이 조용히 close=0으로 빠지고 영구히 채점되지 않았다
+            # ([AT] fix/score-close-lookup).
             closes = {}
             for sym in {r["symbol"] for r in rows}:
                 try:
-                    pr = await sess.get(
-                        f"{config.kis_base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
-                        headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
-                                 "appsecret": config.kis_app_secret,
-                                 "tr_id": "FHKST01010100", "custtype": "P"},
-                        params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": sym},
-                        timeout=_aiohttp.ClientTimeout(total=8))
-                    o = (await pr.json()).get("output", {})
+                    data = await _kis_quote_get(
+                        sess, config.kis_base_url, token,
+                        "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
+                        {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": sym}, sym, "채점 종가")
+                    o = data.get("output") or {}
                     closes[sym] = int(o.get("stck_prpr", 0) or 0)
-                except Exception:
+                except Exception as e:
                     closes[sym] = 0
+                    logger.warning(
+                        f"판단 채점: 종가 조회 예외 [{sym}/{sym_names.get(sym, sym)}]: "
+                        f"{_scrub_kis_msg(e)[:120]}")
+                if closes[sym] <= 0:
+                    failed_syms.append(sym)
                 await asyncio.sleep(0.3)
+            if failed_syms:
+                logger.warning(
+                    "판단 채점: 종가 조회 실패 %d건 - %s", len(failed_syms),
+                    ", ".join(f"{s}({sym_names.get(s, s)})" for s in failed_syms))
         async with db_pool.acquire() as conn:
             # 종가 평가(eval_price/eval_pnl_rate)는 오늘 기록된 모든 판단 행에 매긴다 — 중복
             # 판단이라도 각 행은 다시 채점 대상(eval_at IS NULL)에 걸리지 않도록 전부 갱신해야
@@ -1509,8 +1528,18 @@ async def _score_journal() -> str:
                 except Exception:
                     pass
         total = sum(scored.values())
+        failed_label = (
+            f"⚠️ 채점 불가 {len(failed_syms)}건({', '.join(sym_names.get(s, s) for s in failed_syms)})\n"
+            if failed_syms else "")
         if total == 0:
-            return ""
+            if not failed_label:
+                return ""
+            # 채점된 판단은 없지만 종가 조회 실패가 있었던 경우 — 침묵 대신 명시 보고
+            # ([AT] fix/score-close-lookup)
+            summary = f"📝 오늘 판단 채점\n{failed_label}(종가 조회 실패로 채점 가능한 판단 없음)"
+            await _send_telegram(summary, dest="personal" if CHANNEL_SLIM else "channel")
+            logger.info("📝 판단 채점 완료: 0건 (채점 불가 %d건)", len(failed_syms))
+            return summary
         human_total = scored["human_hit"] + scored["human_miss"]
         summary = (f"📝 오늘 판단 채점 ({total}건)\n"
                    f"[STARK 자체 판단]\n"
@@ -1518,6 +1547,7 @@ async def _score_journal() -> str:
                    f"SKIP 잘거름 {scored['skip_good']} / 기회놓침 {scored['skip_missed']}\n"
                    + (f"[사람 개입 매수]\n적중 {scored['human_hit']} / 빗나감 {scored['human_miss']}\n"
                       if human_total else "")
+                   + failed_label
                    + "\n".join(lines[:8]))
         try:
             await redis_client.setex("jarvis:score_today", 3600 * 6, summary)

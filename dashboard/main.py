@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 from typing import Optional, Dict, Any
 
@@ -57,6 +57,7 @@ from router.handlers import directive_handler, order_handler, setting_handler, w
 from stark import context_collector, decision_engine, execution_guard
 from stark.decision_logger import get_recent_decisions, get_decisions_by_symbol
 from bot import telegram_bot
+from dashboard import kis_history_reconcile as _kis_recon
 
 import time as _time
 
@@ -311,6 +312,69 @@ async def _kis_quote_get(sess, base: str, token: str, path: str, tr_id: str, par
             logger.info(f"{label} 호출 제한 재시도 [{symbol}] {attempt + 1}/{_KIS_RATE_LIMIT_RETRIES}")
             await asyncio.sleep(_KIS_RATE_LIMIT_DELAY)
     return data
+
+
+def _kis_ccld_page_fetcher(sess, base: str, token: str, cano: str, acnt_prdt_cd: str, tr_id: str):
+    """kis_history_reconcile.PageFetcher 규격의 체결내역(inquire-daily-ccld) 페이지 조회 함수를
+    만들어 반환한다. 속도제한(EGW00201)은 _kis_quote_get과 동일한 횟수(_KIS_RATE_LIMIT_RETRIES)
+    만큼 재시도한다([AT] feat/kis-history-reconcile)."""
+    async def fetch_page(date_str: str, ctx_fk100: str, ctx_nk100: str, tr_cont: str) -> dict:
+        params = {
+            "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
+            "INQR_STRT_DT": date_str, "INQR_END_DT": date_str,
+            "SLL_BUY_DVSN_CD": "00", "INQR_DVSN": "00",
+            "PDNO": "", "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "", "ODNO": "",
+            "INQR_DVSN_3": "00", "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": ctx_fk100, "CTX_AREA_NK100": ctx_nk100,
+        }
+        headers = {
+            "authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+            "appsecret": config.kis_app_secret, "tr_id": tr_id, "custtype": "P",
+            "tr_cont": tr_cont,
+        }
+        data: dict = {}
+        resp_tr_cont = ""
+        for attempt in range(_KIS_RATE_LIMIT_RETRIES + 1):
+            async with _KIS_QUOTE_SEM:
+                resp = await sess.get(
+                    f"{base}/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                    headers=headers, params=params, timeout=_aiohttp.ClientTimeout(total=10))
+                data = await resp.json()
+                resp_tr_cont = resp.headers.get("tr_cont", "")
+            if not isinstance(data, dict):
+                data = {}
+            if data.get("msg_cd") != "EGW00201" and "초당" not in str(data.get("msg1", "")):
+                break
+            if attempt < _KIS_RATE_LIMIT_RETRIES:
+                logger.info(f"체결내역 조회 속도제한 재시도 [{date_str}] {attempt + 1}/{_KIS_RATE_LIMIT_RETRIES}")
+                await asyncio.sleep(_KIS_RATE_LIMIT_DELAY)
+        if data.get("msg1"):
+            data["msg1"] = _scrub_kis_msg(data["msg1"])
+        data["_resp_tr_cont"] = resp_tr_cont
+        return data
+    return fetch_page
+
+
+async def _fetch_trade_history_for_range(start_date, end_date) -> list:
+    """trade_history를 KST 날짜 구간(포함)으로 조회한다. crypto_trader는 제외(요구사항).
+    읽기 전용 — DB에 쓰지 않는다."""
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, symbol, side, quantity, ts
+            FROM trade_history
+            WHERE bot != 'crypto_trader'
+              AND DATE(ts AT TIME ZONE 'Asia/Seoul') BETWEEN $1 AND $2
+            ORDER BY ts
+        """, start_date, end_date)
+    return [
+        {
+            "id": r["id"], "symbol": r["symbol"], "side": (r["side"] or "").upper(),
+            "qty": float(r["quantity"] or 0),
+            "date": r["ts"].astimezone(KST).strftime("%Y%m%d"),
+        }
+        for r in rows
+    ]
 
 
 async def _kis_daily_get(sess, base: str, token: str, symbol: str, start: str, end: str) -> dict:
@@ -2403,6 +2467,67 @@ async def reconcile_trades_delete(id: int):
         return {"success": True, "deleted": dict(row) | {"ts": row["ts"].isoformat()}}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/jarvis/reconcile_trades_period")
+async def reconcile_trades_period(start: str = None, end: str = None):
+    """[AT] feat/kis-history-reconcile (PM 승인) — KIS 체결내역(inquire-daily-ccld)과
+    trade_history를 기간으로 대조한다. 읽기 전용(DB에 쓰지 않음). crypto_trader는 제외.
+
+    start/end: YYYY-MM-DD (KST 기준, 기본값 2026-09-01~오늘). 모의투자 기간 조회 제한에
+    대응하기 위해 KIS 조회는 항상 하루 단위로 나눠서 호출하고(PM 지시), 실패하거나 제한에
+    걸린 날짜는 unavailable_days에 명시한다."""
+    try:
+        today_kst = datetime.now(KST).date()
+        start_date = date.fromisoformat(start) if start else date(2026, 9, 1)
+        end_date = date.fromisoformat(end) if end else today_kst
+        if start_date > end_date:
+            return {"success": False, "error": "start가 end보다 늦을 수 없음"}
+
+        token = await get_kis_token()
+        if not token:
+            return {"success": False, "error": "KIS 토큰 발급 실패"}
+        acct = config.kis_account_no.replace("-", "")
+        cano = acct[:8]
+        acnt_prdt_cd = acct[8:] if len(acct) > 8 else "01"
+        tr_id = "VTTC0081R" if config.KIS_IS_PAPER else "TTTC0081R"
+
+        import ssl as _ssl
+        _ssl_ctx = _ssl.create_default_context()
+        _ssl_ctx.check_hostname = False
+        _ssl_ctx.verify_mode = _ssl.CERT_NONE
+        async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_ssl_ctx)) as sess:
+            fetch_page = _kis_ccld_page_fetcher(sess, config.kis_base_url, token, cano, acnt_prdt_cd, tr_id)
+            kis_result = await _kis_recon.fetch_kis_executions(
+                fetch_page, start_date, end_date, sleep_fn=lambda: asyncio.sleep(0.3))
+
+        db_rows = await _fetch_trade_history_for_range(start_date, end_date)
+        reconcile_result = _kis_recon.reconcile(kis_result["rows"], db_rows)
+
+        real = await get_stock_positions()
+        real_positions = {
+            p["symbol"]: {"qty": p["qty"], "avg_price": p["avg_price"]}
+            for p in (real.get("data") or [])
+        }
+        position_check = _kis_recon.check_position_consistency(kis_result["rows"], real_positions)
+
+        summary = _kis_recon.build_summary_text(
+            start_date, end_date, reconcile_result, kis_result["unavailable_days"])
+        await _send_telegram(summary, dest="personal")
+
+        return {
+            "success": True,
+            "start": start_date.isoformat(), "end": end_date.isoformat(),
+            "kis_execution_count": len(kis_result["rows"]),
+            "db_trade_count": len(db_rows),
+            "unavailable_days": kis_result["unavailable_days"],
+            "missing_in_db": reconcile_result["missing_in_db"],
+            "extra_in_db": reconcile_result["extra_in_db"],
+            "qty_mismatch": reconcile_result["qty_mismatch"],
+            "position_check": position_check,
+        }
+    except Exception as e:
+        return {"success": False, "error": _scrub_kis_msg(e)}
 
 
 @app.api_route("/api/jarvis/knowledge/clean_bad_lessons", methods=["GET", "POST"])

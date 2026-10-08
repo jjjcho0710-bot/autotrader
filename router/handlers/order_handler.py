@@ -18,6 +18,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from common.fill_recording import partial_fill_note, resolve_filled_quantity
+from common.late_fill_tracker import register_partial_fill
 from common.position_sizing import (
     DEFAULT_STOP_LOSS_PCT,
     compute_atr_pct,
@@ -171,6 +172,7 @@ async def handle_proposal_response(
             requested_qty = int(target["qty"])
             if order.get("success") and not order.get("fill_unconfirmed"):
                 filled_qty = resolve_filled_quantity(order, requested_qty)
+                fill_note = partial_fill_note(filled_qty, requested_qty)
                 await _invalidate_cache(invalidate_cache_fn)
                 # 체결 수량이 0이면 trade_history에 체결 행을 만들지 않는다.
                 if pool and filled_qty > 0:
@@ -183,11 +185,16 @@ async def handle_proposal_response(
                                 float(target["price"]) * filled_qty, target.get("strategy", "제안"))
                     except Exception:
                         pass
+                if fill_note and order.get("order_no"):
+                    await register_partial_fill(
+                        redis, order_no=order["order_no"], symbol=symbol, side="BUY", bot="stock_trader",
+                        requested_qty=requested_qty, recorded_qty=filled_qty,
+                        strategy=target.get("strategy", "제안"), price=float(target["price"]),
+                    )
                 await log_journal_fn("stock_trader", symbol, target["name"], "buy",
                                       target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
                                       target.get("reason", ""), True, True,
                                       int(target["price"]), filled_qty)
-                fill_note = partial_fill_note(filled_qty, requested_qty)
                 label = fill_note or "체결"
                 msg = (f"✅ <b>{target['name']} 매수 {label} (주인 승인)</b>\n"
                        f"{filled_qty}주 @ {int(target['price']):,}원")
@@ -407,6 +414,7 @@ async def handle_trade_command(
 
         if result.get("success") and not result.get("fill_unconfirmed"):
             filled_qty = resolve_filled_quantity(result, qty)
+            fill_note = partial_fill_note(filled_qty, qty)
             pnl = None
             pnl_rate = None
             pnl_text = ""
@@ -426,6 +434,12 @@ async def handle_trade_command(
                             _strategy_tag, pnl)
                 except Exception:
                     pass
+            if fill_note and result.get("order_no"):
+                await register_partial_fill(
+                    redis, order_no=result["order_no"], symbol=symbol, side=action.upper(), bot="stock_trader",
+                    requested_qty=qty, recorded_qty=filled_qty, strategy=_strategy_tag, price=price,
+                    cost_basis_avg_price=avg_price if (is_sell and avg_price > 0) else None,
+                )
             # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
             try:
                 for k in ("cache:positions:stock", "cache:account:stock"):
@@ -433,7 +447,6 @@ async def handle_trade_command(
             except Exception:
                 pass
             await _invalidate_cache(invalidate_cache_fn)
-            fill_note = partial_fill_note(filled_qty, qty)
             status_label = fill_note or "체결"
             done_label = fill_note or "완료"
             await send_telegram_fn(

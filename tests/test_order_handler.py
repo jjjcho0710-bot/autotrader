@@ -84,6 +84,9 @@ class FakeRedis:
         v = self.store.get(key)
         return v
 
+    async def setex(self, key, ttl, value):
+        self.store[key] = value
+
     async def delete(self, key):
         self.deleted.append(key)
         self.store.pop(key, None)
@@ -276,6 +279,37 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
         self.assertIn("일부 체결 3/10주 (미체결 7주)", reply)
         self.assertEqual(len(pool._conn.inserted), 1)
         self.assertEqual(pool._conn.inserted[0][2], 3.0)  # quantity 컬럼 = 체결 수량(주문 10 아님)
+
+    async def test_approve_partial_fill_registers_late_fill_tracking(self):
+        """[AT] fix/late-fill-followup: 제안 승인 매수가 부분체결이면 주문번호 기준으로
+        common.late_fill_tracker 후속 추적이 등록돼야 한다."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 10}),
+        })
+        pool = FakePool()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "P1", "filled_qty": 3, "partial": True}
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        await order_handler.handle_proposal_response(
+            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+            send_telegram_fn=send_telegram, get_positions_fn=get_positions, pool=pool)
+
+        ctx = json.loads(redis.store["late_fill_pending:P1"])
+        self.assertEqual(ctx["symbol"], "005930")
+        self.assertEqual(ctx["side"], "BUY")
+        self.assertEqual(ctx["requested_qty"], 10)
+        self.assertEqual(ctx["recorded_qty"], 3)
 
     async def test_approve_order_failure_reports_error(self):
         redis = FakeRedis({
@@ -686,6 +720,75 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("주문 결과 불명", reply)
         self.assertEqual(len(pool._conn.inserted), 0)
+
+    async def test_partial_fill_registers_late_fill_tracking(self):
+        """[AT] fix/late-fill-followup: 채팅 매도 지시가 부분체결로 끝나면 주문번호 기준으로
+        common.late_fill_tracker 후속 추적이 등록돼야 한다(10/8 부국철강 사고 — 34주 기록
+        후 뒤늦게 전량 체결됐지만 늘어난 수량은 전혀 기록되지 않았다)."""
+        universe = Universe(None)
+        universe.replace_cache({"부국철강": "026940"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"data": [{"symbol": "026940", "qty": 100, "avg_price": 5000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "T1", "filled_qty": 34, "partial": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        await order_handler.handle_trade_command(
+            "부국철강 100주 매도", pool=pool, redis=redis, universe=universe,
+            get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+            get_stock_positions_fn=get_stock_positions,
+            send_telegram_fn=send_telegram, log_journal_fn=log_journal,
+            get_quote_fn=make_quote_fn({"output": {"stck_prpr": "5000", "hts_kor_isnm": "부국철강"}}))
+
+        ctx = json.loads(redis.store["late_fill_pending:T1"])
+        self.assertEqual(ctx["symbol"], "026940")
+        self.assertEqual(ctx["side"], "SELL")
+        self.assertEqual(ctx["requested_qty"], 100)
+        self.assertEqual(ctx["recorded_qty"], 34)
+        self.assertEqual(ctx["cost_basis_avg_price"], 5000.0)
+
+    async def test_full_fill_does_not_register_late_fill_tracking(self):
+        """전량 체결이면 추적 대상이 아니므로 등록하지 않는다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"success": True, "data": []}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "T3"}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        await order_handler.handle_trade_command(
+            "삼성전자 2주 매수", pool=pool, redis=redis, universe=universe,
+            get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+            get_stock_positions_fn=get_stock_positions,
+            send_telegram_fn=send_telegram, log_journal_fn=log_journal,
+            get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
+
+        self.assertNotIn("late_fill_pending:T3", redis.store)
 
 
 if __name__ == "__main__":

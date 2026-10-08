@@ -1323,17 +1323,13 @@ class StockTrader:
                                 logger.info(
                                     f"⏳ AI 익절 매도 체결 확인 대기 [{symbol}] (pending, 판단 {decision})")
                             else:
-                                # 매도 실패: 원인을 로그·매매일지에 남기고, 반복 재시도 방지 위해 쿨다운 대폭 연장
+                                # 매도 실패: 체결이 전혀 없었으므로 trade_history에는 기록하지
+                                # 않는다(체결 수량 0인 행을 남기면 안 됨 — [AT] fix/record-filled-qty).
+                                # 원인은 로그·텔레그램 알림으로만 남기고, 반복 재시도 방지 위해
+                                # 쿨다운을 대폭 연장한다.
                                 _err = result.get("error", "알 수 없음")
                                 logger.warning(f"AI 익절 매도 실패 [{symbol}]: {_err}")
                                 await cache.client.setex(f"exit_ai_cool:{symbol}", 6 * 3600, "1")
-                                await db.insert_trade(
-                                    bot="stock_trader", asset_type="stock",
-                                    symbol=symbol, side="SELL",
-                                    price=cur_price, quantity=0,
-                                    amount=0,
-                                    strategy=f"{strat_name}_AI익절{decision}_실패:{_err[:40]}", pnl=0,
-                                )
                                 try:
                                     from common.alert_throttle import should_send_symbol_alert
                                     should_send = await should_send_symbol_alert(

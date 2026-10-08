@@ -20,6 +20,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
+from common.fill_recording import partial_fill_note, resolve_filled_quantity
+
 logger = logging.getLogger("stark.execution_guard")
 
 # 악재성 공시 키워드 — 매칭되면 투자경고 종목 차단과 동일한 수준으로 신규·추가매수를
@@ -475,10 +477,17 @@ async def _finalize_filled_order(
     strategy: str, reason: str, is_buy: bool, is_small: bool, reply: str,
     pre_avg_price: Optional[float], pool: Any, redis: Any, send_telegram_fn, log_journal_fn,
     save_trade_memory_fn, invalidate_cache_fn, label: str = "완료",
-    send_channel_fn: Optional[Any] = None,
+    send_channel_fn: Optional[Any] = None, requested_qty: Optional[float] = None,
 ) -> Dict[str, Any]:
     """체결이 확인된 주문(정상 성공 또는 응답불명→보유수량 재확인으로 체결 확정)의 공통
-    후처리: in-flight 기록, pnl 계산, trade_history/매매일지 기록, 텔레그램 보고, 캐시 무효화."""
+    후처리: in-flight 기록, pnl 계산, trade_history/매매일지 기록, 텔레그램 보고, 캐시 무효화.
+
+    qty는 항상 "실제 체결 수량"이어야 한다(주문 수량이 아님) — 호출부가 kis_order_fn
+    결과에서 common.fill_recording.resolve_filled_quantity()로 미리 판정해 넘긴다.
+    requested_qty(원래 주문 수량)가 qty보다 크면 부분체결이므로 "완료" 대신 "일부 체결
+    N/M주 (미체결 K주)"로 보고한다([AT] fix/record-filled-qty)."""
+    if requested_qty is None:
+        requested_qty = qty
     if is_buy and bot == "stock_trader" and redis is not None:
         try:
             await redis.setex(f"stark:inflight_buy:{symbol}", 120, "1")
@@ -493,19 +502,23 @@ async def _finalize_filled_order(
         pnl_rate = (price - pre_avg_price) / pre_avg_price * 100
         pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
 
-    if pool:
+    # 체결 수량이 0이면(판정 불가 등) trade_history에 체결 행을 만들지 않는다.
+    if pool and qty > 0:
         async with pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
             """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy, pnl)
 
+    fill_note = partial_fill_note(qty, requested_qty)
+    label_text = "일부 체결" if fill_note else label
     emoji = "📈" if action == "buy" else "📉"
     msg = (
-        f"{emoji} <b>{name} {action_kr} {label}</b>\n"
+        f"{emoji} <b>{name} {action_kr} {label_text}</b>\n"
         f"가격: {price:,}원 × {qty:.0f}주\n"
         f"금액: {price*qty:,.0f}원{pnl_text}\n"
-        f"전략: {strategy}\n"
+        + (f"{fill_note}\n" if fill_note else "")
+        + f"전략: {strategy}\n"
         f"한강뷰매니저 판단: {reply[:80]}"
     )
     await send_telegram_fn(msg)
@@ -521,7 +534,7 @@ async def _finalize_filled_order(
             await send_channel_fn(channel_line)
         except Exception as e:
             logger.warning(f"채널 체결 요약 전송 실패: {e}")
-    logger.info(f"✅ Jarvis 자동 {action_kr}({label}): {symbol} {price:,}원 × {qty}주")
+    logger.info(f"✅ Jarvis 자동 {action_kr}({label_text}): {symbol} {price:,}원 × {qty}주")
     try:
         for k in ("cache:positions:stock", "cache:account:stock"):
             await redis.delete(k)
@@ -549,6 +562,10 @@ async def _finalize_filled_order(
     if pnl is not None:
         result["pnl"] = pnl
         result["pnl_rate"] = pnl_rate
+    if fill_note:
+        result["partial"] = True
+        result["filled_qty"] = qty
+        result["requested_qty"] = requested_qty
     return result
 
 
@@ -678,17 +695,21 @@ async def execute(
 
         order = await kis_order_fn(symbol, int(price), int(qty), is_buy)
 
-        if order.get("success"):
+        if order.get("success") and not order.get("fill_unconfirmed"):
+            filled_qty = resolve_filled_quantity(order, qty)
             return await _finalize_filled_order(
                 symbol=symbol, name=name, bot=bot, action=action, action_kr=action_kr,
-                price=price, qty=qty, strategy=strategy, reason=reason, is_buy=is_buy,
-                is_small=is_small, reply=reply, pre_avg_price=pre_avg_price,
+                price=price, qty=filled_qty, requested_qty=qty, strategy=strategy, reason=reason,
+                is_buy=is_buy, is_small=is_small, reply=reply, pre_avg_price=pre_avg_price,
                 pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
                 log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
                 invalidate_cache_fn=invalidate_cache_fn, send_channel_fn=send_channel_fn,
             )
 
-        if order.get("uncertain"):
+        if order.get("uncertain") or order.get("fill_unconfirmed"):
+            # fill_unconfirmed(주문은 접수됐으나 체결조회 API 자체가 실패해 수량 판정 불가)도
+            # uncertain과 동일하게 보유수량 재확인으로 실제 체결 여부를 판정한다 — 체결 수량을
+            # 모르는 채로 주문 수량을 그대로 "체결 완료"로 단정하면 안 된다([AT] fix/record-filled-qty).
             logger.warning(f"⚠️ 주문 응답 불명 [{symbol}] — 보유 수량 재확인 시작: {order.get('error')}")
             recon = await reconcile_uncertain_order(
                 symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_positions_fn,
@@ -698,8 +719,8 @@ async def execute(
                 diff_qty = recon.get("qty_diff") or qty
                 return await _finalize_filled_order(
                     symbol=symbol, name=name, bot=bot, action=action, action_kr=action_kr,
-                    price=price, qty=diff_qty, strategy=strategy, reason=reason, is_buy=is_buy,
-                    is_small=is_small, reply=reply, pre_avg_price=pre_avg_price,
+                    price=price, qty=diff_qty, requested_qty=qty, strategy=strategy, reason=reason,
+                    is_buy=is_buy, is_small=is_small, reply=reply, pre_avg_price=pre_avg_price,
                     pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
                     log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
                     invalidate_cache_fn=invalidate_cache_fn, label="체결 확인(응답 지연)",

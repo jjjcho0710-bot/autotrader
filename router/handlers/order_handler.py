@@ -17,6 +17,7 @@ import re
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
+from common.fill_recording import partial_fill_note, resolve_filled_quantity
 from common.position_sizing import (
     DEFAULT_STOP_LOSS_PCT,
     compute_atr_pct,
@@ -167,22 +168,37 @@ async def handle_proposal_response(
             pre_qty = await get_held_qty(symbol, get_positions_fn) if get_positions_fn else None
             order = await kis_order_fn(symbol, int(target["price"]), int(target["qty"]), True)
             await redis.delete(f"proposal:{symbol}")
-            if order.get("success"):
+            requested_qty = int(target["qty"])
+            if order.get("success") and not order.get("fill_unconfirmed"):
+                filled_qty = resolve_filled_quantity(order, requested_qty)
                 await _invalidate_cache(invalidate_cache_fn)
+                # 체결 수량이 0이면 trade_history에 체결 행을 만들지 않는다.
+                if pool and filled_qty > 0:
+                    try:
+                        async with pool.acquire() as conn:
+                            await conn.execute("""
+                                INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                                VALUES ('stock_trader','stock',$1,'BUY',$2,$3,$4,$5,NULL)
+                            """, symbol, float(target["price"]), float(filled_qty),
+                                float(target["price"]) * filled_qty, target.get("strategy", "제안"))
+                    except Exception:
+                        pass
                 await log_journal_fn("stock_trader", symbol, target["name"], "buy",
                                       target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
                                       target.get("reason", ""), True, True,
-                                      int(target["price"]), int(target["qty"]))
-                msg = (f"✅ <b>{target['name']} 매수 체결 (주인 승인)</b>\n"
-                       f"{target['qty']}주 @ {int(target['price']):,}원")
+                                      int(target["price"]), filled_qty)
+                fill_note = partial_fill_note(filled_qty, requested_qty)
+                label = fill_note or "체결"
+                msg = (f"✅ <b>{target['name']} 매수 {label} (주인 승인)</b>\n"
+                       f"{filled_qty}주 @ {int(target['price']):,}원")
                 await send_telegram_fn(msg, dest="personal")
                 if not CHANNEL_SLIM:
                     await send_telegram_fn(
-                        _fill_channel_summary(target["name"], symbol, "매수", target["qty"], float(target["price"])),
+                        _fill_channel_summary(target["name"], symbol, "매수", filled_qty, float(target["price"])),
                         dest="channel")
                 return msg.replace("<b>", "").replace("</b>", "")
 
-            if order.get("uncertain") and get_positions_fn is not None:
+            if (order.get("uncertain") or order.get("fill_unconfirmed")) and get_positions_fn is not None:
                 recon = await reconcile_uncertain_order(
                     symbol, True, pre_qty=pre_qty, get_positions_fn=get_positions_fn, redis=redis,
                     invalidate_cache_fn=invalidate_cache_fn)
@@ -389,24 +405,27 @@ async def handle_trade_command(
 
         result = await kis_order_fn(symbol, price, qty, is_buy)
 
-        if result.get("success"):
+        if result.get("success") and not result.get("fill_unconfirmed"):
+            filled_qty = resolve_filled_quantity(result, qty)
             pnl = None
             pnl_rate = None
             pnl_text = ""
             if is_sell and avg_price > 0:
-                pnl = (price - avg_price) * qty
+                pnl = (price - avg_price) * filled_qty
                 pnl_rate = (price - avg_price) / avg_price * 100
                 pnl_text = f"\n손익 {pnl:+,.0f}원 ({pnl_rate:+.1f}%)"
 
-            try:
-                async with pool.acquire() as conn:
-                    await conn.execute("""
-                        INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
-                        VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
-                    """, symbol, action.upper(), float(price), float(qty), float(price * qty),
-                        _strategy_tag, pnl)
-            except Exception:
-                pass
+            # 체결 수량이 0이면 trade_history에 체결 행을 만들지 않는다.
+            if filled_qty > 0:
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO trade_history (bot,asset_type,symbol,side,price,quantity,amount,strategy,pnl)
+                            VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
+                        """, symbol, action.upper(), float(price), float(filled_qty), float(price * filled_qty),
+                            _strategy_tag, pnl)
+                except Exception:
+                    pass
             # 체결 즉시 보유/계좌 캐시 무효화 — 화면에 옛 데이터 남는 것 방지
             try:
                 for k in ("cache:positions:stock", "cache:account:stock"):
@@ -414,20 +433,23 @@ async def handle_trade_command(
             except Exception:
                 pass
             await _invalidate_cache(invalidate_cache_fn)
+            fill_note = partial_fill_note(filled_qty, qty)
+            status_label = fill_note or "체결"
+            done_label = fill_note or "완료"
             await send_telegram_fn(
-                f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 ({_strategy_tag})</b>\n"
-                f"가격: {price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}",
+                f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} {status_label} ({_strategy_tag})</b>\n"
+                f"가격: {price:,}원 × {filled_qty}주 = {price*filled_qty:,}원{pnl_text}{sizing_note}",
                 dest="personal")
             if not CHANNEL_SLIM:
                 await send_telegram_fn(
-                    _fill_channel_summary(name, symbol, action_kr, qty, price, pnl_rate), dest="channel")
+                    _fill_channel_summary(name, symbol, action_kr, filled_qty, price, pnl_rate), dest="channel")
             await log_journal_fn("stock_trader", symbol, name, action, _strategy_tag,
                                   user_msg[:200], _decision_tag, "사용자 직접 지시" if not is_advice_approved else "능동 제안 승인",
-                                  True, True, price, qty, source="chat")
-            return (f"✅ [실제 체결] {name}({symbol}) {qty}주 {action_kr} 완료 — "
-                    f"{price:,}원 × {qty}주 = {price*qty:,}원{pnl_text}{sizing_note}")
+                                  True, True, price, filled_qty, source="chat")
+            return (f"✅ [실제 체결] {name}({symbol}) {filled_qty}주 {action_kr} {done_label} — "
+                    f"{price:,}원 × {filled_qty}주 = {price*filled_qty:,}원{pnl_text}{sizing_note}")
 
-        if result.get("uncertain") and get_stock_positions_fn is not None:
+        if (result.get("uncertain") or result.get("fill_unconfirmed")) and get_stock_positions_fn is not None:
             recon = await reconcile_uncertain_order(
                 symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_stock_positions_fn, redis=redis,
                 invalidate_cache_fn=invalidate_cache_fn)

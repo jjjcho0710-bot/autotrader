@@ -277,6 +277,27 @@ class FakeOrderSession:
         return self._post_result
 
 
+class FakeOrderAndFillSession:
+    """order-cash(POST) 접수 응답 1회 + inquire-daily-ccld(GET) 체결조회 응답을 순서대로
+    돌려주는 가짜 세션. aiohttp.ClientSession()이 몇 번 호출되든(주문 1회 + 체결조회 N회)
+    같은 인스턴스가 재사용된다([AT] fix/record-filled-qty 테스트 전용)."""
+    def __init__(self, post_result, get_results):
+        self._post_result = post_result
+        self._get_results = list(get_results)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def post(self, *args, **kwargs):
+        return self._post_result
+
+    def get(self, *args, **kwargs):
+        return self._get_results.pop(0)
+
+
 def _load_dashboard_main():
     import dashboard.main as dm
     return dm
@@ -334,6 +355,87 @@ class TestKisStockOrderResponseClassification(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertNotIn("uncertain", result)
         self.assertEqual(result["error"], "KIS 토큰 없음")
+
+
+# ── [AT] fix/record-filled-qty: _kis_stock_order 자체가 접수(rt_cd=0) 후 실제 체결
+# 수량을 확인하는지 검증한다. 과거엔 접수만 확인하고 바로 success=True를 돌려줘서,
+# 부분체결 주문이 전량체결로 기록·보고됐다(10/8 부국철강 100주 주문·34주 체결 사고). ─────
+
+
+class TestKisStockOrderFillConfirmation(unittest.IsolatedAsyncioTestCase):
+    async def test_full_fill_confirmed_returns_filled_qty_without_partial_flag(self):
+        """체결조회에서 주문 수량 그대로 체결됐으면 filled_qty만 돌려주고 partial은 없다."""
+        dm = _load_dashboard_main()
+        get_resp = FakePostResponse({
+            "output1": [{"odno": "O1", "tot_ccld_qty": "5", "avg_prvs": "70000"}]})
+        with patch.object(dm, "config", FakeKisConfig()), \
+             patch.object(dm, "get_kis_token", new=AsyncMock(return_value="FAKE_TOKEN")), \
+             patch("dashboard.main.asyncio.sleep", new=AsyncMock()), \
+             patch("aiohttp.ClientSession", return_value=FakeOrderAndFillSession(
+                 FakePostResponse({"rt_cd": "0", "output": {"ODNO": "O1"}}), [get_resp])):
+            result = await dm._kis_stock_order("005930", 70000, 5, True)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["order_no"], "O1")
+        self.assertEqual(result["filled_qty"], 5)
+        self.assertNotIn("partial", result)
+        self.assertNotIn("fill_unconfirmed", result)
+
+    async def test_partial_fill_sets_partial_flag_and_avg_fill_price(self):
+        """부분체결(filled_qty < 주문 qty)이면 partial=True와 매도 평균체결단가를 함께
+        돌려준다 — 10/8 부국철강 100주 주문·34주 체결 사고 재현."""
+        dm = _load_dashboard_main()
+        get_resp = FakePostResponse({
+            "output1": [{"odno": "O2", "tot_ccld_qty": "34", "avg_prvs": "5000"}]})
+        with patch.object(dm, "config", FakeKisConfig()), \
+             patch.object(dm, "get_kis_token", new=AsyncMock(return_value="FAKE_TOKEN")), \
+             patch("dashboard.main.asyncio.sleep", new=AsyncMock()), \
+             patch("aiohttp.ClientSession", return_value=FakeOrderAndFillSession(
+                 FakePostResponse({"rt_cd": "0", "output": {"ODNO": "O2"}}), [get_resp])):
+            result = await dm._kis_stock_order("026940", 5000, 100, False)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["filled_qty"], 34)
+        self.assertTrue(result["partial"])
+        self.assertEqual(result["avg_fill_price"], 5000.0)
+
+    async def test_zero_fill_after_all_retries_returns_fill_unconfirmed_not_full_qty(self):
+        """재조회 2회(+3초,+7초)까지도 체결이 0이면 주문 수량을 그대로 체결로 단정하지
+        않고 fill_unconfirmed=True로 돌려줘 호출부가 UNCERTAIN 경로로 재확인하게 한다."""
+        dm = _load_dashboard_main()
+        empty_resp_1 = FakePostResponse({"output1": []})
+        empty_resp_2 = FakePostResponse({"output1": []})
+        empty_resp_3 = FakePostResponse({"output1": []})
+        with patch.object(dm, "config", FakeKisConfig()), \
+             patch.object(dm, "get_kis_token", new=AsyncMock(return_value="FAKE_TOKEN")), \
+             patch("dashboard.main.asyncio.sleep", new=AsyncMock()), \
+             patch("aiohttp.ClientSession", return_value=FakeOrderAndFillSession(
+                 FakePostResponse({"rt_cd": "0", "output": {"ODNO": "O3"}}),
+                 [empty_resp_1, empty_resp_2, empty_resp_3])):
+            result = await dm._kis_stock_order("005930", 70000, 5, True)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result.get("fill_unconfirmed"))
+        self.assertNotIn("filled_qty", result)
+
+    async def test_fill_query_exception_returns_fill_unconfirmed_immediately(self):
+        """체결조회 API 자체가 예외로 실패하면(네트워크 오류 등) 재시도 없이 즉시
+        fill_unconfirmed=True — 주문 수량을 그대로 체결 완료로 단정하지 않는다."""
+        dm = _load_dashboard_main()
+
+        class RaisingGetSession(FakeOrderAndFillSession):
+            def get(self, *args, **kwargs):
+                raise ConnectionError("체결조회 실패")
+
+        with patch.object(dm, "config", FakeKisConfig()), \
+             patch.object(dm, "get_kis_token", new=AsyncMock(return_value="FAKE_TOKEN")), \
+             patch("dashboard.main.asyncio.sleep", new=AsyncMock()), \
+             patch("aiohttp.ClientSession", return_value=RaisingGetSession(
+                 FakePostResponse({"rt_cd": "0", "output": {"ODNO": "O4"}}), [])):
+            result = await dm._kis_stock_order("005930", 70000, 5, True)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result.get("fill_unconfirmed"))
 
 
 # ── (f) 라우터 경로(route_late) end-to-end ────────────────────────────────

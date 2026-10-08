@@ -11,6 +11,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -245,6 +246,36 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
         # 에서는 채널 한 줄 요약을 보내지 않는다 — CHANNEL_SLIM=False일 때의 개인방+채널 동작은
         # tests/test_telegram_routing.py::TestOrderHandlerChannelSummary에서 검증한다.
         self.assertEqual(len(sent), 1)
+
+    async def test_approve_partial_fill_records_actual_quantity(self):
+        """[AT] fix/record-filled-qty: 제안 승인 매수가 부분체결(filled_qty<주문 qty)이면
+        trade_history에는 체결 수량만 남고, 응답 문구에 "일부 체결 N/M주 (미체결 K주)"가
+        보여야 한다. 기존에는 이 직접-성공 분기에 trade_history INSERT 자체가 없었다."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 10}),
+        })
+        pool = FakePool()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "P1", "filled_qty": 3, "partial": True}
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        reply = await order_handler.handle_proposal_response(
+            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+            send_telegram_fn=send_telegram, get_positions_fn=get_positions, pool=pool)
+
+        self.assertIn("일부 체결 3/10주 (미체결 7주)", reply)
+        self.assertEqual(len(pool._conn.inserted), 1)
+        self.assertEqual(pool._conn.inserted[0][2], 3.0)  # quantity 컬럼 = 체결 수량(주문 10 아님)
 
     async def test_approve_order_failure_reports_error(self):
         redis = FakeRedis({
@@ -584,6 +615,77 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("손익", reply)
         inserted_args = pool._conn.inserted[0]
         self.assertIsNone(inserted_args[-1])
+
+    async def test_qty_sell_partial_fill_records_filled_quantity_not_requested(self):
+        """[AT] fix/record-filled-qty: 채팅 "100주 매도" 지시에 kis_order_fn이 부분체결
+        (filled_qty=34)을 돌려주면 trade_history에는 34가 남아야 하고, 응답 문구에는
+        "체결 완료"가 아니라 "일부 체결 34/100주 (미체결 66주)"가 보여야 한다
+        (10/8 부국철강 100주 매도·34주 체결 사고 재현)."""
+        universe = Universe(None)
+        universe.replace_cache({"부국철강": "026940"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"data": [{"symbol": "026940", "qty": 100, "avg_price": 5000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "T1", "filled_qty": 34, "partial": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        reply = await order_handler.handle_trade_command(
+            "부국철강 100주 매도", pool=pool, redis=redis, universe=universe,
+            get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+            get_stock_positions_fn=get_stock_positions,
+            send_telegram_fn=send_telegram, log_journal_fn=log_journal,
+            get_quote_fn=make_quote_fn({"output": {"stck_prpr": "5000", "hts_kor_isnm": "부국철강"}}))
+
+        self.assertIn("일부 체결 34/100주 (미체결 66주)", reply)
+        self.assertNotIn("체결 완료", reply)
+        inserted_args = pool._conn.inserted[0]
+        self.assertEqual(inserted_args[3], 34.0)  # quantity 컬럼 = 체결 수량(주문 100 아님)
+
+    async def test_fill_unconfirmed_does_not_assume_full_fill(self):
+        """체결조회 자체가 실패(fill_unconfirmed=True)하면 주문 수량을 그대로 체결 완료로
+        단정하지 않고 보유수량 재확인(UNCERTAIN) 경로로 넘어가야 한다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"success": True, "data": []}  # 주문 전후 보유 변화 없음 → 판정 불가
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "T2", "fill_unconfirmed": True}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 5주 매도", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions,
+                send_telegram_fn=send_telegram, log_journal_fn=log_journal,
+                get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
+
+        self.assertIn("주문 결과 불명", reply)
+        self.assertEqual(len(pool._conn.inserted), 0)
 
 
 if __name__ == "__main__":

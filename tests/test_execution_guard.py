@@ -9,6 +9,7 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -1224,6 +1225,173 @@ class TestExecute(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("pnl", result)
         self.assertEqual(pool._conn.inserted[0][-1], None)
         self.assertNotIn("손익", sent[0])
+
+
+# ── [AT] fix/record-filled-qty: trade_history에는 주문 수량이 아니라 실제 체결 수량만
+# 남아야 한다 — 부분체결·미체결·체결불명 각각을 검증한다 ──────────────────────────
+
+
+class TestExecuteFillQuantityRecording(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_buy_fill_records_filled_qty_not_requested_qty(self):
+        """매수 100주 주문에 kis_order_fn이 filled_qty=34(부분체결)를 돌려주면 trade_history
+        quantity 컬럼에는 34가 남아야 한다(주문 수량 100이 아님) — 10/8 부국철강 사고 재현."""
+        pool = FakePool()
+        redis = FakeRedis()
+        sent = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "X1", "filled_qty": 34, "partial": True}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "부국철강"
+
+        result = await execution_guard.execute(
+            make_signal(symbol="026940", qty=100), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["filled_qty"], 34)
+        self.assertEqual(result["requested_qty"], 100)
+        self.assertTrue(result["partial"])
+        self.assertEqual(len(pool._conn.inserted), 1)
+        self.assertEqual(pool._conn.inserted[0][5], 34.0)  # quantity 컬럼 = 체결 수량
+        self.assertIn("일부 체결 34/100주 (미체결 66주)", sent[0])
+        self.assertNotIn("완료", sent[0])
+
+    async def test_partial_sell_fill_pnl_uses_filled_qty(self):
+        """매도 부분체결 시 pnl도 체결 수량 기준으로 계산해야 한다(주문 수량 기준이면 과대평가)."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "X2", "filled_qty": 4, "partial": True}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(action="sell", price=75000, qty=10), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name, get_positions_fn=get_positions,
+        )
+
+        self.assertEqual(result["pnl"], (75000 - 70000) * 4)
+        self.assertEqual(pool._conn.inserted[0][5], 4.0)
+
+    async def test_full_fill_result_has_no_extra_keys(self):
+        """filled_qty가 주문 수량과 같으면(전량체결) 기존처럼 partial/filled_qty 키를
+        추가하지 않는다 — 기존 호출부(배선) 호환성 유지."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "X3", "filled_qty": 1}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(qty=1), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+        self.assertEqual(result, {"success": True, "executed": True, "jarvis_reply": "EXECUTE: 강한 확신"})
+
+    async def test_fill_unconfirmed_routes_through_uncertain_reconcile_not_full_fill(self):
+        """체결 조회 자체가 실패(fill_unconfirmed=True)하면 주문 수량을 그대로 체결로
+        단정하지 않고 기존 UNCERTAIN(보유수량 재확인) 경로로 넘어가야 한다."""
+        pool = FakePool()
+        redis = FakeRedis()
+        state = {"qty": 0.0}
+
+        async def get_positions():
+            if state["qty"] > 0:
+                return {"success": True, "data": [{"symbol": "005930", "qty": state["qty"], "avg_price": 68000}]}
+            return {"success": True, "data": []}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "X4", "fill_unconfirmed": True}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        async def fake_sleep(_sec):
+            state["qty"] = 3.0  # 재확인 시점에 3주만 보유 잔고에 반영됨(주문은 5주)
+
+        with patch("stark.execution_guard.asyncio.sleep", new=fake_sleep):
+            result = await execution_guard.execute(
+                make_signal(qty=5), make_decision(), pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, save_trade_memory_fn=None,
+                code_to_name_fn=code_to_name, get_positions_fn=get_positions,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(pool._conn.inserted), 1)
+        self.assertEqual(pool._conn.inserted[0][5], 3.0)  # 주문 수량 5가 아니라 실제 변동분 3
+
+    async def test_zero_filled_qty_does_not_insert_trade_history(self):
+        """체결 수량이 0이면(판정 불가 등) trade_history에 체결 행을 만들지 않는다."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "X5", "fill_unconfirmed": True}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            result = await execution_guard.execute(
+                make_signal(qty=5), make_decision(), pool=pool, redis=redis,
+                kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+                log_journal_fn=log_journal, save_trade_memory_fn=None,
+                code_to_name_fn=code_to_name, get_positions_fn=get_positions,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(len(pool._conn.inserted), 0)
 
 
 if __name__ == "__main__":

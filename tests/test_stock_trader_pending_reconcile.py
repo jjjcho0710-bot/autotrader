@@ -114,6 +114,62 @@ class _BaseTest(unittest.IsolatedAsyncioTestCase):
             p.stop()
 
 
+class FakeExitDecisionResponse:
+    """stock_trader/main.py의 `resp = await session.post(...)` 패턴(응답을 async with가
+    아니라 직접 await)을 흉내내는 가짜 응답 — tests/test_order_handler.py FakePriceResponse와
+    동일한 계약."""
+    def __init__(self, data):
+        self._data = data
+
+    def __await__(self):
+        async def _coro():
+            return self
+        return _coro().__await__()
+
+    async def json(self):
+        return self._data
+
+
+class FakeExitDecisionSession:
+    def __init__(self, data):
+        self._data = data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def post(self, *args, **kwargs):
+        return FakeExitDecisionResponse(self._data)
+
+
+class TestAiExitSellFailureDoesNotRecordZeroQuantityTrade(_BaseTest):
+    async def test_ai_judge_sell_failure_does_not_insert_zero_qty_trade_history(self):
+        """[AT] fix/record-filled-qty: +5~10% AI 익절 판단(HALF/ALL)에서 실제 매도 주문이
+        실패하면 체결이 전혀 없었으므로 trade_history에 수량 0짜리 행을 남기면 안 된다
+        (이전엔 quantity=0, amount=0으로 기록하는 코드가 있었다 — 체결 수량이 아닌 "실패
+        마커"를 체결 테이블에 섞어 넣는 버그)."""
+        pos = {
+            "symbol": "005930", "name": "삼성전자",
+            "avg_price": 70000, "cur_price": 75000,  # +7.1% → EXIT_BAND_AI_JUDGE(5~10%) 구간
+            "qty": 10, "sellable_qty": 10,
+        }
+        bot = _make_bot(pos)
+        bot.trader.sell = AsyncMock(return_value={"success": False, "error": "매도가능 수량 부족"})
+
+        with patch("common.telegram.send_stock", new_callable=AsyncMock) as mock_send, \
+             patch("aiohttp.ClientSession",
+                   return_value=FakeExitDecisionSession({"decision": "ALL", "reason": "급등 과열"})):
+            await bot._run_cycle()
+
+        main.db.insert_trade.assert_not_awaited()
+        self.assertTrue(mock_send.await_args_list)
+        self.assertIn("AI 익절 매도 실패", mock_send.await_args_list[-1].args[0])
+        # 매도 실패이므로 포지션은 그대로 유지된다
+        self.assertIn("005930", bot.positions)
+
+
 class TestStopLossPendingIsNotTreatedAsFailure(_BaseTest):
     async def test_pending_sell_result_skips_suppression_and_failure_alert(self):
         """손절 매도가 pending(체결 확인 대기)이면 30분 억제키·실패 알림·포지션 삭제가

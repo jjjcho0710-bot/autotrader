@@ -277,6 +277,11 @@ _KIS_RATE_LIMIT_DELAY = 0.7
 _KIS_REAL_BASE = "https://openapi.koreainvestment.com:9443"
 _KIS_DAILY_RETRY_DELAY = 1.5  # 일봉 조회가 모의/실전 폴백까지 다 실패하면 일시적 오류로 보고 1회 더 시도
 
+# 주문 접수(rt_cd=0) 후 실제 체결 수량 확인 재시도 간격 — stock_trader/kis_trader.py
+# KISTrader.buy()/sell()과 동일한 타이밍([AT] fix/record-filled-qty).
+_KIS_FILL_CHECK_INITIAL_DELAY = 1.5
+_KIS_FILL_RETRY_DELAYS_SEC = (3.0, 7.0)
+
 
 def _scrub_kis_msg(msg) -> str:
     """KIS 응답/예외 메시지에서 계좌번호·앱키·시크릿 제거 (로그·API 응답 노출 방지)"""
@@ -4525,9 +4530,66 @@ async def _handle_watchlist_command(msg: str) -> str | None:
     return await watchlist_handler.handle_command(msg, db_pool, universe, STOCK_NAME_MAP)
 
 
+async def _get_kis_filled_qty(token: str, cano: str, prdt: str, order_no: str, symbol: str,
+                               is_buy: bool, with_price: bool = False):
+    """주문 접수 후 당일 주문체결내역조회(inquire-daily-ccld)로 특정 주문번호의 실제 체결
+    수량을 확인한다. stock_trader/kis_trader.py KISTrader._get_filled_qty와 동일한 계약 —
+    조회 자체가 실패하면 (None, None)/None(판정 불가), 응답은 받았지만 해당 주문이 아직
+    미체결이면 (0, 0.0)/0을 반환한다. with_price=True면 (체결수량, 평균체결단가) 튜플.
+    ([AT] fix/record-filled-qty)"""
+    if not order_no:
+        return (None, None) if with_price else None
+    tr_id = "VTTC0081R" if config.KIS_IS_PAPER else "TTTC0081R"
+    today = datetime.now().strftime("%Y%m%d")
+    params = {
+        "CANO": cano, "ACNT_PRDT_CD": prdt,
+        "INQR_STRT_DT": today, "INQR_END_DT": today,
+        "SLL_BUY_DVSN_CD": "02" if is_buy else "01", "INQR_DVSN": "00",
+        "PDNO": symbol, "CCLD_DVSN": "00",
+        "ORD_GNO_BRNO": "", "ODNO": order_no,
+        "INQR_DVSN_3": "00", "INQR_DVSN_1": "",
+        "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+    }
+    import ssl as _ssl
+    _c = _ssl.create_default_context(); _c.check_hostname = False; _c.verify_mode = _ssl.CERT_NONE
+    try:
+        data: dict = {}
+        for attempt in range(_KIS_RATE_LIMIT_RETRIES + 1):
+            async with _KIS_QUOTE_SEM:
+                async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_c)) as sess:
+                    async with sess.get(
+                        f"{config.kis_base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                        headers={"authorization": f"Bearer {token}", "appkey": config.kis_app_key,
+                                 "appsecret": config.kis_app_secret, "tr_id": tr_id, "custtype": "P"},
+                        params=params, timeout=_aiohttp.ClientTimeout(total=8)) as resp:
+                        data = await resp.json()
+            if not isinstance(data, dict):
+                data = {}
+            if data.get("msg_cd") != "EGW00201" and "초당" not in str(data.get("msg1", "")):
+                break
+            if attempt < _KIS_RATE_LIMIT_RETRIES:
+                await asyncio.sleep(_KIS_RATE_LIMIT_DELAY)
+        rows = data.get("output1") or []
+        for row in rows:
+            if row.get("odno") == order_no:
+                fq = int(row.get("tot_ccld_qty", 0) or 0)
+                if with_price:
+                    return fq, float(row.get("avg_prvs", 0) or 0)
+                return fq
+        return (0, 0.0) if with_price else 0
+    except Exception as e:
+        logger.warning(f"체결 수량 조회 실패 [{symbol}] 주문 {order_no}: {e}")
+        return (None, None) if with_price else None
+
+
 async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
                             _retry: bool = False) -> dict:
-    """KIS 주식 주문 (dashboard 내장) — 토큰 만료 시 1회 자동 재발급·재시도"""
+    """KIS 주식 주문 (dashboard 내장) — 토큰 만료 시 1회 자동 재발급·재시도.
+
+    주문 접수(rt_cd=0)는 '접수'만 의미하고 실제 체결을 보장하지 않으므로, 접수 후 실제
+    체결 수량을 재조회해 진짜 성공 여부를 판정한다(stock_trader/kis_trader.py
+    KISTrader.buy()/sell()과 동일한 원칙 — 이 함수는 그 확인 단계가 없어 부분체결을
+    항상 전량체결로 잘못 기록·보고하던 원인이었다, [AT] fix/record-filled-qty)."""
     token = await get_kis_token(force_new=_retry)
     if not token:
         return {"success": False, "error": "KIS 토큰 없음"}
@@ -4557,7 +4619,35 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
                 json=payload, timeout=_aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
         if data.get("rt_cd") == "0":
-            return {"success": True, "order_no": data.get("output", {}).get("ODNO")}
+            order_no = data.get("output", {}).get("ODNO")
+            logger.info(f"📝 {'매수' if is_buy else '매도'} 주문 접수: {symbol} {qty}주 "
+                        f"(주문번호 {order_no}) — 체결 확인 중")
+            await asyncio.sleep(_KIS_FILL_CHECK_INITIAL_DELAY)
+            filled_qty, avg_fill_price = await _get_kis_filled_qty(
+                token, cano, prdt, order_no, symbol, is_buy, with_price=True)
+            if filled_qty is None:
+                # 체결 조회 자체가 실패하면 판정 불가 — 호출부가 보유수량 재확인(UNCERTAIN
+                # 처리)으로 넘기게 fill_unconfirmed만 표시하고 성공 여부는 단정하지 않는다.
+                logger.warning(f"⚠️ 체결 확인 API 실패 [{symbol}] — 접수 결과만으로 판정")
+                return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
+            if filled_qty <= 0:
+                for delay in _KIS_FILL_RETRY_DELAYS_SEC:
+                    await asyncio.sleep(delay)
+                    filled_qty, avg_fill_price = await _get_kis_filled_qty(
+                        token, cano, prdt, order_no, symbol, is_buy, with_price=True)
+                    if filled_qty:
+                        break
+                if not filled_qty:
+                    logger.warning(f"⚠️ 체결 확인 재시도 종료 [{symbol}] 주문 {qty}주 접수 — "
+                                   f"체결 수량 판정 불가")
+                    return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
+            result = {"success": True, "order_no": order_no, "filled_qty": filled_qty}
+            if filled_qty < qty:
+                result["partial"] = True
+                logger.warning(f"⚠️ {'매수' if is_buy else '매도'} 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
+            if not is_buy and avg_fill_price:
+                result["avg_fill_price"] = avg_fill_price
+            return result
         # KIS가 명확히 거절한 경우(rt_cd != "0" + msg1) — 확정 실패
         err = data.get("msg1", "주문 실패")
         if "모의투자" in err and ("불가" in err or "아닌" in err):

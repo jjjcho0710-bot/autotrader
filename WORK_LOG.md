@@ -4,7 +4,6 @@
 - **Railway 프로젝트**: ideal-elegance (Pro plan)
 - **대시보드**: https://dashboard-production-65e3.up.railway.app
 - **GitHub**: jjjcho0710-bot/autotrader (Claude 직접 푸시 가능)
-- **GitHub Token**: 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
 
 ---
 

@@ -22,6 +22,9 @@ from datetime import date
 CALENDAR_COVERS_THROUGH = date(2026, 12, 31)
 
 _HOLIDAYS: dict[date, str] = {
+    date(2026, 6, 3): "전국동시지방선거일",
+    date(2026, 9, 24): "추석 연휴",
+    date(2026, 9, 25): "추석 연휴",
     date(2026, 10, 5): "개천절 대체공휴일",
     date(2026, 10, 9): "한글날",
     date(2026, 12, 25): "성탄절",

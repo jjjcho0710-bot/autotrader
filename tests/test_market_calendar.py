@@ -48,6 +48,19 @@ class TestIsTradingDay(unittest.TestCase):
         self.assertIsNone(holiday_reason(date(2026, 10, 6)))
 
 
+class TestNewlyAdded2026Holidays(unittest.TestCase):
+    """fix/market-calendar-2026: 누락됐던 지방선거일·추석 연휴 3건 보강."""
+
+    def test_added_holidays_are_closed(self):
+        for d in (date(2026, 6, 3), date(2026, 9, 24), date(2026, 9, 25)):
+            with self.subTest(d=d):
+                self.assertFalse(is_trading_day(d))
+
+    def test_adjacent_weekdays_are_trading_days(self):
+        self.assertTrue(is_trading_day(date(2026, 9, 23)))
+        self.assertTrue(is_trading_day(date(2026, 9, 28)))
+
+
 class TestCalendarStaleness(unittest.TestCase):
     def test_date_within_coverage_is_not_stale(self):
         self.assertFalse(is_calendar_stale(CALENDAR_COVERS_THROUGH))

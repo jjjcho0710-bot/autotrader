@@ -31,7 +31,8 @@ class _AcquireCtx:
 
 class FakeTradeHistoryConnection:
     def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
-                 buy_history=None, raise_on_fetch=False, disclosures=None):
+                 buy_history=None, raise_on_fetch=False, disclosures=None,
+                 daily_closes=None, raise_on_daily_closes=False):
         self.stop_loss_count = stop_loss_count
         self.raise_on_fetchval = raise_on_fetchval
         self.disclosures = disclosures if disclosures is not None else []
@@ -40,8 +41,18 @@ class FakeTradeHistoryConnection:
         # symbol -> list of {"price": ...} 딕셔너리(매수 순서대로) — 물타기 정책 검사용
         self.buy_history = buy_history or {}
         self.raise_on_fetch = raise_on_fetch
+        # symbol -> 날짜 오름차순 종가 리스트 — 모멘텀 게이트 검사용([AT] feat/momentum-gate)
+        self.daily_closes = daily_closes or {}
+        self.raise_on_daily_closes = raise_on_daily_closes
 
     async def fetch(self, query, *args):
+        if "stock_daily_ohlcv" in query:
+            if self.raise_on_daily_closes:
+                raise RuntimeError("DB down")
+            symbol, limit = args[0], args[1]
+            closes = self.daily_closes.get(symbol, [])
+            sliced = closes[-limit:] if limit else closes
+            return [{"close": c} for c in sliced]
         if self.raise_on_fetch:
             raise RuntimeError("DB down")
         if "stock_disclosure" in query:
@@ -75,9 +86,11 @@ class FakeTradeHistoryConnection:
 
 class FakePool:
     def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
-                 buy_history=None, raise_on_fetch=False, disclosures=None):
+                 buy_history=None, raise_on_fetch=False, disclosures=None,
+                 daily_closes=None, raise_on_daily_closes=False):
         self._conn = FakeTradeHistoryConnection(
-            stop_loss_count, raise_on_fetchval, buy_history, raise_on_fetch, disclosures)
+            stop_loss_count, raise_on_fetchval, buy_history, raise_on_fetch, disclosures,
+            daily_closes=daily_closes, raise_on_daily_closes=raise_on_daily_closes)
 
     def acquire(self):
         return _AcquireCtx(self._conn)

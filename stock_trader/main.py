@@ -604,7 +604,7 @@ class StockTrader:
                                         new_state = "STOP_LOSS"
                                         msg = (
                                             f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
-                                            f"시스템이 즉시 자동 손절 매도 처리 중입니다."
+                                            f"손절선 이탈 감지 — 다음 매매 사이클(최대 60초 이내)에서 손절 매도를 판정합니다."
                                         )
                                     from common.alert_throttle import should_send_symbol_alert
                                     should_send = await should_send_symbol_alert(

@@ -79,6 +79,13 @@ class Config:
     # 종목당 목표 최대 손실 = 총자산 × RISK_PER_TRADE_PCT(%). 기본 0.75%.
     RISK_PER_TRADE_PCT: float = float(os.getenv("RISK_PER_TRADE_PCT", "0.75"))
 
+    # ── 모멘텀 게이트 (PM 승인, [AT] feat/momentum-gate) ──
+    # AI 자동매수 직전 직전 N거래일 수익률(종가 기준)을 확인한다.
+    # 수익률 < DROP_THRESHOLD면 자동매수 차단, >= SHADOW_THRESHOLD면 차단 없이 shadow 로그만 남긴다.
+    MOMENTUM_GATE_LOOKBACK_DAYS: int = int(os.getenv("MOMENTUM_GATE_LOOKBACK_DAYS", "5"))
+    MOMENTUM_GATE_DROP_THRESHOLD_PCT: float = float(os.getenv("MOMENTUM_GATE_DROP_THRESHOLD_PCT", "0"))
+    MOMENTUM_GATE_SHADOW_THRESHOLD_PCT: float = float(os.getenv("MOMENTUM_GATE_SHADOW_THRESHOLD_PCT", "8"))
+
     def __post_init__(self):
         # 수집할 주식 종목 (환경변수로 override 가능)
         symbols_env = os.getenv("STOCK_SYMBOLS", "")

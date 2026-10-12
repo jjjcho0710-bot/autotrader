@@ -115,14 +115,21 @@ class FakeTradeConnection:
     조회하는 공시(stock_disclosure)·당일 손절 횟수 쿼리에도 안전한 기본값(공시 없음, 손절 0회)
     으로 응답한다([AT] buy-gate-unification — 채팅 매수가 이 안전장치를 거치게 되면서 필요)."""
 
-    def __init__(self, stop_loss_count=0, disclosures=None, buy_history=None):
+    def __init__(self, stop_loss_count=0, disclosures=None, buy_history=None, daily_closes=None):
         self.inserted = []
         self.stop_loss_count = stop_loss_count
         self.disclosures = disclosures if disclosures is not None else []
         # symbol -> [{"price": ...}, ...] 매수 이력(물타기 정책 검사용, side='BUY' 쿼리)
         self.buy_history = buy_history or {}
+        # symbol -> 날짜 오름차순 종가 리스트 — 모멘텀 게이트 경고 검사용([AT] feat/momentum-gate)
+        self.daily_closes = daily_closes or {}
 
     async def fetch(self, query, *args):
+        if "stock_daily_ohlcv" in query:
+            symbol, limit = args[0], args[1]
+            closes = self.daily_closes.get(symbol, [])
+            sliced = closes[-limit:] if limit else closes
+            return [{"close": c} for c in sliced]
         if "stock_disclosure" in query:
             return list(self.disclosures)
         if "trade_history" in query and "side='BUY'" in query:
@@ -142,9 +149,10 @@ class FakeTradeConnection:
 
 
 class FakePool:
-    def __init__(self, stop_loss_count=0, disclosures=None, buy_history=None):
+    def __init__(self, stop_loss_count=0, disclosures=None, buy_history=None, daily_closes=None):
         self._conn = FakeTradeConnection(
-            stop_loss_count=stop_loss_count, disclosures=disclosures, buy_history=buy_history)
+            stop_loss_count=stop_loss_count, disclosures=disclosures, buy_history=buy_history,
+            daily_closes=daily_closes)
 
     def acquire(self):
         return _AcquireCtx(self._conn)

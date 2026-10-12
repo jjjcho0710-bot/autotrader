@@ -31,6 +31,7 @@ from stark.execution_guard import (
     buy_gate,
     buy_lock_scope,
     check_buy_position_limits,
+    check_momentum,
     check_order_uncertain_block,
     get_held_qty,
     reconcile_uncertain_order,
@@ -56,6 +57,19 @@ async def _invalidate_cache(invalidate_cache_fn: Optional[Any]) -> None:
             invalidate_cache_fn()
     except Exception:
         pass
+
+
+async def _momentum_warning_note(symbol: str, *, pool: Any) -> str:
+    """수동(채팅) 매수·사용자 승인 매수용 모멘텀 경고 문구([AT] feat/momentum-gate).
+    AI 자동매수(stark.execution_guard.execute())와 달리 이 경로는 차단하지 않고 경고
+    문구만 답장에 덧붙인다 — 사용자가 직접 지시했거나 이미 승인한 매수이기 때문."""
+    momentum = await check_momentum(symbol, pool=pool)
+    if not momentum["is_drop"]:
+        return ""
+    return (
+        f"\n⚠️ 모멘텀 경고: 직전 {momentum['lookback_days']}거래일 수익률 "
+        f"{momentum['pct']:.2f}% — 최근 하락 추세 종목입니다 (차단 아님, 참고용)"
+    )
 
 
 def _fill_channel_summary(name: str, symbol: str, action_kr: str, qty, price: float,
@@ -165,6 +179,10 @@ async def handle_proposal_response(
                 await redis.delete(f"proposal:{symbol}")
                 return f"⛔ {position_blocked['reason']}"
 
+            # 모멘텀 게이트 — 사용자가 승인한 제안 매수는 차단하지 않고 경고 문구만 첨부
+            # ([AT] feat/momentum-gate).
+            momentum_note = await _momentum_warning_note(symbol, pool=pool)
+
             # 승인 → 실제 매수 (주문 전 보유 수량을 응답불명 시 체결 재확인용으로 미리 조회)
             pre_qty = await get_held_qty(symbol, get_positions_fn) if get_positions_fn else None
             order = await kis_order_fn(symbol, int(target["price"]), int(target["qty"]), True)
@@ -197,7 +215,7 @@ async def handle_proposal_response(
                                       int(target["price"]), filled_qty)
                 label = fill_note or "체결"
                 msg = (f"✅ <b>{target['name']} 매수 {label} (주인 승인)</b>\n"
-                       f"{filled_qty}주 @ {int(target['price']):,}원")
+                       f"{filled_qty}주 @ {int(target['price']):,}원{momentum_note}")
                 await send_telegram_fn(msg, dest="personal")
                 if not CHANNEL_SLIM:
                     await send_telegram_fn(
@@ -227,7 +245,7 @@ async def handle_proposal_response(
                                           target.get("reason", ""), True, True,
                                           int(target["price"]), diff_qty)
                     msg = (f"✅ <b>{target['name']} 매수 체결 확인 (응답 지연, 주인 승인)</b>\n"
-                           f"{diff_qty}주 @ {int(target['price']):,}원")
+                           f"{diff_qty}주 @ {int(target['price']):,}원{momentum_note}")
                     await send_telegram_fn(msg, dest="personal")
                     if not CHANNEL_SLIM:
                         await send_telegram_fn(
@@ -342,6 +360,7 @@ async def handle_trade_command(
         # 악재공시·당일 손절 2회·실패 억제·물타기·보유종목수 한도·투자경고/VI 차단을 채팅 직접
         # 매수에도 적용한다(PM 지시, [AT] buy-gate-unification). "한도무시"는 사이징 금액
         # 한도만 무시할 뿐 이 안전 차단은 넘지 못한다 — 사이징보다 먼저 검사한다.
+        momentum_note = ""
         if is_buy:
             gate_blocked = await buy_gate(
                 symbol, price, pool=pool, redis=redis, bot="stock_trader",
@@ -350,6 +369,10 @@ async def handle_trade_command(
             if gate_blocked:
                 logger.info(f"⛔ 채팅 매수 차단 [{symbol}] {gate_blocked['blocked']}: {gate_blocked['reason']}")
                 return f"⛔ {gate_blocked['reason']}"
+
+            # 모멘텀 게이트 — 수동(채팅)·제안승인 매수는 차단하지 않고 경고 문구만 첨부한다
+            # (AI 자동매수만 차단, stark.execution_guard.execute() 참고, [AT] feat/momentum-gate).
+            momentum_note = await _momentum_warning_note(symbol, pool=pool)
 
         # 수량 (+ 매도 시 손익 계산용 평단가 조회)
         avg_price = 0.0
@@ -451,7 +474,7 @@ async def handle_trade_command(
             done_label = fill_note or "완료"
             await send_telegram_fn(
                 f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} {status_label} ({_strategy_tag})</b>\n"
-                f"가격: {price:,}원 × {filled_qty}주 = {price*filled_qty:,}원{pnl_text}{sizing_note}",
+                f"가격: {price:,}원 × {filled_qty}주 = {price*filled_qty:,}원{pnl_text}{sizing_note}{momentum_note}",
                 dest="personal")
             if not CHANNEL_SLIM:
                 await send_telegram_fn(
@@ -460,7 +483,7 @@ async def handle_trade_command(
                                   user_msg[:200], _decision_tag, "사용자 직접 지시" if not is_advice_approved else "능동 제안 승인",
                                   True, True, price, filled_qty, source="chat")
             return (f"✅ [실제 체결] {name}({symbol}) {filled_qty}주 {action_kr} {done_label} — "
-                    f"{price:,}원 × {filled_qty}주 = {price*filled_qty:,}원{pnl_text}{sizing_note}")
+                    f"{price:,}원 × {filled_qty}주 = {price*filled_qty:,}원{pnl_text}{sizing_note}{momentum_note}")
 
         if (result.get("uncertain") or result.get("fill_unconfirmed")) and get_stock_positions_fn is not None:
             recon = await reconcile_uncertain_order(
@@ -491,7 +514,7 @@ async def handle_trade_command(
                     pass
                 await send_telegram_fn(
                     f"{'📈' if is_buy else '📉'} <b>{name} {action_kr} 체결 확인 (응답 지연)</b>\n"
-                    f"가격: {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}",
+                    f"가격: {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}{momentum_note}",
                     dest="personal")
                 if not CHANNEL_SLIM:
                     await send_telegram_fn(
@@ -501,7 +524,7 @@ async def handle_trade_command(
                                       "사용자 직접 지시(응답지연 체결확인)" if not is_advice_approved else "능동 제안 승인(응답지연 체결확인)",
                                       True, True, price, diff_qty, source="chat")
                 return (f"✅ 체결 확인(응답 지연) — {name}({symbol}) {diff_qty}주 {action_kr} "
-                        f"— {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}")
+                        f"— {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}{momentum_note}")
             return (f"⚠️ {name}({symbol}) 주문 결과 불명 — 보유 수량 변화 없음. "
                     f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
 

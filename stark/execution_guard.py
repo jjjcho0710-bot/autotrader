@@ -20,6 +20,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
+from common.config import config
 from common.fill_recording import partial_fill_note, resolve_filled_quantity
 from common.late_fill_tracker import register_partial_fill
 
@@ -199,6 +200,84 @@ _AVERAGING_DOWN_REASON_TEXT = {
     "averaging_down_no_entry_history": "물타기 정책: 최초 매수 이력 확인 불가",
     "averaging_down_check_failed": "물타기 정책 확인 실패로 매수 보류",
 }
+
+
+async def _fetch_recent_closes(pool: Any, symbol: str, limit: int) -> list:
+    """symbol의 최근 일봉 종가(stock_daily_ohlcv.close)를 날짜 오름차순으로 최대 limit개
+    조회한다(모멘텀 게이트 전용). change_rate 컬럼은 쓰지 않고 close로 직접 수익률을
+    계산한다 — change_rate가 항상 0.00으로 기록되는 별도 이슈와 무관하게 정확한 값을
+    쓰기 위함."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT close FROM (
+                SELECT close, ts FROM stock_daily_ohlcv WHERE symbol=$1 ORDER BY ts DESC LIMIT $2
+            ) sub ORDER BY ts ASC
+        """, symbol, limit)
+    return [float(r["close"]) for r in rows if r["close"] is not None]
+
+
+def _compute_momentum_pct(closes: list, lookback_days: int) -> Optional[float]:
+    """closes: 날짜 오름차순 종가 리스트. 최근 종가 대비 lookback_days거래일 전 종가 수익률(%).
+    데이터가 lookback_days+1개 미만이거나 기준 종가가 0 이하이면 계산 불가(None)."""
+    if len(closes) < lookback_days + 1:
+        return None
+    past = closes[-1 - lookback_days]
+    latest = closes[-1]
+    if past <= 0:
+        return None
+    return (latest - past) / past * 100
+
+
+async def check_momentum(
+    symbol: str, *, pool: Any,
+    lookback_days: Optional[int] = None,
+    drop_threshold_pct: Optional[float] = None,
+    shadow_threshold_pct: Optional[float] = None,
+) -> Dict[str, Any]:
+    """모멘텀 게이트 — 직전 N거래일 수익률(종가 기준, 최근 종가 대비 N거래일 전 종가)을
+    계산해 판정 정보를 반환한다. AI 자동매수 경로(execute())와 채팅/제안승인 매수 경로
+    (router/handlers/order_handler.py)가 공용으로 쓴다([AT] feat/momentum-gate) — 전자는
+    이 결과로 매수 차단 여부를 결정하고, 후자는 차단하지 않고 경고 문구만 첨부한다.
+
+    임계값은 strategy_config 조회 없이 common/config.py의 환경변수 설정값을 쓴다(인자로
+    넘기면 그 값이 우선).
+
+    종가 데이터가 부족하거나 조회 자체가 실패하면 fail-open(매수를 함부로 막지 않음)이
+    아니라 "게이트를 적용하지 않고 기존 동작을 유지"한다 — pct=None이면 호출부는 반드시
+    차단하지 않아야 한다. 경고 로그만 남긴다.
+
+    반환: {
+        "pct": float | None, "insufficient_data": bool,
+        "is_drop": bool,    # pct < drop_threshold_pct (pct가 None이면 항상 False)
+        "is_shadow": bool,  # pct >= shadow_threshold_pct (pct가 None이면 항상 False)
+        "lookback_days": int, "drop_threshold_pct": float, "shadow_threshold_pct": float,
+    }"""
+    lookback = lookback_days if lookback_days is not None else config.MOMENTUM_GATE_LOOKBACK_DAYS
+    drop_th = (drop_threshold_pct if drop_threshold_pct is not None
+               else config.MOMENTUM_GATE_DROP_THRESHOLD_PCT)
+    shadow_th = (shadow_threshold_pct if shadow_threshold_pct is not None
+                 else config.MOMENTUM_GATE_SHADOW_THRESHOLD_PCT)
+
+    pct = None
+    try:
+        closes = await _fetch_recent_closes(pool, symbol, lookback + 1)
+        pct = _compute_momentum_pct(closes, lookback)
+    except Exception as e:
+        logger.warning(f"모멘텀 게이트 종가 조회 실패(게이트 미적용, 기존 동작 유지) [{symbol}]: {e}")
+        pct = None
+
+    if pct is None:
+        logger.warning(f"모멘텀 게이트: 종가 데이터 부족으로 게이트 미적용(기존 동작 유지) [{symbol}]")
+
+    return {
+        "pct": pct,
+        "insufficient_data": pct is None,
+        "is_drop": pct is not None and pct < drop_th,
+        "is_shadow": pct is not None and pct >= shadow_th,
+        "lookback_days": lookback,
+        "drop_threshold_pct": drop_th,
+        "shadow_threshold_pct": shadow_th,
+    }
 
 
 async def _resolve_held_and_inflight_symbols(redis: Any, get_positions_fn) -> tuple:
@@ -678,6 +757,59 @@ async def execute(
                     "reason": reason_text,
                     "jarvis_reply": reply,
                 }
+
+        # (1b) 모멘텀 게이트 — 직전 N거래일 수익률(종가 기준)이 임계값(기본 0%) 미달이면
+        # AI 자동매수를 차단한다(가격 하한 필터는 데이터로 뒷받침되지 않아 제외, PM 지시).
+        # 수동 채팅매수·제안승인 매수는 여기를 지나지 않고 차단하지 않는다(경고만 붙음,
+        # router/handlers/order_handler.py 쪽 처리). 종가 데이터 부족/조회 실패 시에는
+        # 기존 동작을 유지한다(새로 차단하지 않음) — check_momentum()이 이를 보장한다.
+        if is_buy and bot == "stock_trader":
+            momentum = await check_momentum(symbol, pool=pool)
+            if momentum["is_drop"]:
+                reason_text = (
+                    f"momentum_gate: 직전 {momentum['lookback_days']}거래일 수익률 "
+                    f"{momentum['pct']:.2f}% (< {momentum['drop_threshold_pct']:.2f}%)"
+                )
+                logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
+
+                from stark.decision_logger import log_decision
+                await log_decision(
+                    pool, symbol, "SKIP",
+                    name=name,
+                    confidence=decision.get("confidence", 0.0),
+                    reason=reason_text,
+                    rationale=(
+                        "실행 레이어 안전장치: 모멘텀 게이트(momentum_gate) — "
+                        f"직전 {momentum['lookback_days']}거래일 수익률이 음수(또는 기준 미달)라 "
+                        "자동매수 차단"
+                    ),
+                    strategy=strategy,
+                    source="execution_guard",
+                    executed=False,
+                    order_success=None,
+                    price=float(price),
+                    quantity=float(qty),
+                )
+
+                if log_journal_fn:
+                    await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                                         "SKIP", reason_text, False, False, price, qty)
+
+                return {
+                    "success": True,
+                    "executed": False,
+                    "skipped": True,
+                    "blocked": "momentum_gate",
+                    "reason": reason_text,
+                    "jarvis_reply": reply,
+                }
+            if momentum["is_shadow"]:
+                # 차단하지 않음 — 과열 사후평가용 shadow 로그만 남긴다.
+                logger.info(
+                    f"🔥 모멘텀 과열 shadow [{symbol}] 직전 {momentum['lookback_days']}거래일 "
+                    f"수익률 {momentum['pct']:.2f}% (>= {momentum['shadow_threshold_pct']:.2f}%) "
+                    f"— 매수는 정상 진행"
+                )
 
         # 주문 전 보유 현황 사전 조회 — (a) 매도 손익(pnl) 계산용 평단가: 주문 성공 후에
         # 조회하면 전량 매도 시 이미 보유 목록에서 빠져 avg_price를 못 구해 pnl=None이 되므로

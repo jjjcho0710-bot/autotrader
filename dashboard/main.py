@@ -369,10 +369,12 @@ def _kis_ccld_page_fetcher(sess, base: str, token: str, cano: str, acnt_prdt_cd:
 async def _fetch_trade_history_for_range(start_date, end_date) -> list:
     """trade_history를 KST 날짜 구간(포함)으로 조회한다. crypto_trader는 제외(요구사항).
     읽기 전용 — DB에 쓰지 않는다. amount/pnl은 [AT] feat/reconcile-apply의 보정 계획
-    (qty_mismatch UPDATE 대상의 old_amount/old_pnl 계산)에 쓰인다."""
+    (qty_mismatch UPDATE 대상의 old_amount/old_pnl 계산)에 쓰인다. price/strategy/ts_kst는
+    [AT] feat/reconcile-manual의 수동확인 출력(DB 후보 행 상세 표시)과 지정 보정
+    (fix_delete/fix_update)의 안전조건 검사·감사 기록에 쓰인다."""
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT id, symbol, side, quantity, amount, pnl, ts
+            SELECT id, symbol, side, price, quantity, amount, pnl, strategy, ts
             FROM trade_history
             WHERE bot != 'crypto_trader'
               AND DATE(ts AT TIME ZONE 'Asia/Seoul') BETWEEN $1 AND $2
@@ -382,9 +384,12 @@ async def _fetch_trade_history_for_range(start_date, end_date) -> list:
         {
             "id": r["id"], "symbol": r["symbol"], "side": (r["side"] or "").upper(),
             "qty": float(r["quantity"] or 0),
+            "price": float(r["price"]) if r["price"] is not None else None,
             "amount": float(r["amount"]) if r["amount"] is not None else None,
             "pnl": float(r["pnl"]) if r["pnl"] is not None else None,
+            "strategy": r["strategy"],
             "date": r["ts"].astimezone(KST).strftime("%Y%m%d"),
+            "ts": r["ts"], "ts_kst": r["ts"].astimezone(KST),
         }
         for r in rows
     ]
@@ -2526,22 +2531,41 @@ class _ReconcileDbAdapter:
             UPDATE trade_history SET quantity=$1, amount=$2, pnl=$3 WHERE id=$4
         """, upd["new_quantity"], upd["new_amount"], upd["new_pnl"], upd["trade_history_id"])
 
+    async def delete_trade(self, trade_history_id: int) -> None:
+        """지정 보정(fix_delete)의 DELETE 실행([AT] feat/reconcile-manual) — 복원에
+        필요한 이전 값은 호출부(apply_reconcile_plan)가 삭제 전에 이미 plan["fix_deletes"]
+        로 들고 있다가 insert_audit에 넘기므로, 여기서는 삭제만 수행한다."""
+        await self._conn.execute("DELETE FROM trade_history WHERE id=$1", trade_history_id)
+
+    async def net_position(self, symbol: str) -> float:
+        """보정 후 해당 종목의 DB 순포지션(BUY-SELL) 재계산([AT] feat/reconcile-manual) —
+        crypto_trader는 trade_history 조회 전반의 관례대로 제외한다."""
+        row = await self._conn.fetchrow("""
+            SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN quantity
+                                      WHEN side='SELL' THEN -quantity ELSE 0 END), 0) AS net
+            FROM trade_history WHERE symbol=$1 AND bot != 'crypto_trader'
+        """, symbol)
+        return float(row["net"]) if row else 0.0
+
     async def insert_audit(self, action, trade_history_id, symbol, side, trade_date,
                             old_quantity, new_quantity, old_amount, new_amount,
-                            old_pnl, new_pnl, note) -> None:
+                            old_pnl, new_pnl, note, old_price=None, old_ts=None) -> None:
         await self._conn.execute("""
             INSERT INTO reconcile_audit (action, trade_history_id, symbol, side, trade_date,
-                old_quantity, new_quantity, old_amount, new_amount, old_pnl, new_pnl, note)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                old_quantity, new_quantity, old_amount, new_amount, old_pnl, new_pnl, note,
+                old_price, old_ts)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
         """, action, trade_history_id, symbol, side, trade_date,
-            old_quantity, new_quantity, old_amount, new_amount, old_pnl, new_pnl, note)
+            old_quantity, new_quantity, old_amount, new_amount, old_pnl, new_pnl, note,
+            old_price, old_ts)
 
 
 @app.get("/api/jarvis/reconcile_trades_period")
 async def reconcile_trades_period(start: str = None, end: str = None,
-                                   apply: int = 0, confirm: str = None):
-    """[AT] feat/kis-history-reconcile / feat/reconcile-apply (PM 승인) — KIS 체결내역
-    (inquire-daily-ccld)과 trade_history를 기간으로 대조한다.
+                                   apply: int = 0, confirm: str = None,
+                                   fix_delete: str = None, fix_update: str = None):
+    """[AT] feat/kis-history-reconcile / feat/reconcile-apply / feat/reconcile-manual
+    (PM 승인) — KIS 체결내역(inquire-daily-ccld)과 trade_history를 기간으로 대조한다.
 
     start/end: YYYY-MM-DD (KST 기준, 기본값 2026-09-01~오늘). 모의투자 기간 조회 제한에
     대응하기 위해 KIS 조회는 항상 하루 단위로 나눠서 호출하고(PM 지시), 실패하거나 제한에
@@ -2553,7 +2577,16 @@ async def reconcile_trades_period(start: str = None, end: str = None,
     "지금 다시 계산한 보정 계획"의 해시와 정확히 일치해야 하며(새로고침 후 재요청해도
     두 번 적용되지 않게), start/end도 보정 가능 구간 안이어야 한다. 실제 결정 로직(무엇을
     쓸지, 중복 skip, pnl 비율 조정, 트랜잭션 롤백)은 전부 dashboard/kis_history_reconcile.py
-    의 순수 함수에 있다."""
+    의 순수 함수에 있다.
+
+    fix_delete/fix_update([AT] feat/reconcile-manual): 자동 보정이 불가능해 manual_review로
+    분류된 항목(DB 행 2개 이상인 qty_mismatch, KIS 체결 없는 extra_in_db)을 사용자가
+    직접 지정해 보정한다. fix_delete=<id,id,...>는 지정 trade_history 행을 삭제, fix_update=
+    <id:수량,id:수량,...>는 지정 행의 수량(과 그에 따른 amount/pnl)을 덮어쓴다. 지정 id는
+    보정 가능 구간(2026-09-28~어제 KST) 내 trade_history 행이어야 하고, DELETE는 BUY 행만,
+    한 번에 최대 5건까지 허용한다 — 하나라도 위반하면 전체 거부한다(부분 적용 없음).
+    plan_hash는 fix_delete/fix_update 내용까지 포함해 계산되므로, apply=1로 실제 적용할
+    때도 confirm=<plan_hash>가 지금 요청한 fix_delete/fix_update와 정확히 일치해야 한다."""
     try:
         today_kst = datetime.now(KST).date()
         start_date = date.fromisoformat(start) if start else date(2026, 9, 1)
@@ -2602,14 +2635,45 @@ async def reconcile_trades_period(start: str = None, end: str = None,
         plan_window_end = min(end_date, today_kst - timedelta(days=1))
         if plan_window_start > plan_window_end:
             plan = {"window": {"start": plan_window_start.isoformat(), "end": plan_window_end.isoformat()},
-                    "inserts": [], "updates": [], "manual_review": []}
+                    "inserts": [], "updates": [], "manual_review": [],
+                    "fix_deletes": [], "fix_updates": []}
         else:
             plan = _kis_recon.build_reconcile_plan(reconcile_result, plan_window_start, plan_window_end)
+
+        # fix_delete/fix_update([AT] feat/reconcile-manual) — 보정 가능 구간 안의
+        # trade_history 행만 지정 보정 대상으로 허용한다(윈도우 밖/존재하지 않는 id는
+        # build_fix_plan이 전체 거부).
+        try:
+            fix_delete_ids = _kis_recon.parse_fix_delete_param(fix_delete)
+            fix_update_map = _kis_recon.parse_fix_update_param(fix_update)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
+        candidate_rows = {
+            r["id"]: r for r in db_rows
+            if plan_window_start <= datetime.strptime(r["date"], "%Y%m%d").date() <= plan_window_end
+        }
+        fix_preview = []
+        if fix_delete_ids or fix_update_map:
+            fix_plan = _kis_recon.build_fix_plan(
+                fix_delete_ids, fix_update_map, candidate_rows, plan_window_start, plan_window_end)
+            if fix_plan["error"]:
+                return {"success": False, "error": fix_plan["error"]}
+            plan["fix_deletes"] = fix_plan["deletes"]
+            plan["fix_updates"] = fix_plan["updates"]
+            kis_qty_by_key = _kis_recon.aggregate_kis_qty_by_key(kis_result["rows"])
+            fix_preview = _kis_recon.build_fix_preview(
+                candidate_rows, fix_delete_ids, fix_update_map, kis_qty_by_key)
+
         plan_hash = _kis_recon.compute_plan_hash(plan)
 
         apply_result = None
         if not apply:
-            await _send_telegram(_kis_recon.build_plan_summary_text(plan, plan_hash), dest="personal")
+            plan_text = _kis_recon.build_plan_summary_text(plan, plan_hash)
+            preview_text = _kis_recon.build_fix_preview_text(fix_preview)
+            if preview_text:
+                plan_text += "\n" + preview_text
+            await _send_telegram(plan_text, dest="personal")
         else:
             if not confirm or confirm != plan_hash:
                 return {
@@ -2634,6 +2698,7 @@ async def reconcile_trades_period(start: str = None, end: str = None,
             "position_check": position_check,
             "reconcile_plan": plan,
             "plan_hash": plan_hash,
+            "fix_preview": fix_preview,
             "apply_result": apply_result,
         }
     except Exception as e:

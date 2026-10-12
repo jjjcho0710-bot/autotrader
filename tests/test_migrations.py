@@ -75,6 +75,7 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V011__widen_jarvis_decision_column.sql",
                 "V012__widen_jarvis_decision_column_40.sql",
                 "V013__reconcile_audit.sql",
+                "V014__reconcile_audit_add_price_ts.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -121,7 +122,7 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 13, "마이그레이션 파일 13개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 14, "마이그레이션 파일 14개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
@@ -154,8 +155,8 @@ class TestMigrationRoundTrip(unittest.TestCase):
         # V010(jarvis_notes INSERT/DELETE)은 테이블 생성/삭제가 없어 tables/indexes
         # 상태에는 영향을 주지 않는다(데이터 마이그레이션만 포함).
 
-        # V011/V012(jarvis_decision 컬럼 타입 변경)도 CREATE/DROP TABLE·INDEX가 아니라서
-        # tables/indexes 상태에는 영향을 주지 않는다.
+        # V011/V012(jarvis_decision 컬럼 타입 변경)/V014(reconcile_audit 컬럼 추가)도
+        # CREATE/DROP TABLE·INDEX가 아니라서 tables/indexes 상태에는 영향을 주지 않는다.
 
         # Down: V012 -> V001 역순
         for version, _up_sql, down_sql in reversed(self.migrations):
@@ -283,6 +284,26 @@ class TestMigrationRoundTrip(unittest.TestCase):
         self.assertEqual(tables, {"reconcile_audit"})
         apply_sql_to_state(down_sql, tables, indexes)
         self.assertEqual(tables, set())
+
+    def test_v014_adds_old_price_and_old_ts_columns_and_is_symmetric(self):
+        """V014([AT] feat/reconcile-manual): reconcile_audit에 old_price/old_ts 컬럼을
+        추가한다 — fix_delete로 삭제되는 trade_history 행을 복원 가능하게 기록하는 데
+        필요(symbol/side/old_quantity/old_amount는 V013에 이미 있음). ALTER TABLE ADD/DROP
+        COLUMN은 CREATE/DROP TABLE 정규식으로 추적되지 않으므로 텍스트 포함 여부로 직접
+        검증한다(V008과 동일한 패턴)."""
+        _version, up_sql, down_sql = next(
+            m for m in self.migrations if m[0].startswith("V014")
+        )
+        self.assertIn("ADD COLUMN IF NOT EXISTS old_price", up_sql)
+        self.assertIn("ADD COLUMN IF NOT EXISTS old_ts", up_sql)
+        self.assertIn("DROP COLUMN IF EXISTS old_ts", down_sql)
+        self.assertIn("DROP COLUMN IF EXISTS old_price", down_sql)
+
+        tables, indexes = {"reconcile_audit"}, set()
+        apply_sql_to_state(up_sql, tables, indexes)
+        self.assertEqual(tables, {"reconcile_audit"})
+        apply_sql_to_state(down_sql, tables, indexes)
+        self.assertEqual(tables, {"reconcile_audit"})
 
 
 if __name__ == "__main__":

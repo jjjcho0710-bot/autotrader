@@ -21,10 +21,26 @@ KIS에선 체결·보유 중인데 DB에는 없었음). dashboard/kis_history_re
 - compute_plan_hash는 계획이 같으면 같은 해시, 하나라도 다르면 다른 해시를 낸다.
 - apply_reconcile_plan은 중복 INSERT를 건너뛰고, 액션마다 감사 행을 남기고,
   중간에 실패하면 트랜잭션 전체가 롤백된다(주입된 페이크 db로 검증).
+
+수동확인 보강 + 지정 보정 관련 추가 검증([AT] feat/reconcile-manual):
+- build_reconcile_plan의 manual_review는 qty_mismatch(DB 행 2개 이상)뿐 아니라
+  extra_in_db(KIS 체결 없음)도 포함하고, 각 항목에 KIS 체결 상세·DB 행 상세를 그대로
+  들고 있다(build_plan_summary_text가 이를 모두 풀어서 표시).
+- parse_fix_delete_param/parse_fix_update_param은 "id,id,..."/"id:수량,id:수량,..."을
+  파싱하고, 형식이 잘못되면 ValueError를 낸다.
+- build_fix_plan은 존재하지 않는(또는 윈도우 밖) id, SELL 삭제, 삭제 5건 초과, 삭제·수정
+  id 중복을 전부 거부(부분 적용 없음)하고, 정상 입력에서는 올바른 deletes/updates를
+  만든다.
+- build_fix_preview는 지정 보정 적용 후 (종목,방향,날짜)별 DB 합계 vs KIS 수량을
+  올바르게 계산한다.
+- compute_plan_hash는 fix_deletes/fix_updates 유무에 따라 다른 해시를 낸다.
+- apply_reconcile_plan은 fix_deletes/fix_updates를 같은 트랜잭션에서 처리해 DELETE/UPDATE
+  감사 행(old_price/old_ts 포함)을 남기고, 영향받은 종목의 net_position을 재계산해
+  반환한다.
 """
 import sys
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -345,6 +361,70 @@ class TestBuildReconcilePlan(unittest.TestCase):
         self.assertEqual(len(plan["manual_review"]), 1)
         self.assertEqual(plan["manual_review"][0]["db_row_ids"], [1, 2])
 
+    def test_qty_mismatch_manual_review_carries_kis_and_db_row_detail(self):
+        """수동확인 항목에는 KIS 체결 각 건(시각/수량/체결가/odno)과 DB 후보 행 각 건
+        (id/ts/수량/가격/금액/strategy)이 그대로 들어있어야 한다([AT] feat/reconcile-manual —
+        build_plan_summary_text가 이를 풀어서 표시)."""
+        reconcile_result = {
+            "missing_in_db": [], "extra_in_db": [],
+            "qty_mismatch": [{
+                "symbol": "007810", "side": "BUY", "date": "20260928",
+                "kis_qty": 8, "db_qty": 19,
+                "kis_executions": [{"qty": 8, "avg_price": 1000.0, "odno": "1", "time_kst": "093000"}],
+                "db_rows": [
+                    {"id": 317, "qty": 11, "price": 1000.0, "amount": 11000.0, "strategy": None,
+                     "ts_kst": None},
+                    {"id": 326, "qty": 3, "price": 1000.0, "amount": 3000.0, "strategy": None,
+                     "ts_kst": None},
+                    {"id": 330, "qty": 5, "price": 1000.0, "amount": 5000.0, "strategy": None,
+                     "ts_kst": None},
+                ],
+            }],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        mr = plan["manual_review"][0]
+        self.assertEqual(len(mr["kis_executions"]), 1)
+        self.assertEqual(mr["kis_executions"][0]["odno"], "1")
+        self.assertEqual([r["id"] for r in mr["db_rows"]], [317, 326, 330])
+
+    def test_extra_in_db_within_window_becomes_manual_review(self):
+        """KIS 체결이 전혀 없는 DB 전용 항목(extra_in_db)도 자동 보정하지 않고
+        manual_review로 표시해야 한다([AT] feat/reconcile-manual — 023790 DB에만 존재
+        사례)."""
+        reconcile_result = {
+            "missing_in_db": [], "qty_mismatch": [],
+            "extra_in_db": [{
+                "symbol": "023790", "side": "BUY", "date": "20260930", "qty": 273,
+                "db_rows": [
+                    {"id": 342, "qty": 91, "price": 5000.0, "amount": 455000.0, "strategy": None},
+                    {"id": 347, "qty": 182, "price": 5000.0, "amount": 910000.0, "strategy": None},
+                ],
+            }],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertEqual(len(plan["manual_review"]), 1)
+        mr = plan["manual_review"][0]
+        self.assertEqual(mr["symbol"], "023790")
+        self.assertEqual(mr["kis_executions"], [])
+        self.assertEqual(mr["db_row_ids"], [342, 347])
+
+    def test_extra_in_db_outside_window_is_excluded(self):
+        reconcile_result = {
+            "missing_in_db": [], "qty_mismatch": [],
+            "extra_in_db": [{
+                "symbol": "023790", "side": "BUY", "date": "20260927", "qty": 10,
+                "db_rows": [{"id": 1, "qty": 10}],
+            }],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertEqual(plan["manual_review"], [])
+
+    def test_plan_always_has_empty_fix_lists_by_default(self):
+        reconcile_result = {"missing_in_db": [], "qty_mismatch": [], "extra_in_db": []}
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertEqual(plan["fix_deletes"], [])
+        self.assertEqual(plan["fix_updates"], [])
+
     def test_pnl_none_stays_none_after_update(self):
         reconcile_result = {
             "missing_in_db": [], "extra_in_db": [],
@@ -372,6 +452,180 @@ class TestComputePlanHash(unittest.TestCase):
                    "updates": [], "manual_review": []}
         self.assertNotEqual(kr.compute_plan_hash(plan_a), kr.compute_plan_hash(plan_b))
 
+    def test_fix_deletes_and_fix_updates_change_the_hash(self):
+        """plan_hash 계산에 fix_delete/fix_update 내용이 포함되어야 한다([AT]
+        feat/reconcile-manual, PM 지시) — 지정 보정이 있으면 없을 때와 다른 해시가 나와야
+        apply=1 confirm이 "지금 요청한 지정 보정"과 정확히 일치하는지 검증할 수 있다."""
+        base = {"window": {}, "inserts": [], "updates": [], "manual_review": [],
+                "fix_deletes": [], "fix_updates": []}
+        with_delete = {**base, "fix_deletes": [{"trade_history_id": 326, "symbol": "007810"}]}
+        with_update = {**base, "fix_updates": [{"trade_history_id": 317, "new_quantity": 8}]}
+        base_hash = kr.compute_plan_hash(base)
+        self.assertNotEqual(base_hash, kr.compute_plan_hash(with_delete))
+        self.assertNotEqual(base_hash, kr.compute_plan_hash(with_update))
+        self.assertNotEqual(kr.compute_plan_hash(with_delete), kr.compute_plan_hash(with_update))
+
+
+class TestParseFixParams(unittest.TestCase):
+    def test_parse_fix_delete_param_basic(self):
+        self.assertEqual(kr.parse_fix_delete_param("326,330"), [326, 330])
+
+    def test_parse_fix_delete_param_empty_or_none(self):
+        self.assertEqual(kr.parse_fix_delete_param(None), [])
+        self.assertEqual(kr.parse_fix_delete_param(""), [])
+
+    def test_parse_fix_delete_param_malformed_raises(self):
+        with self.assertRaises(ValueError):
+            kr.parse_fix_delete_param("326,abc")
+
+    def test_parse_fix_update_param_basic(self):
+        self.assertEqual(kr.parse_fix_update_param("317:8,1:3.5"), {317: 8.0, 1: 3.5})
+
+    def test_parse_fix_update_param_empty_or_none(self):
+        self.assertEqual(kr.parse_fix_update_param(None), {})
+        self.assertEqual(kr.parse_fix_update_param(""), {})
+
+    def test_parse_fix_update_param_malformed_raises(self):
+        with self.assertRaises(ValueError):
+            kr.parse_fix_update_param("317-8")
+        with self.assertRaises(ValueError):
+            kr.parse_fix_update_param("abc:8")
+
+
+def _candidate_row(id_, symbol, side, qty, date_str="20260928", price=1000.0,
+                    amount=None, pnl=None, ts=None):
+    return {"id": id_, "symbol": symbol, "side": side, "qty": qty, "date": date_str,
+            "price": price, "amount": amount if amount is not None else price * qty,
+            "pnl": pnl, "ts": ts}
+
+
+class TestBuildFixPlan(unittest.TestCase):
+    """007810 BUY 2026-09-28 사례(DB 3행 11+3+5=19주 vs KIS 8주)를 fix_delete=326,330 &
+    fix_update=317:8로 보정하는 흐름을 기준으로 안전조건을 검증한다([AT]
+    feat/reconcile-manual)."""
+
+    def setUp(self):
+        self.window_start, self.window_end = date(2026, 9, 28), date(2026, 10, 11)
+        self.candidates = {
+            317: _candidate_row(317, "007810", "BUY", 11),
+            326: _candidate_row(326, "007810", "BUY", 3),
+            330: _candidate_row(330, "007810", "BUY", 5),
+        }
+
+    def test_valid_delete_and_update_combination(self):
+        result = kr.build_fix_plan([326, 330], {317: 8}, self.candidates,
+                                    self.window_start, self.window_end)
+        self.assertIsNone(result["error"])
+        self.assertEqual({d["trade_history_id"] for d in result["deletes"]}, {326, 330})
+        self.assertEqual(len(result["updates"]), 1)
+        upd = result["updates"][0]
+        self.assertEqual(upd["trade_history_id"], 317)
+        self.assertEqual(upd["old_quantity"], 11)
+        self.assertEqual(upd["new_quantity"], 8)
+        self.assertEqual(upd["new_amount"], 8000.0)
+
+    def test_delete_records_old_values_for_restore(self):
+        """DELETE 대상은 복원에 필요한 이전 값(symbol/side/quantity/price/amount/ts)을
+        전부 들고 있어야 한다([AT] feat/reconcile-manual, PM 지시)."""
+        ts = datetime(2026, 9, 28, 9, 31, 0)
+        candidates = dict(self.candidates)
+        candidates[326] = _candidate_row(326, "007810", "BUY", 3, amount=3000.0, pnl=None, ts=ts)
+        result = kr.build_fix_plan([326], {}, candidates, self.window_start, self.window_end)
+        self.assertIsNone(result["error"])
+        d = result["deletes"][0]
+        self.assertEqual(d["symbol"], "007810")
+        self.assertEqual(d["side"], "BUY")
+        self.assertEqual(d["old_quantity"], 3)
+        self.assertEqual(d["old_price"], 1000.0)
+        self.assertEqual(d["old_amount"], 3000.0)
+        self.assertEqual(d["old_ts"], ts)
+
+    def test_nonexistent_id_is_rejected_entirely(self):
+        result = kr.build_fix_plan([999], {}, self.candidates, self.window_start, self.window_end)
+        self.assertIsNotNone(result["error"])
+        self.assertEqual(result["deletes"], [])
+        self.assertEqual(result["updates"], [])
+
+    def test_id_outside_window_is_rejected(self):
+        """윈도우 밖 행은 호출부가 candidate_rows에서 아예 제외하므로, build_fix_plan
+        입장에서는 '존재하지 않는 id'와 동일하게 거부된다."""
+        candidates_without_317 = {k: v for k, v in self.candidates.items() if k != 317}
+        result = kr.build_fix_plan([], {317: 8}, candidates_without_317,
+                                    self.window_start, self.window_end)
+        self.assertIsNotNone(result["error"])
+        self.assertIn("317", result["error"])
+
+    def test_sell_delete_is_rejected(self):
+        candidates = dict(self.candidates)
+        candidates[400] = _candidate_row(400, "005930", "SELL", 10)
+        result = kr.build_fix_plan([400], {}, candidates, self.window_start, self.window_end)
+        self.assertIsNotNone(result["error"])
+        self.assertEqual(result["deletes"], [])
+
+    def test_more_than_five_deletes_is_rejected(self):
+        candidates = {i: _candidate_row(i, "005930", "BUY", 1) for i in range(1, 8)}
+        result = kr.build_fix_plan(list(range(1, 8)), {}, candidates,
+                                    self.window_start, self.window_end)
+        self.assertIsNotNone(result["error"])
+        self.assertEqual(result["deletes"], [])
+
+    def test_exactly_five_deletes_is_allowed(self):
+        candidates = {i: _candidate_row(i, "005930", "BUY", 1) for i in range(1, 6)}
+        result = kr.build_fix_plan(list(range(1, 6)), {}, candidates,
+                                    self.window_start, self.window_end)
+        self.assertIsNone(result["error"])
+        self.assertEqual(len(result["deletes"]), 5)
+
+    def test_same_id_in_both_delete_and_update_is_rejected(self):
+        result = kr.build_fix_plan([317], {317: 8}, self.candidates,
+                                    self.window_start, self.window_end)
+        self.assertIsNotNone(result["error"])
+
+    def test_pnl_scaled_proportionally_on_update(self):
+        candidates = dict(self.candidates)
+        candidates[317] = _candidate_row(317, "007810", "BUY", 10, amount=10000.0, pnl=500.0)
+        result = kr.build_fix_plan([], {317: 5}, candidates, self.window_start, self.window_end)
+        self.assertEqual(result["updates"][0]["new_pnl"], 250.0)
+
+class TestBuildFixPreview(unittest.TestCase):
+    def test_delete_and_update_combination_matches_kis_after_fix(self):
+        """007810 사례: fix_delete=326,330 & fix_update=317:8 적용 후 DB 합계가 KIS
+        수량(8)과 일치해야 한다."""
+        candidates = {
+            317: _candidate_row(317, "007810", "BUY", 11),
+            326: _candidate_row(326, "007810", "BUY", 3),
+            330: _candidate_row(330, "007810", "BUY", 5),
+        }
+        kis_qty_by_key = {("007810", "BUY", "20260928"): 8}
+        preview = kr.build_fix_preview(candidates, [326, 330], {317: 8}, kis_qty_by_key)
+        self.assertEqual(len(preview), 1)
+        p = preview[0]
+        self.assertEqual(p["old_db_qty"], 19)
+        self.assertEqual(p["new_db_qty"], 8)
+        self.assertEqual(p["kis_qty"], 8)
+        self.assertTrue(p["matches_after_fix"])
+
+    def test_delete_only_db_candidate_with_no_kis_defaults_to_zero(self):
+        """023790 사례: KIS 체결이 전혀 없으면 kis_qty는 0으로 취급되고, 두 행을 모두
+        삭제하면 DB 합계도 0이 되어 일치해야 한다."""
+        candidates = {
+            342: _candidate_row(342, "023790", "BUY", 91, date_str="20260930"),
+            347: _candidate_row(347, "023790", "BUY", 182, date_str="20260930"),
+        }
+        preview = kr.build_fix_preview(candidates, [342, 347], {}, {})
+        self.assertEqual(len(preview), 1)
+        p = preview[0]
+        self.assertEqual(p["old_db_qty"], 273)
+        self.assertEqual(p["new_db_qty"], 0)
+        self.assertEqual(p["kis_qty"], 0)
+        self.assertTrue(p["matches_after_fix"])
+
+    def test_mismatch_still_reported_when_fix_does_not_fully_reconcile(self):
+        candidates = {317: _candidate_row(317, "007810", "BUY", 11)}
+        kis_qty_by_key = {("007810", "BUY", "20260928"): 8}
+        preview = kr.build_fix_preview(candidates, [], {317: 9}, kis_qty_by_key)
+        self.assertFalse(preview[0]["matches_after_fix"])
+
 
 class _FakeTxn:
     """FakeReconcileDB의 트랜잭션 — 실패 시 진입 시점 상태로 되돌린다(실제 asyncpg
@@ -382,25 +636,31 @@ class _FakeTxn:
     async def __aenter__(self):
         self._snapshot = (
             list(self.db.trades), list(self.db.updates), list(self.db.audits), self.db.next_id,
+            dict(self.db.existing_rows), list(self.db.deleted_ids),
         )
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
         if exc_type is not None:
-            self.db.trades, self.db.updates, self.db.audits, self.db.next_id = self._snapshot
+            (self.db.trades, self.db.updates, self.db.audits, self.db.next_id,
+             self.db.existing_rows, self.db.deleted_ids) = self._snapshot
         return False  # 예외는 그대로 전파(apply_reconcile_plan 호출부가 처리)
 
 
 class _FakeReconcileDB:
     """apply_reconcile_plan()이 요구하는 인터페이스를 실제 asyncpg 없이 흉내내는 페이크.
     exists_backfill은 self.trades를 직접 검사하므로, 같은 plan을 두 번 적용해도
-    실제로 중복 INSERT가 쌓이지 않는지까지 검증할 수 있다."""
-    def __init__(self, fail_update_index=None):
+    실제로 중복 INSERT가 쌓이지 않는지까지 검증할 수 있다. existing_rows는 fix_delete/
+    fix_update([AT] feat/reconcile-manual)가 지우거나 고치는, DB에 이미 있던 행을
+    흉내낸다(symbol/qty를 들고 있어야 net_position 재계산도 검증할 수 있다)."""
+    def __init__(self, fail_update_index=None, existing_rows=None):
         self.trades = []
         self.updates = []
         self.audits = []
         self.next_id = 1000
         self.fail_update_index = fail_update_index
+        self.existing_rows = dict(existing_rows or {})
+        self.deleted_ids = []
 
     def transaction(self):
         return _FakeTxn(self)
@@ -422,6 +682,24 @@ class _FakeReconcileDB:
         if self.fail_update_index == len(self.updates):
             raise RuntimeError("induced failure")
         self.updates.append(upd)
+        if upd["trade_history_id"] in self.existing_rows:
+            self.existing_rows[upd["trade_history_id"]]["qty"] = upd["new_quantity"]
+
+    async def delete_trade(self, trade_history_id):
+        self.deleted_ids.append(trade_history_id)
+        self.existing_rows.pop(trade_history_id, None)
+
+    async def net_position(self, symbol):
+        total = 0.0
+        for row in self.existing_rows.values():
+            if row["symbol"] != symbol:
+                continue
+            total += row["qty"] if row["side"] == "BUY" else -row["qty"]
+        for t in self.trades:
+            if t["symbol"] != symbol:
+                continue
+            total += t["quantity"] if t["side"] == "BUY" else -t["quantity"]
+        return total
 
     async def insert_audit(self, **fields):
         self.audits.append(fields)
@@ -441,6 +719,7 @@ def _sample_plan():
             "new_amount": 103000.0, "old_pnl": 5000.0, "new_pnl": 5150.0,
         }],
         "manual_review": [],
+        "fix_deletes": [], "fix_updates": [],
     }
 
 
@@ -448,7 +727,8 @@ class TestApplyReconcilePlan(unittest.IsolatedAsyncioTestCase):
     async def test_inserts_and_updates_write_matching_audit_rows(self):
         db = _FakeReconcileDB()
         result = await kr.apply_reconcile_plan(_sample_plan(), db)
-        self.assertEqual(result, {"inserted": 1, "updated": 1, "skipped": 0, "manual_review": 0})
+        self.assertEqual(result, {"inserted": 1, "updated": 1, "skipped": 0, "deleted": 0,
+                                   "manual_review": 0, "net_positions": {}})
         self.assertEqual(len(db.trades), 1)
         self.assertEqual(len(db.updates), 1)
         self.assertEqual(len(db.audits), 2)
@@ -484,6 +764,117 @@ class TestApplyReconcilePlan(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.trades, [], "실패 시 먼저 쓴 INSERT까지 롤백되어야 함")
         self.assertEqual(db.updates, [], "실패 시 먼저 쓴 UPDATE까지 롤백되어야 함")
         self.assertEqual(db.audits, [], "실패 시 감사 행도 남지 않아야 함")
+
+
+# ── [AT] feat/reconcile-manual — fix_delete/fix_update 적용 ───────────────────
+
+
+def _fix_plan_with(fix_deletes=None, fix_updates=None):
+    plan = _sample_plan()
+    plan["inserts"] = []
+    plan["updates"] = []
+    plan["fix_deletes"] = fix_deletes or []
+    plan["fix_updates"] = fix_updates or []
+    return plan
+
+
+class TestApplyReconcilePlanWithFixes(unittest.IsolatedAsyncioTestCase):
+    """007810 BUY 2026-09-28 사례: fix_delete=326,330 & fix_update=317:8로 DB 합계를
+    19주→8주로 보정하는 적용 흐름을 검증한다([AT] feat/reconcile-manual)."""
+
+    def setUp(self):
+        self.existing_rows = {
+            317: {"symbol": "007810", "side": "BUY", "qty": 11},
+            326: {"symbol": "007810", "side": "BUY", "qty": 3},
+            330: {"symbol": "007810", "side": "BUY", "qty": 5},
+        }
+
+    async def test_fix_delete_and_update_write_matching_audit_rows_and_net_position(self):
+        ts = datetime(2026, 9, 28, 9, 32, 0)
+        plan = _fix_plan_with(
+            fix_deletes=[
+                {"trade_history_id": 326, "symbol": "007810", "side": "BUY", "date": "20260928",
+                 "old_quantity": 3, "old_price": 1000.0, "old_amount": 3000.0, "old_pnl": None,
+                 "old_ts": ts},
+                {"trade_history_id": 330, "symbol": "007810", "side": "BUY", "date": "20260928",
+                 "old_quantity": 5, "old_price": 1000.0, "old_amount": 5000.0, "old_pnl": None,
+                 "old_ts": ts},
+            ],
+            fix_updates=[
+                {"trade_history_id": 317, "symbol": "007810", "side": "BUY", "date": "20260928",
+                 "old_quantity": 11, "new_quantity": 8, "old_amount": 11000.0, "new_amount": 8000.0,
+                 "old_pnl": None, "new_pnl": None},
+            ],
+        )
+        db = _FakeReconcileDB(existing_rows=self.existing_rows)
+        result = await kr.apply_reconcile_plan(plan, db)
+
+        self.assertEqual(result["deleted"], 2)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(sorted(db.deleted_ids), [326, 330])
+        self.assertEqual(db.updates[0]["new_quantity"], 8)
+
+        delete_audits = [a for a in db.audits if a["action"] == "DELETE"]
+        self.assertEqual(len(delete_audits), 2)
+        for a in delete_audits:
+            self.assertEqual(a["symbol"], "007810")
+            self.assertEqual(a["side"], "BUY")
+            self.assertEqual(a["old_price"], 1000.0)
+            self.assertEqual(a["old_ts"], ts)
+        update_audits = [a for a in db.audits if a["action"] == "UPDATE"]
+        self.assertEqual(len(update_audits), 1)
+        self.assertEqual(update_audits[0]["new_quantity"], 8)
+
+        # 보정 후 DB 순포지션: 8(317 수정) + 0(326,330 삭제) = 8주 (KIS 8주와 일치)
+        self.assertEqual(result["net_positions"], {"007810": 8})
+
+    async def test_fix_delete_rejects_are_not_this_functions_job(self):
+        """build_fix_plan이 이미 안전조건을 검사해 통과시킨 plan만 apply_reconcile_plan에
+        들어온다 — 여기서는 주어진 fix_deletes/fix_updates를 그대로 실행만 한다."""
+        plan = _fix_plan_with(fix_deletes=[
+            {"trade_history_id": 999, "symbol": "999999", "side": "BUY", "date": "20260928",
+             "old_quantity": 1, "old_price": 1.0, "old_amount": 1.0, "old_pnl": None, "old_ts": None},
+        ])
+        db = _FakeReconcileDB()
+        result = await kr.apply_reconcile_plan(plan, db)
+        self.assertEqual(result["deleted"], 1)
+        self.assertEqual(db.deleted_ids, [999])
+
+    async def test_fix_mid_failure_rolls_back_deletes_and_updates(self):
+        """fix_updates 중간에 실패하면 그 전에 실행된 fix_deletes까지 전부 롤백되어야
+        한다(트랜잭션 전체 롤백)."""
+        plan = _fix_plan_with(
+            fix_deletes=[
+                {"trade_history_id": 326, "symbol": "007810", "side": "BUY", "date": "20260928",
+                 "old_quantity": 3, "old_price": 1000.0, "old_amount": 3000.0, "old_pnl": None,
+                 "old_ts": None},
+            ],
+            fix_updates=[
+                {"trade_history_id": 317, "symbol": "007810", "side": "BUY", "date": "20260928",
+                 "old_quantity": 11, "new_quantity": 8, "old_amount": 11000.0, "new_amount": 8000.0,
+                 "old_pnl": None, "new_pnl": None},
+            ],
+        )
+        db = _FakeReconcileDB(fail_update_index=0, existing_rows=self.existing_rows)
+        with self.assertRaises(RuntimeError):
+            await kr.apply_reconcile_plan(plan, db)
+        self.assertEqual(db.deleted_ids, [], "실패 시 먼저 실행된 DELETE까지 롤백되어야 함")
+        self.assertEqual(db.audits, [], "실패 시 DELETE 감사 행도 남지 않아야 함")
+        self.assertIn(326, db.existing_rows, "롤백되면 삭제된 행이 되돌아와 있어야 함(시뮬레이션)")
+
+    async def test_trade_journal_is_never_touched(self):
+        """지정 보정은 trade_journal을 건드리지 않는다([PM 지시]) — 페이크 db 인터페이스에
+        trade_journal 관련 메서드가 전혀 없어도 적용이 끝까지 성공하는 것으로 그 사실을
+        보장한다(인터페이스 자체가 trade_history/reconcile_audit 범위로만 좁혀져 있음)."""
+        plan = _fix_plan_with(fix_deletes=[
+            {"trade_history_id": 326, "symbol": "007810", "side": "BUY", "date": "20260928",
+             "old_quantity": 3, "old_price": 1000.0, "old_amount": 3000.0, "old_pnl": None,
+             "old_ts": None},
+        ])
+        db = _FakeReconcileDB(existing_rows=self.existing_rows)
+        self.assertFalse(hasattr(db, "trade_journal"))
+        result = await kr.apply_reconcile_plan(plan, db)
+        self.assertEqual(result["deleted"], 1)
 
 
 if __name__ == "__main__":

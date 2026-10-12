@@ -82,6 +82,8 @@ async def _poll_one(
     increment = filled_qty - recorded_qty
     if increment > 0:
         price = avg_price or fallback_price or 0
+        if not avg_price:
+            logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] 주문 {order_no} {price:,.0f}원")
         pnl = None
         if side == "SELL" and cost_basis_avg_price is not None:
             pnl = (price - cost_basis_avg_price) * increment

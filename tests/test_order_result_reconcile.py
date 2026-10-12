@@ -399,6 +399,24 @@ class TestKisStockOrderFillConfirmation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["partial"])
         self.assertEqual(result["avg_fill_price"], 5000.0)
 
+    async def test_buy_fill_also_includes_avg_fill_price(self):
+        """[AT] record-fill-price: 매수도 매도와 동일하게 체결평균가를 돌려줘야 한다 —
+        예전에는 is_buy=False일 때만 avg_fill_price를 결과에 담아 매수 체결가가
+        trade_history에 전혀 반영되지 않았다(009830 사례처럼 주문가로만 기록)."""
+        dm = _load_dashboard_main()
+        get_resp = FakePostResponse({
+            "output1": [{"odno": "O9", "tot_ccld_qty": "8", "avg_prvs": "32178"}]})
+        with patch.object(dm, "config", FakeKisConfig()), \
+             patch.object(dm, "get_kis_token", new=AsyncMock(return_value="FAKE_TOKEN")), \
+             patch("dashboard.main.asyncio.sleep", new=AsyncMock()), \
+             patch("aiohttp.ClientSession", return_value=FakeOrderAndFillSession(
+                 FakePostResponse({"rt_cd": "0", "output": {"ODNO": "O9"}}), [get_resp])):
+            result = await dm._kis_stock_order("009830", 32200, 8, True)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["filled_qty"], 8)
+        self.assertEqual(result["avg_fill_price"], 32178.0)
+
     async def test_zero_fill_after_all_retries_returns_fill_unconfirmed_not_full_qty(self):
         """재조회 2회(+3초,+7초)까지도 체결이 0이면 주문 수량을 그대로 체결로 단정하지
         않고 fill_unconfirmed=True로 돌려줘 호출부가 UNCERTAIN 경로로 재확인하게 한다."""

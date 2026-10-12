@@ -225,6 +225,33 @@ class TestReconcilePendingOrders(_BaseTest):
         self.assertNotIn("order_pending:0009000001", self.fake_redis.store)
         self.assertNotIn("order_pending_lock:005930:sell", self.fake_redis.store)
 
+    async def test_confirms_delayed_buy_fill_records_avg_fill_price(self):
+        """[AT] record-fill-price: 지연 매수 체결 확인도 체결평균가(avg_fill_price)를
+        조회해 trade_history.price에 남겨야 한다 — 주문가(price)를 그대로 쓰면 안 된다."""
+        bot = main.StockTrader()
+        bot.trader = MagicMock()
+        bot.trader._get_filled_qty = AsyncMock(return_value=(10, 60500.0))
+
+        ctx = {
+            "symbol": "005930", "side": "buy", "qty": 10, "price": 60000,
+            "strategy": "MA크로스_매수", "avg_price": None,
+            "accepted_at": _time.time() - 60,
+        }
+        self.fake_redis.store["order_pending:0009000004"] = json.dumps(ctx)
+        self.fake_redis.store["order_pending_lock:005930:buy"] = "0009000004"
+
+        with patch("common.telegram.send_stock", new_callable=AsyncMock) as mock_send:
+            await bot._reconcile_one_pending_order("order_pending:0009000004")
+
+        main.db.insert_trade.assert_awaited_once()
+        _, kwargs = main.db.insert_trade.await_args
+        self.assertEqual(kwargs["side"], "BUY")
+        self.assertEqual(kwargs["quantity"], 10)
+        self.assertEqual(kwargs["price"], 60500)  # 주문가 60000이 아니라 체결평균가
+        bot.trader._get_filled_qty.assert_awaited_once_with(
+            "0009000004", "005930", side="02", with_price=True)
+        mock_send.assert_awaited_once()
+
     async def test_still_unfilled_before_timeout_does_nothing(self):
         """10분 타임아웃 전이면 아직 불명 알림을 보내지 않고 pending을 그대로 유지한다."""
         bot = main.StockTrader()

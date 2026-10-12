@@ -166,7 +166,7 @@ class TestBuyRateLimitRetry(unittest.IsolatedAsyncioTestCase):
         success_resp = {"rt_cd": "0", "output": {"ODNO": "0001234567"}, "msg1": "주문접수완료"}
         session = _QueueSession([limited_resp, success_resp])
         trader._new_session = lambda: session
-        trader._get_filled_qty = AsyncMock(return_value=10)
+        trader._get_filled_qty = AsyncMock(return_value=(10, 70000.0))
 
         res = await trader.buy("005930", 70000, 10)
 

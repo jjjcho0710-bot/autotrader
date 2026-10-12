@@ -1408,6 +1408,109 @@ class TestExecuteFillQuantityRecording(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pool._conn.inserted), 0)
 
 
+# ── [AT] record-fill-price: trade_history.price는 주문가(신호가)가 아니라 실제 체결평균가
+# (kis_order_fn 결과의 avg_fill_price)로 기록해야 한다 — 009830 9/28 KIS 체결 8주
+# @32,178원 vs DB 32,200원(주문가) 기록 사고 재현/검증. avg_fill_price가 없으면(조회 실패
+# 등) 기존처럼 주문가로 대체 기록한다 ──────────────────────────────────────────
+
+
+class TestExecuteFillPriceRecording(unittest.IsolatedAsyncioTestCase):
+    async def test_buy_fill_records_avg_fill_price_not_signal_price(self):
+        """매수 체결평균가(avg_fill_price)가 신호가와 다르면 trade_history.price·amount는
+        신호가가 아니라 체결평균가 기준으로 기록돼야 한다."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "F1", "filled_qty": 1, "avg_fill_price": 69800.0}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(price=70000, qty=1), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+
+        self.assertTrue(result["executed"])
+        self.assertEqual(len(pool._conn.inserted), 1)
+        inserted = pool._conn.inserted[0]
+        self.assertEqual(inserted[4], 69800.0)  # price 컬럼 = 체결평균가(주문가 70000 아님)
+        self.assertEqual(inserted[6], 69800.0)  # amount 컬럼 = 체결평균가 × 체결수량
+
+    async def test_sell_pnl_uses_avg_fill_price_not_signal_price(self):
+        """매도 pnl은 체결평균가 기준(평단 대비)으로 계산해야 한다 — 신호가로 계산하면
+        실제 손익과 어긋난다."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "F2", "filled_qty": 10, "avg_fill_price": 74500.0}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        signal = make_signal(action="sell", price=75000, qty=10)
+        result = await execution_guard.execute(
+            signal, make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name, get_positions_fn=get_positions,
+        )
+
+        # 신호가(75000) 기준이면 pnl=50000이 되지만, 체결평균가(74500) 기준이면 45000이다.
+        self.assertEqual(result["pnl"], 45000)
+        inserted = pool._conn.inserted[0]
+        self.assertEqual(inserted[4], 74500.0)
+        self.assertEqual(inserted[-1], 45000)
+
+    async def test_falls_back_to_signal_price_when_avg_fill_price_missing(self):
+        """avg_fill_price를 못 구했을 때(kis_order_fn 결과에 키가 없음)는 기존처럼
+        신호가로 대체 기록한다 — 이 동작을 지우면(fill price 반영 제거) 위
+        test_sell_pnl_uses_avg_fill_price_not_signal_price가 실패해 회귀를 잡아낸다."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "F3", "filled_qty": 1}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        result = await execution_guard.execute(
+            make_signal(price=70000, qty=1), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+
+        self.assertTrue(result["executed"])
+        self.assertEqual(pool._conn.inserted[0][4], 70000.0)
+
+
 # ── [AT] fix/late-fill-followup: 부분체결로 기록한 주문은 이후 추가 체결을 추적할 수
 # 있게 Redis에 등록해야 한다(10/8 부국철강 100주 매도 사고 — 34주 기록 후 뒤늦게 전량
 # 체결됐지만 늘어난 수량은 trade_history에 전혀 남지 않았다) ──────────────────────

@@ -122,14 +122,18 @@ class TestKISTraderBuyFilled(unittest.IsolatedAsyncioTestCase):
             "msg1": "주문접수완료",
         }
         self.trader._new_session = lambda: DummySession(order_resp)
-        self.trader._get_filled_qty = AsyncMock(return_value=10)
+        self.trader._get_filled_qty = AsyncMock(return_value=(10, 70100.0))
 
         res = await self.trader.buy("005930", 70000, 10)
 
         self.assertTrue(res["success"])
         self.assertEqual(res["filled_qty"], 10)
         self.assertEqual(res["order_no"], "0001234568")
-        self.trader._get_filled_qty.assert_awaited_once_with("0001234568", "005930", side="02")
+        # 매수도 체결평균가(avg_fill_price)를 함께 조회·반환한다([AT] record-fill-price) —
+        # trade_history에 주문가(70000)가 아니라 실제 체결평균가(70100)를 남기기 위함.
+        self.assertEqual(res["avg_fill_price"], 70100.0)
+        self.trader._get_filled_qty.assert_awaited_once_with(
+            "0001234568", "005930", side="02", with_price=True)
 
     @patch("asyncio.sleep", new_callable=AsyncMock)
     async def test_buy_fill_unconfirmed_fallback(self, mock_sleep):
@@ -140,7 +144,7 @@ class TestKISTraderBuyFilled(unittest.IsolatedAsyncioTestCase):
             "msg1": "주문접수완료",
         }
         self.trader._new_session = lambda: DummySession(order_resp)
-        self.trader._get_filled_qty = AsyncMock(return_value=None)
+        self.trader._get_filled_qty = AsyncMock(return_value=(None, None))
 
         res = await self.trader.buy("005930", 70000, 10)
 
@@ -158,7 +162,7 @@ class TestKISTraderBuyFilled(unittest.IsolatedAsyncioTestCase):
             "msg1": "주문접수완료",
         }
         self.trader._new_session = lambda: DummySession(order_resp)
-        self.trader._get_filled_qty = AsyncMock(side_effect=[0, 10])
+        self.trader._get_filled_qty = AsyncMock(side_effect=[(0, 0.0), (10, 70000.0)])
 
         res = await self.trader.buy("005930", 70000, 10)
 
@@ -176,7 +180,7 @@ class TestKISTraderBuyFilled(unittest.IsolatedAsyncioTestCase):
             "msg1": "주문접수완료",
         }
         self.trader._new_session = lambda: DummySession(order_resp)
-        self.trader._get_filled_qty = AsyncMock(return_value=0)
+        self.trader._get_filled_qty = AsyncMock(return_value=(0, 0.0))
         fake_redis = FakeRedis()
 
         with patch.object(cache, "client", fake_redis):

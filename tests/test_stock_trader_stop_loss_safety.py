@@ -135,6 +135,39 @@ class TestStopLossPartialFillKeepsRemainder(_BaseCycleTest):
         self.assertNotIn("sell_fail_suppress:005930", self.fake_redis.store)
 
 
+class TestStopLossFillPriceRecording(_BaseCycleTest):
+    """[AT] record-fill-price: 손절 매도 trade_history.price/pnl은 KISTrader.sell()이
+    돌려준 체결평균가(avg_fill_price) 기준이어야 한다 — cur_price(신호가)로 기록하면
+    실제 체결가와 어긋난다."""
+
+    async def test_uses_avg_fill_price_for_price_and_pnl_when_present(self):
+        pos = _make_position(qty=10)
+        bot = _make_bot(pos)
+        # cur_price(신호가)는 60000이지만 실제 체결평균가는 59500
+        bot.trader.sell = AsyncMock(
+            return_value={"success": True, "filled_qty": 10, "avg_fill_price": 59500.0})
+
+        await bot._run_cycle()
+
+        main.db.insert_trade.assert_awaited_once()
+        _, kwargs = main.db.insert_trade.await_args
+        self.assertEqual(kwargs["price"], 59500.0)
+        self.assertEqual(kwargs["pnl"], int((59500.0 - 70000) * 10))
+
+    async def test_falls_back_to_cur_price_when_avg_fill_price_missing(self):
+        """avg_fill_price가 없으면(조회 실패 등) 기존처럼 cur_price(신호가)로 기록한다."""
+        pos = _make_position(qty=10)
+        bot = _make_bot(pos)
+        bot.trader.sell = AsyncMock(return_value={"success": True, "filled_qty": 10})
+
+        await bot._run_cycle()
+
+        main.db.insert_trade.assert_awaited_once()
+        _, kwargs = main.db.insert_trade.await_args
+        self.assertEqual(kwargs["price"], 60000)
+        self.assertEqual(kwargs["pnl"], int((60000 - 70000) * 10))
+
+
 class TestStopLossFailureRetryDifferentiation(_BaseCycleTest):
     async def test_transient_zero_fill_failure_gets_short_suppression_not_30min(self):
         """'체결 0주' 등 일시적 오류는 첫 실패부터 30분이 아니라 짧게(90초) 억제해야 한다."""

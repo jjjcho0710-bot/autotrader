@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from common.config import config
-from common.fill_recording import partial_fill_note, resolve_filled_quantity
+from common.fill_recording import partial_fill_note, resolve_fill_price, resolve_filled_quantity
 from common.late_fill_tracker import register_partial_fill
 
 logger = logging.getLogger("stark.execution_guard")
@@ -558,7 +558,7 @@ async def _finalize_filled_order(
     pre_avg_price: Optional[float], pool: Any, redis: Any, send_telegram_fn, log_journal_fn,
     save_trade_memory_fn, invalidate_cache_fn, label: str = "완료",
     send_channel_fn: Optional[Any] = None, requested_qty: Optional[float] = None,
-    order_no: Optional[str] = None,
+    order_no: Optional[str] = None, avg_fill_price: Optional[float] = None,
 ) -> Dict[str, Any]:
     """체결이 확인된 주문(정상 성공 또는 응답불명→보유수량 재확인으로 체결 확정)의 공통
     후처리: in-flight 기록, pnl 계산, trade_history/매매일지 기록, 텔레그램 보고, 캐시 무효화.
@@ -566,7 +566,15 @@ async def _finalize_filled_order(
     qty는 항상 "실제 체결 수량"이어야 한다(주문 수량이 아님) — 호출부가 kis_order_fn
     결과에서 common.fill_recording.resolve_filled_quantity()로 미리 판정해 넘긴다.
     requested_qty(원래 주문 수량)가 qty보다 크면 부분체결이므로 "완료" 대신 "일부 체결
-    N/M주 (미체결 K주)"로 보고한다([AT] fix/record-filled-qty)."""
+    N/M주 (미체결 K주)"로 보고한다([AT] fix/record-filled-qty).
+
+    price도 마찬가지로 "실제 체결평균가"여야 한다(신호가/주문가가 아님) — kis_order_fn
+    결과의 avg_fill_price를 common.fill_recording.resolve_fill_price()로 판정해 price를
+    덮어쓴다. 조회 실패 등으로 avg_fill_price가 없으면 기존처럼 주문가(price)를 그대로
+    쓰고 로그에 남긴다([AT] record-fill-price)."""
+    price, _used_order_price_fallback = resolve_fill_price(avg_fill_price, price)
+    if _used_order_price_fallback:
+        logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {price:,.0f}원")
     if requested_qty is None:
         requested_qty = qty
     if is_buy and bot == "stock_trader" and redis is not None:
@@ -844,7 +852,7 @@ async def execute(
                 pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
                 log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
                 invalidate_cache_fn=invalidate_cache_fn, send_channel_fn=send_channel_fn,
-                order_no=order.get("order_no"),
+                order_no=order.get("order_no"), avg_fill_price=order.get("avg_fill_price"),
             )
 
         if order.get("uncertain") or order.get("fill_unconfirmed"):

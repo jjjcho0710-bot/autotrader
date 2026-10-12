@@ -32,7 +32,7 @@ class _AcquireCtx:
 class FakeTradeHistoryConnection:
     def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
                  buy_history=None, raise_on_fetch=False, disclosures=None,
-                 daily_closes=None, raise_on_daily_closes=False):
+                 daily_closes=None, raise_on_daily_closes=False, daily_close_dates=None):
         self.stop_loss_count = stop_loss_count
         self.raise_on_fetchval = raise_on_fetchval
         self.disclosures = disclosures if disclosures is not None else []
@@ -44,6 +44,9 @@ class FakeTradeHistoryConnection:
         # symbol -> 날짜 오름차순 종가 리스트 — 모멘텀 게이트 검사용([AT] feat/momentum-gate)
         self.daily_closes = daily_closes or {}
         self.raise_on_daily_closes = raise_on_daily_closes
+        # symbol -> daily_closes와 같은 길이의 date 리스트(오름차순) — DB 일봉 신선도 검사용
+        # ([AT] fix/momentum-gate-data). 미지정 시 기존 동작과 동일하게 "ts" 없는 행만 반환.
+        self.daily_close_dates = daily_close_dates or {}
 
     async def fetch(self, query, *args):
         if "stock_daily_ohlcv" in query:
@@ -52,6 +55,10 @@ class FakeTradeHistoryConnection:
             symbol, limit = args[0], args[1]
             closes = self.daily_closes.get(symbol, [])
             sliced = closes[-limit:] if limit else closes
+            dates = self.daily_close_dates.get(symbol)
+            if dates:
+                sliced_dates = dates[-limit:] if limit else dates
+                return [{"close": c, "ts": d} for c, d in zip(sliced, sliced_dates)]
             return [{"close": c} for c in sliced]
         if self.raise_on_fetch:
             raise RuntimeError("DB down")
@@ -87,10 +94,11 @@ class FakeTradeHistoryConnection:
 class FakePool:
     def __init__(self, stop_loss_count=0, raise_on_fetchval=False,
                  buy_history=None, raise_on_fetch=False, disclosures=None,
-                 daily_closes=None, raise_on_daily_closes=False):
+                 daily_closes=None, raise_on_daily_closes=False, daily_close_dates=None):
         self._conn = FakeTradeHistoryConnection(
             stop_loss_count, raise_on_fetchval, buy_history, raise_on_fetch, disclosures,
-            daily_closes=daily_closes, raise_on_daily_closes=raise_on_daily_closes)
+            daily_closes=daily_closes, raise_on_daily_closes=raise_on_daily_closes,
+            daily_close_dates=daily_close_dates)
 
     def acquire(self):
         return _AcquireCtx(self._conn)

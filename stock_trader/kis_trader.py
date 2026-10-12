@@ -738,7 +738,10 @@ class KISTrader:
         KIS 일봉 차트 조회 (FHKST03010100)
         start/end: YYYYMMDD
         Returns: [{"date","open","high","low","close","volume","change_rate"}, ...]
-        """
+
+        속도제한(EGW00201) 응답이면 1.5초 후 1회 재시도하고 포기한다([AT]
+        fix/momentum-gate-data — 모멘텀 게이트 대체 조회 경로에서 처음 필요해졌고, 기존
+        호출부(stock_trader/main.py 안전망 등)에도 동일하게 적용된다)."""
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
@@ -755,6 +758,14 @@ class KISTrader:
             url, headers=self._headers(tr_id), params=params
           ) as resp:
             data = await resp.json()
+        if self._is_rate_limited(data):
+            logger.warning(f"⏳ [{symbol}] 일봉 조회 KIS 속도제한(EGW00201) — 1.5초 후 재시도")
+            await asyncio.sleep(1.5)
+            async with self._new_session() as sess:
+              async with sess.get(
+                url, headers=self._headers(tr_id), params=params
+              ) as resp:
+                data = await resp.json()
 
         candles = []
         for row in data.get("output2", []):

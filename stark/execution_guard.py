@@ -694,6 +694,17 @@ async def _finalize_filled_order(
         except Exception:
             pass
 
+    if is_buy and bot == "stock_trader" and qty > 0 and pool is not None:
+        # 매수 체결 확정 종목을 watchlist에 활성화([AT] fix/holdings-daily-collect) —
+        # 채팅 수동매수 등으로 담은 종목이 watchlist에 없으면 일봉 수집 대상에서 빠져
+        # 보유 중인데도 수집이 끊기는 사고로 이어진다. 실패해도 매수 기록·주문 흐름은
+        # 막지 않는다(경고 로그만).
+        try:
+            from router.handlers import watchlist_handler
+            await watchlist_handler.add_symbol(pool, symbol, name)
+        except Exception as e:
+            logger.warning(f"매수 체결 종목 watchlist 활성화 실패(무시) [{symbol}]: {e}")
+
     if save_trade_memory_fn:
         await save_trade_memory_fn(symbol=symbol, action=action_kr, price=float(price),
                                     amount=float(price * qty), result="성공", reason=reason)

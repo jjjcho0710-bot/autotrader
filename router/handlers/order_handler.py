@@ -282,6 +282,13 @@ async def handle_proposal_response(
                                 fill_price * filled_qty, target.get("strategy", "제안"))
                     except Exception:
                         pass
+                if pool is not None and filled_qty > 0:
+                    # 제안 승인 매수 체결 종목을 watchlist에 활성화([AT] fix/holdings-daily-collect).
+                    try:
+                        from router.handlers import watchlist_handler
+                        await watchlist_handler.add_symbol(pool, symbol, target["name"])
+                    except Exception as e:
+                        logger.warning(f"매수 체결 종목 watchlist 활성화 실패(무시) [{symbol}]: {e}")
                 if fill_note and order.get("order_no"):
                     await register_partial_fill(
                         redis, order_no=order["order_no"], symbol=symbol, side="BUY", bot="stock_trader",
@@ -318,6 +325,12 @@ async def handle_proposal_response(
                                     float(target["price"]) * diff_qty, target.get("strategy", "제안"))
                         except Exception:
                             pass
+                    if pool is not None and diff_qty > 0:
+                        try:
+                            from router.handlers import watchlist_handler
+                            await watchlist_handler.add_symbol(pool, symbol, target["name"])
+                        except Exception as e:
+                            logger.warning(f"매수 체결 종목 watchlist 활성화 실패(무시) [{symbol}]: {e}")
                     await log_journal_fn("stock_trader", symbol, target["name"], "buy",
                                           target.get("strategy", "제안"), "주인 승인(응답지연)",
                                           "PROPOSE_APPROVED_UNCERTAIN_FILLED",
@@ -570,6 +583,15 @@ async def handle_trade_command(
                             _strategy_tag, pnl)
                 except Exception:
                     pass
+            if is_buy and filled_qty > 0 and pool is not None:
+                # 수동 채팅 매수 체결 종목을 watchlist에 활성화([AT] fix/holdings-daily-collect)
+                # — 채팅으로 담은 종목이 watchlist에 없으면 보유 중인데도 일봉 수집이
+                # 끊긴다. 실패해도 매수 기록·주문 흐름은 막지 않는다.
+                try:
+                    from router.handlers import watchlist_handler
+                    await watchlist_handler.add_symbol(pool, symbol, name)
+                except Exception as e:
+                    logger.warning(f"매수 체결 종목 watchlist 활성화 실패(무시) [{symbol}]: {e}")
             if fill_note and result.get("order_no"):
                 await register_partial_fill(
                     redis, order_no=result["order_no"], symbol=symbol, side=action.upper(), bot="stock_trader",
@@ -622,6 +644,12 @@ async def handle_trade_command(
                             float(price) * diff_qty, _strategy_tag + "(응답지연)", pnl)
                 except Exception:
                     pass
+                if is_buy and diff_qty > 0 and pool is not None:
+                    try:
+                        from router.handlers import watchlist_handler
+                        await watchlist_handler.add_symbol(pool, symbol, name)
+                    except Exception as e:
+                        logger.warning(f"매수 체결 종목 watchlist 활성화 실패(무시) [{symbol}]: {e}")
                 try:
                     for k in ("cache:positions:stock", "cache:account:stock"):
                         await redis.delete(k)

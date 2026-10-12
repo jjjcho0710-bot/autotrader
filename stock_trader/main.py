@@ -846,6 +846,14 @@ class StockTrader:
                 strategy=f"{strategy}_지연체결확인" if strategy else "지연체결확인",
                 pnl=pnl,
             )
+            if side == "buy":
+                # 매수 체결 확정 종목을 watchlist에 활성화([AT] fix/holdings-daily-collect)
+                # — 실패해도 매수 기록·주문 흐름은 막지 않는다(경고 로그만).
+                try:
+                    if not await db.add_watchlist(symbol):
+                        logger.warning(f"매수 체결 종목 watchlist 활성화 실패 [{symbol}]")
+                except Exception as e:
+                    logger.warning(f"매수 체결 종목 watchlist 활성화 실패(무시) [{symbol}]: {e}")
             await self._invalidate_position_cache()
             self.trader.invalidate_balance_cache()
             try:

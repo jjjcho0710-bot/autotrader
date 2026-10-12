@@ -1000,28 +1000,37 @@ async def _jarvis_stock_scanner():
         # 매일 재선정: 스캐너가 넣은 기존 종목은 비활성화하되,
         # 현재 보유 중인 종목과 수동 추가 종목은 유지
         held_symbols = set()
+        positions_ok = False
         try:
             pos_res = await get_stock_positions()
-            if pos_res.get("success"):
+            if isinstance(pos_res, dict) and pos_res.get("success") and not pos_res.get("stale"):
                 held_symbols = {p["symbol"] for p in pos_res.get("data", []) if p.get("symbol")}
+                positions_ok = True
+            else:
+                logger.warning(f"보유 종목 조회 실패/stale — 오늘 비활성화 건너뜀(오탐 방지): {pos_res}")
         except Exception as e:
-            logger.warning(f"보유 종목 조회 실패(무시): {e}")
+            logger.warning(f"보유 종목 조회 실패(예외) — 오늘 비활성화 건너뜀(오탐 방지): {e}")
 
         today_symbols = {c["symbol"] for c in candidates}
         added = []
         async with db_pool.acquire() as conn:
-            # 1) 스캐너가 넣었던 종목 중 오늘 안 뽑혔고 보유중도 아닌 것 → 비활성화
-            old_scanner = await conn.fetch(
-                "SELECT symbol FROM watchlist WHERE is_active=TRUE AND added_by='jarvis_scanner'"
-            )
+            # 1) 스캐너가 넣었던 종목 중 오늘 안 뽑혔고 보유중도 아닌 것 → 비활성화.
+            # 보유 종목 조회가 실패/stale이면 held_symbols를 신뢰할 수 없으므로 이 블록
+            # 전체를 건너뛴다 — 조회 실패를 "보유 중 아님"으로 오판해 실제 보유종목의
+            # 일봉 수집을 끊어버리는 사고를 막는다([AT] fix/holdings-daily-collect,
+            # 000270/249420 사례).
             deactivated = 0
-            for r in old_scanner:
-                sym = r["symbol"]
-                if sym not in today_symbols and sym not in held_symbols:
-                    await conn.execute(
-                        "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", sym
-                    )
-                    deactivated += 1
+            if positions_ok:
+                old_scanner = await conn.fetch(
+                    "SELECT symbol FROM watchlist WHERE is_active=TRUE AND added_by='jarvis_scanner'"
+                )
+                for r in old_scanner:
+                    sym = r["symbol"]
+                    if sym not in today_symbols and sym not in held_symbols:
+                        await conn.execute(
+                            "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", sym
+                        )
+                        deactivated += 1
 
             # 2) 오늘 뽑은 종목 활성화 (신규는 추가, 기존은 갱신)
             existing_active = {r["symbol"] for r in await conn.fetch(
@@ -5848,6 +5857,20 @@ async def _get_stock_positions_raw():
                 if not summary:
                     err_msg = data.get("msg1") or "KIS 잔고 응답(output2) 비어있음"
                     logger.warning(f"⚠️ KIS 잔고 응답 이상: {err_msg}")
+                    # 다른 실패 분기(HTTP/rt_cd 오류, 예외)와 동일하게 last_ok 스냅샷으로
+                    # 폴백한다 — 여기만 폴백이 없으면 held_symbols가 빈 집합이 되어 아침
+                    # 스캐너가 실제 보유종목을 비활성화하는 사고로 이어진다([AT]
+                    # fix/holdings-daily-collect). 폴백 데이터에는 stale 표시를 유지한다.
+                    try:
+                        snap = await redis_client.get("positions:last_ok")
+                        if snap:
+                            d = json.loads(snap if isinstance(snap, str) else snap.decode())
+                            if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
+                                d["stale"] = True
+                                d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
+                                return d
+                    except Exception:
+                        pass
                     return {"success": False, "error": err_msg, "data": []}
 
                 total_eval = int(summary.get("tot_evlu_amt", 0) or 0)

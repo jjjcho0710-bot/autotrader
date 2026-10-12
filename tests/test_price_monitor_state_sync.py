@@ -3,7 +3,8 @@ stock_trader/main.py의 가격 감시 루프와 실행기 억제 상태 동기�
 
 검증 항목:
 1. 손절선(-7%) 도달 시 sell_fail_suppress 키가 있으면 "손절 재시도 대기 중 (원인: OO)" 메시지가 생성된다.
-2. sell_fail_suppress 키가 없으면 "시스템이 즉시 자동 손절 매도 처리 중입니다." 메시지가 생성된다.
+2. sell_fail_suppress 키가 없으면 "손절선 이탈 감지 — 다음 매매 사이클(최대 60초 이내)에서 손절 매도를 판정합니다." 메시지가 생성된다.
+   (실제 손절 매도는 _run_cycle 60초 주기에서 처리되며, 이 3초 감시 루프는 매도를 호출하지 않는다.)
 3. sell_fail_suppress 키가 단순 문자열이거나 JSON 포맷일 때 모두 호환성 있게 파싱된다.
 """
 import json
@@ -30,16 +31,17 @@ def build_stop_loss_alert_message(nm: str, symbol: str, pnl_rate: float, suppres
     else:
         return (
             f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
-            f"시스템이 즉시 자동 손절 매도 처리 중입니다."
+            f"손절선 이탈 감지 — 다음 매매 사이클(최대 60초 이내)에서 손절 매도를 판정합니다."
         )
 
 
 class TestPriceMonitorStateSync(unittest.TestCase):
     def test_alert_when_not_suppressed(self):
-        """억제 중이 아닐 때 시스템이 즉시 자동 손절 매도 처리 중 안내"""
+        """억제 중이 아닐 때 다음 사이클에서 손절 판정한다는 안내 (매도 즉시 처리로 오인되지 않도록)"""
         msg = build_stop_loss_alert_message("카카오뱅크", "323410", -7.5, None)
-        self.assertIn("시스템이 즉시 자동 손절 매도 처리 중입니다.", msg)
+        self.assertIn("손절선 이탈 감지 — 다음 매매 사이클(최대 60초 이내)에서 손절 매도를 판정합니다.", msg)
         self.assertNotIn("손절 재시도 대기 중", msg)
+        self.assertNotIn("시스템이 즉시 자동 손절 매도 처리 중입니다.", msg)
 
     def test_alert_when_suppressed_with_json_reason(self):
         """JSON 포맷으로 원인이 기록된 경우 정확한 원인 안내"""
@@ -47,7 +49,7 @@ class TestPriceMonitorStateSync(unittest.TestCase):
         msg = build_stop_loss_alert_message("카카오뱅크", "323410", -7.5, raw)
         self.assertIn("손절 재시도 대기 중 (원인: 모의투자 주문이 불가한 계좌입니다)", msg)
         self.assertIn("30분 쿨다운 동안 재시도가 억제됩니다", msg)
-        self.assertNotIn("시스템이 즉시 자동 손절 매도 처리 중입니다.", msg)
+        self.assertNotIn("손절선 이탈 감지 — 다음 매매 사이클(최대 60초 이내)에서 손절 매도를 판정합니다.", msg)
 
     def test_alert_when_suppressed_with_legacy_colon_string(self):
         """레거시 '1:에러사유' 문자열도 파싱 호환"""

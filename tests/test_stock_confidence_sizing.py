@@ -58,10 +58,44 @@ class TestApplyStockConfidenceSizing(unittest.TestCase):
         qty = dm._apply_stock_confidence_sizing(signal, is_small=True)
         self.assertEqual(qty, 200)  # 4,000,000×0.5=2,000,000 / 10,000 (캡 미적용)
 
-    def test_at_least_one_share_when_amount_rounds_down_to_zero(self):
+    def test_skip_when_amount_rounds_down_below_one_share(self):
+        # [AT] fix/sizing-below-one-share: 과거에는 max(1, ...)로 1주를 강제 매수해
+        # RISK_PER_TRADE_PCT 손실 상한이 고가 종목에서 깨졌다. 이 가드를 되돌리면(원복해서
+        # max(1, int(final_amount // price))로 바꾸면) 아래 assertEqual(qty, 0)이
+        # 실패하며 qty == 1이 나온다 — 이 테스트가 revert 감지 역할을 한다.
         signal = {"price": 10_000, "qty": 1, "base_amount": 100, "cash": 50_000_000}
         qty = dm._apply_stock_confidence_sizing(signal, is_small=False)
+        self.assertEqual(qty, 0)
+        self.assertIn("1주 가격 미만", signal["sizing_skip_reason"])
+        self.assertIn("100원", signal["sizing_skip_reason"])
+        self.assertIn("10,000원", signal["sizing_skip_reason"])
+
+    def test_execute_small_high_price_stock_skips_below_one_share(self):
+        # EXECUTE_SMALL(0.5배) 적용 후 금액이 고가 종목 1주 가격보다 작아지는 경우.
+        signal = {"price": 1_000_000, "qty": 1, "base_amount": 1_500_000, "cash": 50_000_000}
+        qty = dm._apply_stock_confidence_sizing(signal, is_small=True)
+        self.assertEqual(qty, 0)  # 1,500,000 × 0.5 = 750,000 < 1,000,000
+        self.assertIn("sizing_skip_reason", signal)
+
+    def test_cash_cap_causing_skip_below_one_share(self):
+        # 예수금 캡 적용 후 금액이 1주 가격보다 작아지는 경우.
+        signal = {"price": 1_000_000, "qty": 1, "base_amount": 5_000_000, "cash": 800_000}
+        qty = dm._apply_stock_confidence_sizing(signal, is_small=False)
+        self.assertEqual(qty, 0)  # min(5,000,000, 800,000) = 800,000 < 1,000,000
+        self.assertIn("sizing_skip_reason", signal)
+
+    def test_exactly_one_share_threshold_still_passes(self):
+        # final_amount == price(1주 가격)이면 스킵이 아니라 정확히 1주 매수로 통과해야 한다.
+        signal = {"price": 10_000, "qty": 1, "base_amount": 10_000, "cash": 50_000_000}
+        qty = dm._apply_stock_confidence_sizing(signal, is_small=False)
         self.assertEqual(qty, 1)
+        self.assertNotIn("sizing_skip_reason", signal)
+
+    def test_large_order_quantity_unchanged_above_threshold(self):
+        # final_amount >= price인 정상 대량 주문 수량 계산은 기존과 동일해야 한다.
+        signal = {"price": 50_000, "qty": 1, "base_amount": 10_000_000, "cash": 50_000_000}
+        qty = dm._apply_stock_confidence_sizing(signal, is_small=False)
+        self.assertEqual(qty, 200)  # 10,000,000 / 50,000
 
     def test_missing_base_amount_falls_back_to_legacy_half_qty_for_small(self):
         # 구버전 신호(base_amount 없음)는 기존 EXECUTE_SMALL 절반 로직으로만 폴백한다.

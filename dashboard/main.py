@@ -6830,7 +6830,12 @@ def _apply_stock_confidence_sizing(signal: Dict[str, Any], is_small: bool) -> in
     """주식 매수 신호의 최종 수량 산정.
     최종 매수금액 = signal["base_amount"](기본×변동성) × 확신도배율, 예수금(signal["cash"])
     초과 시 예수금 기준으로 제한한다. base_amount 가 없는 구버전 신호는 기존
-    EXECUTE_SMALL 절반 수량 로직으로만 폴백한다(확신도 배율과 이중 적용되지 않는다)."""
+    EXECUTE_SMALL 절반 수량 로직으로만 폴백한다(확신도 배율과 이중 적용되지 않는다).
+
+    최종 매수금액이 1주 가격보다 작으면 과거처럼 1주를 강제 매수하지 않고 0을 반환한다
+    — RISK_PER_TRADE_PCT 기준 손실 상한이 고가 종목에서 깨지는 것을 막기 위함
+    ([AT] fix/sizing-below-one-share). 호출부는 반환값이 0이면 "size_below_one_share"로
+    SKIP 처리해야 하며, 사유 문자열은 signal["sizing_skip_reason"]에 담아 둔다."""
     price = signal.get("price", 0)
     qty = signal.get("qty", 0)
     base_amount = signal.get("base_amount")
@@ -6848,7 +6853,14 @@ def _apply_stock_confidence_sizing(signal: Dict[str, Any], is_small: bool) -> in
     cash = signal.get("cash")
     if isinstance(cash, (int, float)) and cash > 0:
         final_amount = min(final_amount, cash)
-    return max(1, int(final_amount // price))
+
+    if final_amount < price:
+        signal["sizing_skip_reason"] = (
+            f"1주 가격 미만: 금액 {final_amount:,.0f}원 < 1주 {price:,.0f}원"
+        )
+        return 0
+
+    return int(final_amount // price)
 
 
 @app.post("/api/jarvis/signal")
@@ -6936,6 +6948,44 @@ async def jarvis_signal(request: Request):
                     except Exception:
                         pass
                 signal["qty"] = qty
+
+            # 2단계 사이징 가드 ([AT] fix/sizing-below-one-share, PM 승인): 확신도 배율·
+            # 예수금 캡 적용 후 금액이 1주 가격 미만이면 1주를 강제 매수하지 않고 SKIP한다
+            # (RISK_PER_TRADE_PCT 기준 손실 상한이 고가 종목에서 깨지는 것을 방지).
+            # 1단계(stock_trader/main.py의 planned_amount < cur_price 가드)와 동일한 목적의
+            # 2단계 안전장치이며 AI 자동매수(이 경로)에만 적용된다 — 수동 채팅매수·제안승인
+            # 매수는 이 함수(_apply_stock_confidence_sizing)를 거치지 않아 영향받지 않는다.
+            if is_stock_buy and should_execute and qty <= 0:
+                reason_text = signal.pop("sizing_skip_reason", "1주 가격 미만")
+                logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
+
+                from stark.decision_logger import log_decision
+                await log_decision(
+                    db_pool, symbol, "SKIP",
+                    name=name,
+                    confidence=decision.get("confidence", 0.0),
+                    reason=reason_text,
+                    rationale=(
+                        "실행 레이어 안전장치: 2단계 사이징(size_below_one_share) — 확신도 배율·"
+                        "예수금 캡 적용 후 금액이 1주 가격 미만이라 매수 차단"
+                    ),
+                    strategy=strategy,
+                    source="rule",
+                    executed=False,
+                    order_success=None,
+                    price=float(price),
+                    quantity=float(qty),
+                )
+                await _log_journal(bot, symbol, name, action, strategy, reason,
+                                   "SKIP", reason_text, False, False, price, qty)
+                return {
+                    "success": True,
+                    "executed": False,
+                    "skipped": True,
+                    "blocked": "size_below_one_share",
+                    "reason": reason_text,
+                    "jarvis_reply": jarvis_reply,
+                }
 
             if should_execute:
                 # 3. 실제 매매 실행 (주식 vs 코인 분기)

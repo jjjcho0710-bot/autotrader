@@ -6,6 +6,7 @@ stark/execution_guard.py 단위 테스트: 룰 기반 안전장치(precheck)와 
 매매기록·텔레그램·캐시무효화·매매일지를 빠짐없이 수행하는지.
 """
 import asyncio
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -1392,6 +1393,71 @@ class TestExecuteFillQuantityRecording(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["success"])
         self.assertEqual(len(pool._conn.inserted), 0)
+
+
+# ── [AT] fix/late-fill-followup: 부분체결로 기록한 주문은 이후 추가 체결을 추적할 수
+# 있게 Redis에 등록해야 한다(10/8 부국철강 100주 매도 사고 — 34주 기록 후 뒤늦게 전량
+# 체결됐지만 늘어난 수량은 trade_history에 전혀 남지 않았다) ──────────────────────
+
+
+class TestExecuteRegistersLateFillTracking(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_fill_registers_late_fill_tracking(self):
+        """부분체결(filled_qty < requested_qty)이면 common.late_fill_tracker에 주문번호
+        기준으로 후속 추적 등록이 돼야 한다."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "X1", "filled_qty": 34, "partial": True}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "부국철강"
+
+        await execution_guard.execute(
+            make_signal(symbol="026940", action="sell", qty=100), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+
+        raw = redis.store["late_fill_pending:X1"]
+        ctx = json.loads(raw)
+        self.assertEqual(ctx["symbol"], "026940")
+        self.assertEqual(ctx["side"], "SELL")
+        self.assertEqual(ctx["requested_qty"], 100)
+        self.assertEqual(ctx["recorded_qty"], 34)
+
+    async def test_full_fill_does_not_register_late_fill_tracking(self):
+        """전량 체결이면 추적 대상이 아니므로 등록하지 않는다."""
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "X6", "filled_qty": 1}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def code_to_name(symbol):
+            return "삼성전자"
+
+        await execution_guard.execute(
+            make_signal(qty=1), make_decision(), pool=pool, redis=redis,
+            kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None,
+            code_to_name_fn=code_to_name,
+        )
+
+        self.assertNotIn("late_fill_pending:X6", redis.store)
 
 
 if __name__ == "__main__":

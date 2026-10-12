@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from common.fill_recording import partial_fill_note, resolve_filled_quantity
+from common.late_fill_tracker import register_partial_fill
 
 logger = logging.getLogger("stark.execution_guard")
 
@@ -478,6 +479,7 @@ async def _finalize_filled_order(
     pre_avg_price: Optional[float], pool: Any, redis: Any, send_telegram_fn, log_journal_fn,
     save_trade_memory_fn, invalidate_cache_fn, label: str = "완료",
     send_channel_fn: Optional[Any] = None, requested_qty: Optional[float] = None,
+    order_no: Optional[str] = None,
 ) -> Dict[str, Any]:
     """체결이 확인된 주문(정상 성공 또는 응답불명→보유수량 재확인으로 체결 확정)의 공통
     후처리: in-flight 기록, pnl 계산, trade_history/매매일지 기록, 텔레그램 보고, 캐시 무효화.
@@ -511,6 +513,12 @@ async def _finalize_filled_order(
             """, bot, "stock", symbol, action.upper(), float(price), float(qty), float(price * qty), strategy, pnl)
 
     fill_note = partial_fill_note(qty, requested_qty)
+    if fill_note and order_no and redis is not None:
+        await register_partial_fill(
+            redis, order_no=order_no, symbol=symbol, side=action.upper(), bot=bot,
+            requested_qty=requested_qty, recorded_qty=qty, strategy=strategy,
+            price=price, cost_basis_avg_price=pre_avg_price if not is_buy else None,
+        )
     label_text = "일부 체결" if fill_note else label
     emoji = "📈" if action == "buy" else "📉"
     msg = (
@@ -704,6 +712,7 @@ async def execute(
                 pool=pool, redis=redis, send_telegram_fn=send_telegram_fn,
                 log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
                 invalidate_cache_fn=invalidate_cache_fn, send_channel_fn=send_channel_fn,
+                order_no=order.get("order_no"),
             )
 
         if order.get("uncertain") or order.get("fill_unconfirmed"):

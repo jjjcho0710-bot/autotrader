@@ -22,6 +22,7 @@ import asyncpg
 import redis.asyncio as aioredis
 
 from common.config import config, compute_total_pnl
+from common.late_fill_tracker import late_fill_tracker_loop
 from common.migrations import run_migrations
 from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
 from market.universe import Universe
@@ -254,6 +255,10 @@ async def startup():
     asyncio.create_task(sync_stock_universe(db_pool, universe))
     asyncio.create_task(_jarvis_scheduler())
     asyncio.create_task(_cache_warmer())
+    asyncio.create_task(late_fill_tracker_loop(
+        redis_client, db_pool, _late_fill_get_filled_qty,
+        lambda msg: _send_telegram(msg, dest="personal"),
+    ))
 
 
 async def _auto_register_webhook():
@@ -4580,6 +4585,19 @@ async def _get_kis_filled_qty(token: str, cano: str, prdt: str, order_no: str, s
     except Exception as e:
         logger.warning(f"체결 수량 조회 실패 [{symbol}] 주문 {order_no}: {e}")
         return (None, None) if with_price else None
+
+
+async def _late_fill_get_filled_qty(order_no: str, symbol: str, is_buy: bool):
+    """common.late_fill_tracker가 주기적으로 체결 수량을 재조회할 때 쓰는 콜러블.
+    _get_kis_filled_qty와 동일한 inquire-daily-ccld 조회를 토큰 발급까지 포함해 감싼다
+    (추적 루프는 주문 당시의 토큰을 들고 있지 않으므로 매 조회마다 토큰을 다시 받는다)."""
+    token = await get_kis_token()
+    if not token:
+        return None, None
+    acct = (config.kis_account_no or "").split("-")
+    cano = acct[0] if acct else ""
+    prdt = acct[1] if len(acct) > 1 else "01"
+    return await _get_kis_filled_qty(token, cano, prdt, order_no, symbol, is_buy, with_price=True)
 
 
 async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,

@@ -61,11 +61,11 @@ async def _invalidate_cache(invalidate_cache_fn: Optional[Any]) -> None:
         pass
 
 
-async def _momentum_warning_note(symbol: str, *, pool: Any) -> str:
+async def _momentum_warning_note(symbol: str, *, pool: Any, redis: Optional[Any] = None) -> str:
     """수동(채팅) 매수·사용자 승인 매수용 모멘텀 경고 문구([AT] feat/momentum-gate).
     AI 자동매수(stark.execution_guard.execute())와 달리 이 경로는 차단하지 않고 경고
     문구만 답장에 덧붙인다 — 사용자가 직접 지시했거나 이미 승인한 매수이기 때문."""
-    momentum = await check_momentum(symbol, pool=pool)
+    momentum = await check_momentum(symbol, pool=pool, redis=redis)
     if not momentum["is_drop"]:
         return ""
     return (
@@ -253,7 +253,7 @@ async def handle_proposal_response(
 
             # 모멘텀 게이트 — 사용자가 승인한 제안 매수는 차단하지 않고 경고 문구만 첨부
             # ([AT] feat/momentum-gate).
-            momentum_note = await _momentum_warning_note(symbol, pool=pool)
+            momentum_note = await _momentum_warning_note(symbol, pool=pool, redis=redis)
             momentum_note += weight_note
 
             # 승인 → 실제 매수 (주문 전 보유 수량을 응답불명 시 체결 재확인용으로 미리 조회)
@@ -464,7 +464,7 @@ async def handle_trade_command(
 
             # 모멘텀 게이트 — 수동(채팅)·제안승인 매수는 차단하지 않고 경고 문구만 첨부한다
             # (AI 자동매수만 차단, stark.execution_guard.execute() 참고, [AT] feat/momentum-gate).
-            momentum_note = await _momentum_warning_note(symbol, pool=pool)
+            momentum_note = await _momentum_warning_note(symbol, pool=pool, redis=redis)
 
         # 수량 (+ 매도 시 손익 계산용 평단가 조회)
         avg_price = 0.0

@@ -1,5 +1,5 @@
 """
-모멘텀 게이트 테스트 ([AT] feat/momentum-gate).
+모멘텀 게이트 테스트 ([AT] feat/momentum-gate, [AT] fix/momentum-gate-data).
 
 배경: 최근 거래 데이터에서 직전 5거래일 수익률(종가 기준)이 음수인 종목의 AI 자동매수
 성과가 나빴다. AI 자동매수(stark.execution_guard.execute()) 직전에만 이 수익률을 확인해
@@ -14,15 +14,26 @@
   2) execute() 통합 — AI 자동매수가 실제로 차단/통과/shadow 로그를 내는지.
   3) handle_trade_command()/handle_proposal_response() 통합 — 수동·제안승인 매수는
      차단하지 않고 경고 문구만 답장에 붙는지.
+  4) [AT] fix/momentum-gate-data — DB 일봉 신선도(3거래일) 검사 및 KIS 대체 조회:
+     stale/부족 시 대체 조회 호출, 신선하면 미호출, 대체 조회 성공/실패 시 판정,
+     Redis 캐시 적중 시 재호출 없음.
 
 revert 확인(수동): stark/execution_guard.py execute()의 "(1b) 모멘텀 게이트" 블록을
 주석 처리하면 test_blocks_automatic_buy_on_negative_momentum이 실패하는 것을 확인했다
 (결과 "executed": True로 통과돼버림) — 게이트가 실제로 차단을 담당하고 있음을 보증.
+신선도 검사 revert 확인(수동): check_momentum()의 stale 판정 블록(_is_recent_trading_bar
+호출 부분)을 제거하면 test_stale_db_bars_trigger_kis_fallback_and_block이 실패하는 것을
+확인했다(결과 "pct": -50.0, DB의 오래된 값이 그대로 쓰여 대체 조회가 전혀 호출되지 않음)
+— 신선도 검사가 실제로 stale 판단을 담당하고 있음을 보증.
 """
+import asyncio
 import json
 import sys
+import time
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -34,6 +45,28 @@ from tests.test_execution_guard import (  # noqa: E402
     make_decision,
     make_signal,
 )
+
+# 이 모듈의 모든 테스트는 기본적으로 KIS 대체 조회(_fetch_kis_fallback_closes)를 "데이터
+# 없음"으로 고정한다([AT] fix/momentum-gate-data) — 그래야 신선도/대체조회 기능 추가 전에
+# 작성된 기존 테스트들이 실제 KIS 네트워크 호출(KISTrader 인스턴스화·토큰 발급 시도)을
+# 타지 않고 그대로 통과한다. 대체 조회 자체를 검증하는 새 테스트는 이 기본값을
+# `with patch.object(execution_guard, "_fetch_kis_fallback_closes", ...)`로 개별 덮어쓴다.
+_fallback_patcher = None
+_fallback_mock = None
+# 패치되기 전의 실제 구현 — 대체 조회 자체(타임아웃 등)를 검증하는 테스트가 쓴다.
+_real_fetch_kis_fallback_closes = execution_guard._fetch_kis_fallback_closes
+
+
+def setUpModule():
+    global _fallback_patcher, _fallback_mock
+    _fallback_patcher = patch.object(
+        execution_guard, "_fetch_kis_fallback_closes", new_callable=AsyncMock)
+    _fallback_mock = _fallback_patcher.start()
+    _fallback_mock.return_value = None
+
+
+def tearDownModule():
+    _fallback_patcher.stop()
 
 
 # ── 1) check_momentum() 단위 테스트 ──────────────────────────────
@@ -117,6 +150,151 @@ class TestCheckMomentum(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result["is_drop"])  # -3% >= -5%(설정값)이므로 차단 아님
         finally:
             config.MOMENTUM_GATE_DROP_THRESHOLD_PCT = original
+
+
+# ── 1b) DB 일봉 신선도 + KIS 대체 조회 테스트 ([AT] fix/momentum-gate-data) ──
+def _today_kst() -> date:
+    from datetime import datetime
+    return datetime.now(execution_guard.KST).date()
+
+
+class TestCheckMomentumStaleAndFallback(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_db_bars_trigger_kis_fallback_and_block(self):
+        """DB 일봉은 충분하지만 가장 최근 일봉이 오래됐으면(stale) DB 값을 쓰지 않고
+        KIS 대체 조회를 호출하며, 대체 조회가 성공하면 그 값으로 차단 판정한다."""
+        today = _today_kst()
+        stale_dates = [today - timedelta(days=40 - i) for i in range(6)]  # 전부 40일 이상 전
+        pool = EgFakePool(
+            daily_closes={"005930": [100, 100, 100, 100, 100, 50]},  # DB대로면 -50%(무시돼야 함)
+            daily_close_dates={"005930": stale_dates},
+        )
+        with patch.object(
+            execution_guard, "_fetch_kis_fallback_closes",
+            AsyncMock(return_value=[100, 100, 100, 100, 100, 97]),  # KIS 대체값 -3%
+        ) as mock_fb:
+            result = await execution_guard.check_momentum("005930", pool=pool)
+
+        mock_fb.assert_awaited_once_with("005930", 6)
+        self.assertAlmostEqual(result["pct"], -3.0)
+        self.assertTrue(result["is_drop"])
+        self.assertFalse(result["insufficient_data"])
+        self.assertIsNone(result["stale_reason"])  # 대체 조회로 정상 계산됐으므로 해제
+
+    async def test_stale_db_bars_fallback_can_also_pass(self):
+        """대체 조회 결과가 양호하면(차단 기준 미달) 통과 판정도 정상 동작한다."""
+        today = _today_kst()
+        stale_dates = [today - timedelta(days=40 - i) for i in range(6)]
+        pool = EgFakePool(
+            daily_closes={"005930": [100, 100, 100, 100, 100, 50]},
+            daily_close_dates={"005930": stale_dates},
+        )
+        with patch.object(
+            execution_guard, "_fetch_kis_fallback_closes",
+            AsyncMock(return_value=[100, 100, 100, 100, 100, 103]),  # KIS 대체값 +3%
+        ):
+            result = await execution_guard.check_momentum("005930", pool=pool)
+
+        self.assertAlmostEqual(result["pct"], 3.0)
+        self.assertFalse(result["is_drop"])
+        self.assertFalse(result["insufficient_data"])
+
+    async def test_fresh_db_bars_do_not_trigger_kis_fallback(self):
+        """DB의 가장 최근 일봉이 신선하면(최근 3거래일 이내) KIS 대체 조회를 호출하지
+        않고 DB 값 그대로 계산한다."""
+        today = _today_kst()
+        fresh_dates = [today - timedelta(days=5 - i) for i in range(6)]  # 마지막 날짜 = 오늘
+        pool = EgFakePool(
+            daily_closes={"005930": [100, 100, 100, 100, 100, 97]},  # -3%
+            daily_close_dates={"005930": fresh_dates},
+        )
+        with patch.object(
+            execution_guard, "_fetch_kis_fallback_closes", new_callable=AsyncMock,
+        ) as mock_fb:
+            result = await execution_guard.check_momentum("005930", pool=pool)
+
+        mock_fb.assert_not_called()
+        self.assertAlmostEqual(result["pct"], -3.0)
+        self.assertTrue(result["is_drop"])
+
+    async def test_stale_reason_format_in_result_and_log(self):
+        """stale 판정 사유 문자열이 반환 dict(stale_reason)와 로그에 'stale_bars: 마지막
+        일봉 YYYY-MM-DD' 형식으로 포함돼야 한다(대체 조회도 실패하는 경우)."""
+        today = _today_kst()
+        stale_dates = [today - timedelta(days=40 - i) for i in range(6)]
+        last_date = stale_dates[-1]
+        pool = EgFakePool(
+            daily_closes={"005930": [100, 100, 100, 100, 100, 97]},
+            daily_close_dates={"005930": stale_dates},
+        )
+        with patch.object(
+            execution_guard, "_fetch_kis_fallback_closes", AsyncMock(return_value=None),
+        ), self.assertLogs("stark.execution_guard", level="WARNING") as cm:
+            result = await execution_guard.check_momentum("005930", pool=pool)
+
+        expected_reason = f"stale_bars: 마지막 일봉 {last_date.isoformat()}"
+        self.assertEqual(result["stale_reason"], expected_reason)
+        self.assertTrue(result["insufficient_data"])
+        self.assertFalse(result["is_drop"])
+        self.assertTrue(any(expected_reason in m for m in cm.output))
+
+    async def test_kis_fallback_failure_keeps_existing_behavior(self):
+        """대체 조회가 실패/타임아웃으로 None을 반환하면 기존 동작(게이트 미적용)을
+        유지한다 — 새로 차단하지 않는다."""
+        pool = EgFakePool()  # DB 데이터 자체가 없음(기존 insufficient 시나리오)
+        with patch.object(
+            execution_guard, "_fetch_kis_fallback_closes", AsyncMock(return_value=None),
+        ) as mock_fb:
+            result = await execution_guard.check_momentum("005930", pool=pool)
+
+        mock_fb.assert_awaited_once()
+        self.assertIsNone(result["pct"])
+        self.assertTrue(result["insufficient_data"])
+        self.assertFalse(result["is_drop"])
+
+    async def test_fetch_kis_fallback_closes_respects_timeout(self):
+        """_fetch_kis_fallback_closes()는 실제로 3초 타임아웃을 적용해 느린 KIS 응답에서도
+        무한정 대기하지 않고 None을 반환해야 한다(패치되지 않은 실제 구현을 호출)."""
+        from common.config import config
+
+        class _SlowKISTrader:
+            def __init__(self):
+                self.access_token = "FAKE_TOKEN"
+
+            async def _get_token(self):
+                pass
+
+            async def get_daily_ohlcv(self, symbol, start, end):
+                await asyncio.sleep(10)
+                return []
+
+        orig_key, orig_secret = config.KIS_APP_KEY, config.KIS_APP_SECRET
+        try:
+            config.KIS_APP_KEY = "TEST_KEY"
+            config.KIS_APP_SECRET = "TEST_SECRET"
+            with patch("stock_trader.kis_trader.KISTrader", _SlowKISTrader):
+                start = time.monotonic()
+                closes = await _real_fetch_kis_fallback_closes("005930", 6)
+                elapsed = time.monotonic() - start
+        finally:
+            config.KIS_APP_KEY, config.KIS_APP_SECRET = orig_key, orig_secret
+
+        self.assertIsNone(closes)
+        self.assertLess(elapsed, 4.0)  # 3초 타임아웃 + 약간의 여유
+
+    async def test_fetch_closes_with_kis_fallback_cache_hit_skips_recall(self):
+        """Redis 캐시 적중 시 _fetch_kis_fallback_closes를 다시 호출하지 않는다
+        (종목별 6시간 캐시, [AT] fix/momentum-gate-data)."""
+        redis = EgFakeRedis()
+        with patch.object(
+            execution_guard, "_fetch_kis_fallback_closes",
+            AsyncMock(return_value=[100, 100, 100, 100, 100, 97]),
+        ) as mock_fb:
+            first = await execution_guard._fetch_closes_with_kis_fallback("005930", 6, redis)
+            second = await execution_guard._fetch_closes_with_kis_fallback("005930", 6, redis)
+
+        self.assertEqual(first, [100, 100, 100, 100, 100, 97])
+        self.assertEqual(second, [100, 100, 100, 100, 100, 97])
+        mock_fb.assert_awaited_once_with("005930", 6)  # 2번째는 캐시 적중, 재호출 없음
 
 
 # ── 2) execute() 통합 테스트 (AI 자동매수 경로) ──────────────────

@@ -18,14 +18,18 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from common.config import config
 from common.fill_recording import partial_fill_note, resolve_fill_price, resolve_filled_quantity
 from common.late_fill_tracker import register_partial_fill
+from common.market_calendar import is_trading_day
 from common.position_sizing import compute_projected_weight_pct
 
 logger = logging.getLogger("stark.execution_guard")
+
+KST = timezone(timedelta(hours=9))
 
 # 악재성 공시 키워드 — 매칭되면 투자경고 종목 차단과 동일한 수준으로 신규·추가매수를
 # 기계적으로 차단한다(AI 판단에 맡기지 않음). 조정이 필요하면 이 목록만 고치면 된다.
@@ -203,18 +207,126 @@ _AVERAGING_DOWN_REASON_TEXT = {
 }
 
 
-async def _fetch_recent_closes(pool: Any, symbol: str, limit: int) -> list:
+async def _fetch_recent_closes(pool: Any, symbol: str, limit: int) -> tuple:
     """symbol의 최근 일봉 종가(stock_daily_ohlcv.close)를 날짜 오름차순으로 최대 limit개
     조회한다(모멘텀 게이트 전용). change_rate 컬럼은 쓰지 않고 close로 직접 수익률을
     계산한다 — change_rate가 항상 0.00으로 기록되는 별도 이슈와 무관하게 정확한 값을
-    쓰기 위함."""
+    쓰기 위함.
+
+    반환: (closes, latest_date) — latest_date는 조회된 가장 최근 일봉의 date(신선도 검사용,
+    [AT] fix/momentum-gate-data). ts 컬럼이 없는 행(테스트 더블 등)만 있으면 None이 되고,
+    이 경우 신선도 검사는 건너뛴다(판단 불가 상태를 stale로 오판하지 않음)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT close FROM (
+            SELECT close, ts FROM (
                 SELECT close, ts FROM stock_daily_ohlcv WHERE symbol=$1 ORDER BY ts DESC LIMIT $2
             ) sub ORDER BY ts ASC
         """, symbol, limit)
-    return [float(r["close"]) for r in rows if r["close"] is not None]
+    closes = [float(r["close"]) for r in rows if r["close"] is not None]
+    latest_date = None
+    for r in reversed(rows):
+        ts_val = r.get("ts")
+        if ts_val is not None:
+            latest_date = ts_val.date() if hasattr(ts_val, "date") else ts_val
+            break
+    return closes, latest_date
+
+
+# 모멘텀 게이트 DB 일봉 신선도 기준(거래일) — 이보다 오래된 마지막 일봉이면 DB 값을 쓰지
+# 않고 KIS 대체 조회로 넘어간다([AT] fix/momentum-gate-data).
+MOMENTUM_GATE_STALE_TRADING_DAYS = 3
+MOMENTUM_GATE_KIS_TIMEOUT_SEC = 3.0
+MOMENTUM_GATE_KIS_CACHE_TTL_SEC = 6 * 60 * 60  # 6시간
+
+
+def _is_recent_trading_bar(latest_date: date, today: date, max_trading_days_back: int) -> bool:
+    """latest_date가 today 기준 max_trading_days_back거래일(common/market_calendar 기준)
+    이내인지 판정한다. today 당일은 항상 신선으로 취급하고(당일 일봉이 아직 없어도 다른
+    이유로 부족한 것뿐), 그 이전은 거래일만 세어 가장 가까운 max_trading_days_back개의
+    거래일 중 하나라도 latest_date 이하이면(즉 latest_date가 그 범위 안이면) 신선하다."""
+    if latest_date >= today:
+        return True
+    d = today
+    counted = 0
+    while counted < max_trading_days_back:
+        d -= timedelta(days=1)
+        if is_trading_day(d):
+            counted += 1
+        if latest_date >= d:
+            return True
+    return False
+
+
+async def _fetch_kis_fallback_closes(symbol: str, limit: int) -> Optional[list]:
+    """DB 종가가 부족하거나 stale일 때 KIS 일봉(FHKST03010100, stock_trader.kis_trader.
+    KISTrader.get_daily_ohlcv 재사용)으로 최근 limit개 종가(날짜 오름차순)를 대체 조회한다
+    ([AT] fix/momentum-gate-data).
+
+    타임아웃 3초, 조회 자체가 실패/타임아웃/데이터 부족이면 None — 호출부(check_momentum)가
+    기존 동작(게이트 미적용)을 유지하도록 예외를 삼킨다(fail-open 원칙 변경 없음).
+    EGW00201 레이트리밋 시 1회 재시도는 KISTrader.get_daily_ohlcv 자체가 처리한다.
+
+    KIS 앱키/시크릿이 설정되지 않은 환경(단위 테스트 등)에서는 실제 네트워크 호출을
+    시도하지 않고 즉시 None을 반환한다 — 어차피 토큰 발급이 실패할 호출을 매번 타임아웃
+    대기(최대 3초)까지 거치게 하지 않기 위함."""
+    if not config.kis_app_key or not config.kis_app_secret:
+        logger.debug(f"모멘텀 게이트 KIS 대체 조회 건너뜀(KIS 키 미설정) [{symbol}]")
+        return None
+    try:
+        from stock_trader.kis_trader import KISTrader
+
+        async def _fetch() -> list:
+            trader = KISTrader()
+            await trader._get_token()
+            if not trader.access_token:
+                raise RuntimeError("KIS 토큰 발급 실패")
+            today = datetime.now(KST).date()
+            start = today - timedelta(days=max(14, limit * 3))
+            return await trader.get_daily_ohlcv(
+                symbol, start.strftime("%Y%m%d"), today.strftime("%Y%m%d"))
+
+        candles = await asyncio.wait_for(_fetch(), timeout=MOMENTUM_GATE_KIS_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"모멘텀 게이트 KIS 대체 조회 타임아웃({MOMENTUM_GATE_KIS_TIMEOUT_SEC}초, "
+            f"기존 동작 유지) [{symbol}]")
+        return None
+    except Exception as e:
+        logger.warning(f"모멘텀 게이트 KIS 대체 조회 실패(기존 동작 유지) [{symbol}]: {e}")
+        return None
+
+    candles = sorted(
+        (c for c in candles if c.get("date") and c.get("close")),
+        key=lambda c: c["date"],
+    )
+    closes = [float(c["close"]) for c in candles]
+    if len(closes) < limit:
+        return None
+    return closes[-limit:]
+
+
+async def _fetch_closes_with_kis_fallback(
+    symbol: str, limit: int, redis: Optional[Any],
+) -> Optional[list]:
+    """KIS 대체 조회(_fetch_kis_fallback_closes)에 종목별 6시간 Redis 캐시를 적용한다
+    ([AT] fix/momentum-gate-data). redis가 없으면(기존 호출부 호환) 캐시 없이 바로 조회."""
+    cache_key = f"stark:momentum_gate:kis_fallback:{symbol}:{limit}"
+    if redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                raw = cached if isinstance(cached, str) else cached.decode()
+                return json.loads(raw)
+        except Exception as e:
+            logger.warning(f"모멘텀 게이트 KIS 대체 조회 캐시 조회 실패(무시) [{symbol}]: {e}")
+
+    closes = await _fetch_kis_fallback_closes(symbol, limit)
+    if closes is not None and redis is not None:
+        try:
+            await redis.setex(cache_key, MOMENTUM_GATE_KIS_CACHE_TTL_SEC, json.dumps(closes))
+        except Exception as e:
+            logger.warning(f"모멘텀 게이트 KIS 대체 조회 캐시 저장 실패(무시) [{symbol}]: {e}")
+    return closes
 
 
 def _compute_momentum_pct(closes: list, lookback_days: int) -> Optional[float]:
@@ -230,7 +342,7 @@ def _compute_momentum_pct(closes: list, lookback_days: int) -> Optional[float]:
 
 
 async def check_momentum(
-    symbol: str, *, pool: Any,
+    symbol: str, *, pool: Any, redis: Optional[Any] = None,
     lookback_days: Optional[int] = None,
     drop_threshold_pct: Optional[float] = None,
     shadow_threshold_pct: Optional[float] = None,
@@ -243,15 +355,23 @@ async def check_momentum(
     임계값은 strategy_config 조회 없이 common/config.py의 환경변수 설정값을 쓴다(인자로
     넘기면 그 값이 우선).
 
-    종가 데이터가 부족하거나 조회 자체가 실패하면 fail-open(매수를 함부로 막지 않음)이
-    아니라 "게이트를 적용하지 않고 기존 동작을 유지"한다 — pct=None이면 호출부는 반드시
-    차단하지 않아야 한다. 경고 로그만 남긴다.
+    DB 일봉은 watchlist(is_active=TRUE)인 동안만 수집되므로, 신규 등록 종목(일봉 거의
+    없음)이나 수집이 멈춘 종목(오래된 마지막 일봉)에서 게이트가 사실상 무력화되는 문제가
+    있었다([AT] fix/momentum-gate-data). 이를 보강한다:
+      1) DB에서 조회한 가장 최근 일봉이 "오늘 기준 MOMENTUM_GATE_STALE_TRADING_DAYS거래일
+         (common/market_calendar 기준) 이내"가 아니면 그 DB 값을 쓰지 않는다(stale).
+      2) DB 값이 부족하거나(행 수 미달) stale이면 KIS 일봉 조회(stock_trader.kis_trader.
+         KISTrader.get_daily_ohlcv)로 대체 계산한다 — 타임아웃 3초, Redis 6시간 캐시
+         (redis 인자가 있을 때만 캐시 적용). 대체 조회도 실패하면 기존 동작 그대로
+         "게이트를 적용하지 않고 기존 동작을 유지"한다 — pct=None이면 호출부는 반드시
+         차단하지 않아야 한다(fail-open 원칙 변경 없음). 경고 로그만 남긴다.
 
     반환: {
         "pct": float | None, "insufficient_data": bool,
         "is_drop": bool,    # pct < drop_threshold_pct (pct가 None이면 항상 False)
         "is_shadow": bool,  # pct >= shadow_threshold_pct (pct가 None이면 항상 False)
         "lookback_days": int, "drop_threshold_pct": float, "shadow_threshold_pct": float,
+        "stale_reason": str | None,  # pct 계산이 DB stale 때문에 막혔을 때만 채워짐
     }"""
     lookback = lookback_days if lookback_days is not None else config.MOMENTUM_GATE_LOOKBACK_DAYS
     drop_th = (drop_threshold_pct if drop_threshold_pct is not None
@@ -260,15 +380,32 @@ async def check_momentum(
                  else config.MOMENTUM_GATE_SHADOW_THRESHOLD_PCT)
 
     pct = None
+    stale_reason = None
     try:
-        closes = await _fetch_recent_closes(pool, symbol, lookback + 1)
-        pct = _compute_momentum_pct(closes, lookback)
+        closes, latest_date = await _fetch_recent_closes(pool, symbol, lookback + 1)
+        if latest_date is not None and not _is_recent_trading_bar(
+            latest_date, datetime.now(KST).date(), MOMENTUM_GATE_STALE_TRADING_DAYS,
+        ):
+            stale_reason = f"stale_bars: 마지막 일봉 {latest_date.isoformat()}"
+            logger.warning(f"모멘텀 게이트: DB 일봉 stale [{symbol}] — {stale_reason}")
+        else:
+            pct = _compute_momentum_pct(closes, lookback)
     except Exception as e:
-        logger.warning(f"모멘텀 게이트 종가 조회 실패(게이트 미적용, 기존 동작 유지) [{symbol}]: {e}")
+        logger.warning(f"모멘텀 게이트 종가 조회 실패(DB, KIS 대체 조회 시도) [{symbol}]: {e}")
         pct = None
 
     if pct is None:
-        logger.warning(f"모멘텀 게이트: 종가 데이터 부족으로 게이트 미적용(기존 동작 유지) [{symbol}]")
+        fallback_closes = await _fetch_closes_with_kis_fallback(symbol, lookback + 1, redis)
+        if fallback_closes is not None:
+            pct = _compute_momentum_pct(fallback_closes, lookback)
+            if pct is not None:
+                stale_reason = None  # KIS 대체 조회로 정상 계산됨 — stale 사유 해제
+
+    if pct is None:
+        reason_suffix = f" ({stale_reason})" if stale_reason else ""
+        logger.warning(
+            f"모멘텀 게이트: 종가 데이터 부족으로 게이트 미적용(기존 동작 유지) "
+            f"[{symbol}]{reason_suffix}")
 
     return {
         "pct": pct,
@@ -278,6 +415,7 @@ async def check_momentum(
         "lookback_days": lookback,
         "drop_threshold_pct": drop_th,
         "shadow_threshold_pct": shadow_th,
+        "stale_reason": stale_reason,
     }
 
 
@@ -873,7 +1011,7 @@ async def execute(
         # router/handlers/order_handler.py 쪽 처리). 종가 데이터 부족/조회 실패 시에는
         # 기존 동작을 유지한다(새로 차단하지 않음) — check_momentum()이 이를 보장한다.
         if is_buy and bot == "stock_trader":
-            momentum = await check_momentum(symbol, pool=pool)
+            momentum = await check_momentum(symbol, pool=pool, redis=redis)
             if momentum["is_drop"]:
                 reason_text = (
                     f"momentum_gate: 직전 {momentum['lookback_days']}거래일 수익률 "

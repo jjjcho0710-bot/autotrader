@@ -776,6 +776,7 @@ async def _jarvis_stock_scanner():
         from datetime import timezone, timedelta
         KST = timezone(timedelta(hours=9))
         now_kst = datetime.now(KST)
+        _scan_t0 = _time.monotonic()  # [AT] feat/scan-timing — 전체 소요시간 측정
         logger.info("🔍 Jarvis 전종목 스캔 시작...")
 
         # 08:30 스캔은 장 시작 전이라 '오늘' 데이터가 아직 없음.
@@ -814,6 +815,8 @@ async def _jarvis_stock_scanner():
             import time as _t
             results = []
             stats = {"total": 0, "no_data": 0, "low_price": 0, "scored": 0, "err": 0}
+            fetch_elapsed = 0.0  # [AT] feat/scan-timing — 데이터 조회(get_market_ohlcv) 누적 소요
+            score_elapsed = 0.0  # [AT] feat/scan-timing — 스코어링 계산 누적 소요
             fallback_markets = []
             db_universe_used = False
             for market in ["KOSPI", "KOSDAQ"]:
@@ -847,95 +850,101 @@ async def _jarvis_stock_scanner():
                         stats["total"] += 1
                         try:
                             # 30일 데이터로 MA크로스 체크
+                            _tf0 = _t.time()  # [AT] feat/scan-timing
                             df = pykrx_stock.get_market_ohlcv(d30, today, ticker)
+                            fetch_elapsed += _t.time() - _tf0  # [AT] feat/scan-timing
                             if df is None or len(df) < 22:
                                 stats["no_data"] += 1
                                 continue
 
-                            close = df["종가"].iloc[-1]
-                            if close < 1000:  # 동전주 제외
-                                stats["low_price"] += 1
-                                continue
-
-                            vol = df["거래량"].iloc[-1]
-                            vol_avg = df["거래량"].iloc[-6:-1].mean()  # 5일 평균 거래량
-                            change = df["등락률"].iloc[-1]
-
-                            # MA 크로스 계산
-                            closes = df["종가"].tolist()
-                            ma5 = sum(closes[-5:]) / 5
-                            ma20 = sum(closes[-20:]) / 20
-                            ma5_prev = sum(closes[-6:-1]) / 5
-                            ma20_prev = sum(closes[-21:-1]) / 20
-
-                            # 골든크로스: 5일선이 20일선 상향 돌파
-                            golden_cross = ma5_prev < ma20_prev and ma5 > ma20
-                            # MA 정배열
-                            ma_trend_ok = ma5 > ma20
-
-                            # 거래량 조건: 평균 대비 1.5배 이상
-                            vol_ok = vol > vol_avg * 1.5 if vol_avg > 0 else False
-
-                            # RSI 계산 (14일)
-                            rsi = 50.0
-                            if len(closes) >= 15:
-                                gains, losses = [], []
-                                for i in range(-14, 0):
-                                    d = closes[i] - closes[i - 1]
-                                    gains.append(max(d, 0))
-                                    losses.append(max(-d, 0))
-                                avg_gain = sum(gains) / 14
-                                avg_loss = sum(losses) / 14
-                                if avg_loss > 0:
-                                    rs = avg_gain / avg_loss
-                                    rsi = 100 - (100 / (1 + rs))
-                                else:
-                                    rsi = 100.0
-                            rsi_bounce = 30 <= rsi <= 55  # 과매도 반등
-                            rsi_strong = 50 < rsi <= 70   # 강세 추세
-
-                            # 모멘텀: 5일 수익률
-                            momentum_5d = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0
-                            momentum_ok = momentum_5d > 1.5
-
-                            score = 0
-                            if golden_cross:
-                                score += 3
-                            if vol_ok:
-                                score += 2
-                            if change > 1:
-                                score += 1
-                            if change > 3:
-                                score += 1
-                            if rsi_bounce:
-                                score += 2
-                            if rsi_strong:
-                                score += 1
-                            if momentum_ok:
-                                score += 1
-                            if ma_trend_ok and not golden_cross:
-                                score += 1
-
-                            if score >= 4:  # 강화된 기준
-                                if momentum_5d <= -5:  # 폭락 종목 제외
+                            _ts0 = _t.time()  # [AT] feat/scan-timing — 이하 스코어링 구간
+                            try:
+                                close = df["종가"].iloc[-1]
+                                if close < 1000:  # 동전주 제외
+                                    stats["low_price"] += 1
                                     continue
-                                if not (ticker.isdigit() and ticker.endswith("0")):  # 특수증권 제외
-                                    continue
-                                name = pykrx_stock.get_market_ticker_name(ticker)
-                                if name and "스팩" in name:
-                                    continue
-                                stats["scored"] += 1
-                                results.append({
-                                    "symbol": ticker,
-                                    "name": name,
-                                    "change": change,
-                                    "vol_ratio": vol / vol_avg if vol_avg > 0 else 1,
-                                    "golden_cross": golden_cross,
-                                    "score": score,
-                                    "close": close,
-                                    "rsi": round(rsi, 1),
-                                    "momentum_5d": round(momentum_5d, 2),
-                                })
+
+                                vol = df["거래량"].iloc[-1]
+                                vol_avg = df["거래량"].iloc[-6:-1].mean()  # 5일 평균 거래량
+                                change = df["등락률"].iloc[-1]
+
+                                # MA 크로스 계산
+                                closes = df["종가"].tolist()
+                                ma5 = sum(closes[-5:]) / 5
+                                ma20 = sum(closes[-20:]) / 20
+                                ma5_prev = sum(closes[-6:-1]) / 5
+                                ma20_prev = sum(closes[-21:-1]) / 20
+
+                                # 골든크로스: 5일선이 20일선 상향 돌파
+                                golden_cross = ma5_prev < ma20_prev and ma5 > ma20
+                                # MA 정배열
+                                ma_trend_ok = ma5 > ma20
+
+                                # 거래량 조건: 평균 대비 1.5배 이상
+                                vol_ok = vol > vol_avg * 1.5 if vol_avg > 0 else False
+
+                                # RSI 계산 (14일)
+                                rsi = 50.0
+                                if len(closes) >= 15:
+                                    gains, losses = [], []
+                                    for i in range(-14, 0):
+                                        d = closes[i] - closes[i - 1]
+                                        gains.append(max(d, 0))
+                                        losses.append(max(-d, 0))
+                                    avg_gain = sum(gains) / 14
+                                    avg_loss = sum(losses) / 14
+                                    if avg_loss > 0:
+                                        rs = avg_gain / avg_loss
+                                        rsi = 100 - (100 / (1 + rs))
+                                    else:
+                                        rsi = 100.0
+                                rsi_bounce = 30 <= rsi <= 55  # 과매도 반등
+                                rsi_strong = 50 < rsi <= 70   # 강세 추세
+
+                                # 모멘텀: 5일 수익률
+                                momentum_5d = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0
+                                momentum_ok = momentum_5d > 1.5
+
+                                score = 0
+                                if golden_cross:
+                                    score += 3
+                                if vol_ok:
+                                    score += 2
+                                if change > 1:
+                                    score += 1
+                                if change > 3:
+                                    score += 1
+                                if rsi_bounce:
+                                    score += 2
+                                if rsi_strong:
+                                    score += 1
+                                if momentum_ok:
+                                    score += 1
+                                if ma_trend_ok and not golden_cross:
+                                    score += 1
+
+                                if score >= 4:  # 강화된 기준
+                                    if momentum_5d <= -5:  # 폭락 종목 제외
+                                        continue
+                                    if not (ticker.isdigit() and ticker.endswith("0")):  # 특수증권 제외
+                                        continue
+                                    name = pykrx_stock.get_market_ticker_name(ticker)
+                                    if name and "스팩" in name:
+                                        continue
+                                    stats["scored"] += 1
+                                    results.append({
+                                        "symbol": ticker,
+                                        "name": name,
+                                        "change": change,
+                                        "vol_ratio": vol / vol_avg if vol_avg > 0 else 1,
+                                        "golden_cross": golden_cross,
+                                        "score": score,
+                                        "close": close,
+                                        "rsi": round(rsi, 1),
+                                        "momentum_5d": round(momentum_5d, 2),
+                                    })
+                            finally:  # [AT] feat/scan-timing
+                                score_elapsed += _t.time() - _ts0  # [AT] feat/scan-timing
                         except Exception:
                             stats["err"] += 1
                             continue
@@ -944,9 +953,12 @@ async def _jarvis_stock_scanner():
                     continue
             logger.info(f"🔍 스캔 통계: 전체 {stats['total']} · 데이터부족 {stats['no_data']} · "
                         f"동전주 {stats['low_price']} · 통과 {stats['scored']} · 오류 {stats['err']}")
-            return sorted(results, key=lambda x: x["score"], reverse=True)[:20], fallback_markets
+            # [AT] feat/scan-timing — 데이터 조회/스코어링 단계별 소요시간도 함께 반환
+            return (sorted(results, key=lambda x: x["score"], reverse=True)[:20], fallback_markets,
+                    fetch_elapsed, score_elapsed)
 
-        candidates, fallback_markets = await loop.run_in_executor(None, _scan)
+        candidates, fallback_markets, fetch_elapsed, score_elapsed = await loop.run_in_executor(None, _scan)
+        logger.info(f"⏱️ [아침스캔] 데이터조회 {fetch_elapsed:.1f}s · 스코어링 {score_elapsed:.1f}s")
 
         fallback_notes = []
         if fallback_markets:
@@ -961,9 +973,12 @@ async def _jarvis_stock_scanner():
             # 스캔 자체 실패 → 기존 watchlist 보존
             logger.error("🔍 스캔 실패 — 기존 watchlist 유지")
             note = ("\n".join(fallback_notes) + "\n") if fallback_notes else ""
+            _notify_t0 = _time.monotonic()  # [AT] feat/scan-timing
             await _send_telegram(
                 f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n{note}⚠️ 스캔 실패 (기존 감시종목 유지)",
                 dest="personal")
+            logger.info(f"⏱️ [아침스캔] 알림발송 {_time.monotonic()-_notify_t0:.2f}s · "
+                        f"종료 — 총 소요 {_time.monotonic()-_scan_t0:.1f}s")
             return
 
         if not candidates:
@@ -971,11 +986,14 @@ async def _jarvis_stock_scanner():
             cleaned = await _cleanup_scanner_watchlist()
             logger.info(f"🔍 스캔 완료: 유망 종목 없음 (잔재 {cleaned}개 정리)")
             note = ("\n".join(fallback_notes) + "\n") if fallback_notes else ""
+            _notify_t0 = _time.monotonic()  # [AT] feat/scan-timing
             await _send_telegram(
                 f"🔍 한강뷰매니저 스캔 [{now_kst.strftime('%m/%d %H:%M')}]\n{note}유망 종목 없음"
                 + (f" · 기존 {cleaned}종목 해제" if cleaned else ""),
                 dest="personal"
             )
+            logger.info(f"⏱️ [아침스캔] 알림발송 {_time.monotonic()-_notify_t0:.2f}s · "
+                        f"종료 — 총 소요 {_time.monotonic()-_scan_t0:.1f}s")
             return
 
         # ── watchlist 갱신 ──────────────────────────────────
@@ -1035,7 +1053,10 @@ async def _jarvis_stock_scanner():
             msg += f" · 보유 {len(held_symbols)}종목 유지"
         if added:
             msg += f"\n신규 {len(added)}종목:\n" + "\n".join(added[:10])
+        _notify_t0 = _time.monotonic()  # [AT] feat/scan-timing
         await _send_telegram(msg, dest="personal")
+        logger.info(f"⏱️ [아침스캔] 알림발송 {_time.monotonic()-_notify_t0:.2f}s · "
+                    f"종료 — 총 소요 {_time.monotonic()-_scan_t0:.1f}s")
         logger.info(f"✅ 스캐너 완료: {len(candidates)}종목 선정, 신규 {len(added)}, 해제 {deactivated}")
 
     except Exception as e:
@@ -2814,6 +2835,58 @@ async def _run_advice_queue():
         logger.warning(f"예약 실행 오류: {qe}")
 
 
+async def _run_scheduled_job(name: str, scheduled: dtime, coro_func, *args, **kwargs):
+    """스케줄러 잡 실행 공통 래퍼 — 시작/종료 시각과 소요시간(초)을 로그 한 줄로 남기고,
+    예정 시각 대비 실제 시작 지연이 30초 이상이면 경고 로그를 남긴다([AT] feat/scan-timing).
+    잡의 반환값·예외는 그대로 전달하며, 기존 동작은 바꾸지 않는다."""
+    start_dt = datetime.now(KST)
+    scheduled_dt = start_dt.replace(
+        hour=scheduled.hour, minute=scheduled.minute, second=scheduled.second, microsecond=0)
+    delay = (start_dt - scheduled_dt).total_seconds()
+    logger.info(f"⏱️ [{name}] 시작 — 예정 {scheduled.strftime('%H:%M:%S')} "
+                f"실제 {start_dt.strftime('%H:%M:%S')} (지연 {delay:.1f}s)")
+    if delay >= 30:
+        logger.warning(f"⚠️ [{name}] 시작 지연 {delay:.1f}s (예정 {scheduled.strftime('%H:%M:%S')})")
+    t0 = _time.monotonic()
+    try:
+        return await coro_func(*args, **kwargs)
+    finally:
+        logger.info(f"⏱️ [{name}] 종료 — 소요 {_time.monotonic() - t0:.2f}s")
+
+
+async def _morning_routine():
+    """08:30 장 시작 전 루틴 본체 — _jarvis_scheduler에서 분리해 _run_scheduled_job
+    타이밍 래퍼로 감쌀 수 있게 했다([AT] feat/scan-timing). 내용은 기존과 동일."""
+    logger.info("🌅 Jarvis 장 시작 전 루틴")
+    await _jarvis_stock_scanner()        # 1. 전종목 스캔 → watchlist 업데이트
+    await _jarvis_auto_analysis()         # 2. watchlist ML 예측
+    await _jarvis_daily_plan()            # 3. 오늘의 작전 수립 → 캐시
+    asyncio.create_task(_manual_collect())  # 4. 뉴스 감성 수집
+    asyncio.create_task(_trigger_ohlcv_collect())  # 5. OHLCV 수집 트리거
+
+    # 오늘 공시 확인
+    try:
+        from data_collector.collectors.dart_collector import DARTCollector
+        dart = DARTCollector()
+        async with db_pool.acquire() as conn:
+            symbols = [r["symbol"] for r in await conn.fetch(
+                "SELECT symbol FROM watchlist WHERE is_active=TRUE"
+            )]
+        await dart.collect_and_alert(symbols, telegram_func=_send_telegram)
+    except Exception as e:
+        logger.warning(f"공시 확인 실패: {e}")
+
+
+async def _closing_routine():
+    """15:40 장 마감 후 루틴 본체 — _jarvis_scheduler에서 분리([AT] feat/scan-timing).
+    내용은 기존과 동일."""
+    logger.info("🌆 Jarvis 장 마감 후 자동 분석")
+    await _jarvis_auto_analysis()
+    asyncio.create_task(_manual_collect())  # 장 마감 후 뉴스 수집
+    asyncio.create_task(_jarvis_closing_report())  # 마감 리포트 + 내일 전략
+    asyncio.create_task(_score_then_review())  # 채점 → 복기 → 교훈 저장
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -2839,8 +2912,9 @@ async def _jarvis_scheduler():
 
         # 통합 일일보고 (매일 21:00 — 코인 반영. 주말·휴장일은 함수 내부에서 건너뜀)
         if dtime(21, 0) <= cur_time <= dtime(21, 5) and await _daily_gate("daily_report", today):
-            asyncio.create_task(_jarvis_unified_daily_report())
-            asyncio.create_task(_summarize_old_chats())  # 장기 기억 이관 (하루 1일치)
+            asyncio.create_task(_run_scheduled_job("daily_report", dtime(21, 0), _jarvis_unified_daily_report))
+            # 장기 기억 이관 (하루 1일치)
+            asyncio.create_task(_run_scheduled_job("summarize_old_chats", dtime(21, 0), _summarize_old_chats))
 
         # 관심종목(우선순위) 15분마다 확인 — 장중에만
         if (now.weekday() < 5 and is_trading_day(today)
@@ -2854,56 +2928,35 @@ async def _jarvis_scheduler():
                 async def _sat_study():
                     await _jarvis_weekly_review()
                     await _jarvis_knowledge_curate()
-                asyncio.create_task(_sat_study())
+                asyncio.create_task(_run_scheduled_job("wk_review", dtime(10, 0), _sat_study))
             if now.weekday() == 6 and dtime(20, 0) <= cur_time <= dtime(20, 5) \
                     and await _daily_gate("wk_preview", today):
-                asyncio.create_task(_jarvis_weekly_preview())
+                asyncio.create_task(_run_scheduled_job("wk_preview", dtime(20, 0), _jarvis_weekly_preview))
             continue
 
         # 장외 승인 예약 실행 (09:01)
         if dtime(9, 1) <= cur_time <= dtime(9, 6) and await _daily_gate("queue_run", today):
-            asyncio.create_task(_run_advice_queue())
+            asyncio.create_task(_run_scheduled_job("advice_queue", dtime(9, 1), _run_advice_queue))
 
         # 자비스 능동 제안 (11:00 / 14:00)
         if dtime(11, 0) <= cur_time <= dtime(11, 5) and await _daily_gate("adv_11", today):
-            asyncio.create_task(_jarvis_proactive_advice())
+            asyncio.create_task(_run_scheduled_job("proactive_advice_11", dtime(11, 0), _jarvis_proactive_advice))
         if dtime(14, 0) <= cur_time <= dtime(14, 5) and await _daily_gate("adv_14", today):
-            asyncio.create_task(_jarvis_proactive_advice())
+            asyncio.create_task(_run_scheduled_job("proactive_advice_14", dtime(14, 0), _jarvis_proactive_advice))
 
         # 장중 보충 스캔 (09:30 / 10:30 / 13:00) — 새 거래량 상위 종목 감시 추가
         if dtime(9, 30) <= cur_time <= dtime(9, 35) and await _daily_gate("scan_0930", today):
-            asyncio.create_task(_intraday_scan())
+            asyncio.create_task(_run_scheduled_job("intraday_scan_0930", dtime(9, 30), _intraday_scan))
         if dtime(10, 30) <= cur_time <= dtime(10, 35) and await _daily_gate("scan_1030", today):
-            asyncio.create_task(_intraday_scan())
+            asyncio.create_task(_run_scheduled_job("intraday_scan_1030", dtime(10, 30), _intraday_scan))
         if dtime(13, 0) <= cur_time <= dtime(13, 5) and await _daily_gate("scan_1300", today):
-            asyncio.create_task(_intraday_scan())
+            asyncio.create_task(_run_scheduled_job("intraday_scan_1300", dtime(13, 0), _intraday_scan))
 
         if dtime(8, 30) <= cur_time <= dtime(8, 35) and await _daily_gate("morning", today):
-            logger.info("🌅 Jarvis 장 시작 전 루틴")
-            await _jarvis_stock_scanner()        # 1. 전종목 스캔 → watchlist 업데이트
-            await _jarvis_auto_analysis()         # 2. watchlist ML 예측
-            await _jarvis_daily_plan()            # 3. 오늘의 작전 수립 → 캐시
-            asyncio.create_task(_manual_collect())  # 4. 뉴스 감성 수집
-            asyncio.create_task(_trigger_ohlcv_collect())  # 5. OHLCV 수집 트리거
-
-            # 오늘 공시 확인
-            try:
-                from data_collector.collectors.dart_collector import DARTCollector
-                dart = DARTCollector()
-                async with db_pool.acquire() as conn:
-                    symbols = [r["symbol"] for r in await conn.fetch(
-                        "SELECT symbol FROM watchlist WHERE is_active=TRUE"
-                    )]
-                await dart.collect_and_alert(symbols, telegram_func=_send_telegram)
-            except Exception as e:
-                logger.warning(f"공시 확인 실패: {e}")
+            await _run_scheduled_job("morning_routine", dtime(8, 30), _morning_routine)
 
         if dtime(15, 40) <= cur_time <= dtime(15, 45) and await _daily_gate("closing", today):
-            logger.info("🌆 Jarvis 장 마감 후 자동 분석")
-            await _jarvis_auto_analysis()
-            asyncio.create_task(_manual_collect())  # 장 마감 후 뉴스 수집
-            asyncio.create_task(_jarvis_closing_report())  # 마감 리포트 + 내일 전략
-            asyncio.create_task(_score_then_review())  # 채점 → 복기 → 교훈 저장
+            await _run_scheduled_job("closing_routine", dtime(15, 40), _closing_routine)
 
 
 @app.on_event("shutdown")

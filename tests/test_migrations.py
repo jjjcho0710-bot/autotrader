@@ -74,6 +74,7 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V010__position_management_policy.sql",
                 "V011__widen_jarvis_decision_column.sql",
                 "V012__widen_jarvis_decision_column_40.sql",
+                "V013__reconcile_audit.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -120,7 +121,7 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 12, "마이그레이션 파일 12개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 13, "마이그레이션 파일 13개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
@@ -265,6 +266,23 @@ class TestMigrationRoundTrip(unittest.TestCase):
             self.assertLessEqual(len(label), 40, f"{label}({len(label)}자)가 VARCHAR(40)을 넘음")
         # 적어도 하나는 기존 V011의 VARCHAR(20) 한도를 넘어야 재현 의미가 있음
         self.assertTrue(any(len(label) > 20 for label in new_labels))
+
+    def test_v013_creates_reconcile_audit_table(self):
+        """V013([AT] feat/reconcile-apply): 보정 적용 감사 로그 테이블 reconcile_audit을
+        새로 만든다. Up/Down이 테이블 생성/삭제를 정확히 대칭으로 뒤집는지 확인."""
+        _version, up_sql, down_sql = next(
+            m for m in self.migrations if m[0].startswith("V013")
+        )
+        self.assertIn("reconcile_audit", up_sql)
+        self.assertIn("trade_history_id", up_sql)
+        self.assertIn("DROP TABLE", down_sql)
+        self.assertIn("reconcile_audit", down_sql)
+
+        tables, indexes = set(), set()
+        apply_sql_to_state(up_sql, tables, indexes)
+        self.assertEqual(tables, {"reconcile_audit"})
+        apply_sql_to_state(down_sql, tables, indexes)
+        self.assertEqual(tables, set())
 
 
 if __name__ == "__main__":

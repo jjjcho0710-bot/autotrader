@@ -1,5 +1,5 @@
 """
-[AT] feat/kis-history-reconcile 회귀 테스트.
+[AT] feat/kis-history-reconcile / feat/reconcile-apply 회귀 테스트.
 
 배경: trade_history에 기록 누락이 확인됨(10/1 14:03 LG디스플레이(034220) 5주 매수가
 KIS에선 체결·보유 중인데 DB에는 없었음). dashboard/kis_history_reconcile.py는 KIS
@@ -13,6 +13,14 @@ KIS에선 체결·보유 중인데 DB에는 없었음). dashboard/kis_history_re
 - 기간 조회는 하루 단위로 나뉘고, 하루 조회 실패가 다른 날짜에 전파되지 않는다.
 - missing_in_db / extra_in_db / qty_mismatch가 각각 올바르게 분류된다.
 - 잔고 대조(check_position_consistency)가 구간 내 순증감과 실제 잔고를 올바르게 비교한다.
+
+보정(apply) 관련 추가 검증([AT] feat/reconcile-apply):
+- 보정 가능 구간(2026-09-28~어제) 밖은 validate_apply_window가 거절한다.
+- build_reconcile_plan은 구간 밖 항목을 계획에서 제외하고, qty_mismatch는 DB 행이
+  정확히 1개일 때만 UPDATE 대상으로 삼고 아니면 manual_review로 분류한다.
+- compute_plan_hash는 계획이 같으면 같은 해시, 하나라도 다르면 다른 해시를 낸다.
+- apply_reconcile_plan은 중복 INSERT를 건너뛰고, 액션마다 감사 행을 남기고,
+  중간에 실패하면 트랜잭션 전체가 롤백된다(주입된 페이크 db로 검증).
 """
 import sys
 import unittest
@@ -232,6 +240,250 @@ class TestBuildSummaryText(unittest.TestCase):
         text = kr.build_summary_text(date(2026, 9, 1), date(2026, 10, 8), reconcile_result, [])
         self.assertIn("034220", text)
         self.assertIn("missing_in_db 1건", text)
+
+
+# ── [AT] feat/reconcile-apply ────────────────────────────────────────────────
+
+
+class TestValidateApplyWindow(unittest.TestCase):
+    def test_start_before_window_is_rejected(self):
+        """9/27 이하 시작일은 거절 — 그 이전 모의투자 조회는 신뢰되지 않음."""
+        err = kr.validate_apply_window(date(2026, 9, 27), date(2026, 10, 1), date(2026, 10, 12))
+        self.assertIsNotNone(err)
+
+    def test_end_is_today_is_rejected(self):
+        """종료일이 오늘이면 거절 — 오늘은 체결이 진행 중일 수 있음."""
+        today = date(2026, 10, 12)
+        err = kr.validate_apply_window(date(2026, 9, 28), today, today)
+        self.assertIsNotNone(err)
+
+    def test_end_after_today_is_rejected(self):
+        today = date(2026, 10, 12)
+        err = kr.validate_apply_window(date(2026, 9, 28), date(2026, 10, 13), today)
+        self.assertIsNotNone(err)
+
+    def test_start_after_end_is_rejected(self):
+        err = kr.validate_apply_window(date(2026, 10, 5), date(2026, 10, 1), date(2026, 10, 12))
+        self.assertIsNotNone(err)
+
+    def test_within_window_is_accepted(self):
+        """2026-09-28~어제(KST)는 보정 가능 구간 안이라 허용되어야 한다."""
+        err = kr.validate_apply_window(date(2026, 9, 28), date(2026, 10, 11), date(2026, 10, 12))
+        self.assertIsNone(err)
+
+
+class TestBuildReconcilePlan(unittest.TestCase):
+    def test_missing_in_db_outside_window_is_excluded(self):
+        """9/28 이전 누락은 보정 계획에 포함되지 않는다(보정 대상 구간 아님)."""
+        reconcile_result = {
+            "missing_in_db": [{
+                "symbol": "147760", "side": "SELL", "date": "20260927",
+                "qty": 300, "executions": [{"qty": 300, "avg_price": 50000, "odno": "1",
+                                             "time_kst": "100000"}],
+            }],
+            "qty_mismatch": [], "extra_in_db": [],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertEqual(plan["inserts"], [])
+
+    def test_missing_in_db_builds_one_insert_per_execution(self):
+        """집계행이 아니라 개별 체결(odno) 단위로 INSERT 계획을 만든다."""
+        reconcile_result = {
+            "missing_in_db": [{
+                "symbol": "034220", "side": "BUY", "date": "20261001",
+                "qty": 5, "executions": [{"qty": 5, "avg_price": 8456.0, "odno": "123",
+                                           "time_kst": "140244"}],
+            }],
+            "qty_mismatch": [], "extra_in_db": [],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertEqual(len(plan["inserts"]), 1)
+        ins = plan["inserts"][0]
+        self.assertEqual(ins["symbol"], "034220")
+        self.assertEqual(ins["side"], "BUY")
+        self.assertEqual(ins["quantity"], 5)
+        self.assertEqual(ins["price"], 8456.0)
+        self.assertEqual(ins["amount"], 42280.0)
+        self.assertEqual(ins["odno"], "123")
+        self.assertEqual(ins["strategy"], kr.RECONCILE_STRATEGY)
+
+    def test_qty_mismatch_with_single_db_row_becomes_update(self):
+        """DB 행이 정확히 1개면 UPDATE 대상 — 수량/금액은 KIS 값으로, pnl은 비율 조정."""
+        reconcile_result = {
+            "missing_in_db": [], "extra_in_db": [],
+            "qty_mismatch": [{
+                "symbol": "090710", "side": "SELL", "date": "20261001",
+                "kis_qty": 103, "db_qty": 100,
+                "kis_executions": [{"qty": 103, "avg_price": 1000.0, "odno": "9"}],
+                "db_rows": [{"id": 55, "qty": 100, "amount": 100000.0, "pnl": 5000.0}],
+            }],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertEqual(len(plan["updates"]), 1)
+        upd = plan["updates"][0]
+        self.assertEqual(upd["trade_history_id"], 55)
+        self.assertEqual(upd["old_quantity"], 100)
+        self.assertEqual(upd["new_quantity"], 103)
+        self.assertEqual(upd["new_amount"], 103000.0)
+        self.assertEqual(upd["new_pnl"], round(5000.0 * 103 / 100, 2))
+        self.assertEqual(plan["manual_review"], [])
+
+    def test_qty_mismatch_with_multiple_db_rows_needs_manual_review(self):
+        """DB 행이 2개 이상이면 자동 UPDATE하지 않고 manual_review로만 보고한다."""
+        reconcile_result = {
+            "missing_in_db": [], "extra_in_db": [],
+            "qty_mismatch": [{
+                "symbol": "007810", "side": "BUY", "date": "20260928",
+                "kis_qty": 20, "db_qty": 15,
+                "kis_executions": [{"qty": 20, "avg_price": 1000.0, "odno": "1"}],
+                "db_rows": [{"id": 1, "qty": 10, "amount": 10000.0, "pnl": None},
+                            {"id": 2, "qty": 5, "amount": 5000.0, "pnl": None}],
+            }],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertEqual(plan["updates"], [])
+        self.assertEqual(len(plan["manual_review"]), 1)
+        self.assertEqual(plan["manual_review"][0]["db_row_ids"], [1, 2])
+
+    def test_pnl_none_stays_none_after_update(self):
+        reconcile_result = {
+            "missing_in_db": [], "extra_in_db": [],
+            "qty_mismatch": [{
+                "symbol": "009830", "side": "BUY", "date": "20260928",
+                "kis_qty": 5, "db_qty": 3,
+                "kis_executions": [{"qty": 5, "avg_price": 100.0, "odno": "1"}],
+                "db_rows": [{"id": 7, "qty": 3, "amount": 300.0, "pnl": None}],
+            }],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 11))
+        self.assertIsNone(plan["updates"][0]["new_pnl"])
+
+
+class TestComputePlanHash(unittest.TestCase):
+    def test_same_plan_produces_same_hash(self):
+        plan = {"window": {"start": "2026-09-28", "end": "2026-10-11"},
+                "inserts": [{"symbol": "005930", "quantity": 1}], "updates": [], "manual_review": []}
+        self.assertEqual(kr.compute_plan_hash(plan), kr.compute_plan_hash(plan))
+
+    def test_different_plan_produces_different_hash(self):
+        plan_a = {"window": {}, "inserts": [{"symbol": "005930", "quantity": 1}],
+                   "updates": [], "manual_review": []}
+        plan_b = {"window": {}, "inserts": [{"symbol": "005930", "quantity": 2}],
+                   "updates": [], "manual_review": []}
+        self.assertNotEqual(kr.compute_plan_hash(plan_a), kr.compute_plan_hash(plan_b))
+
+
+class _FakeTxn:
+    """FakeReconcileDB의 트랜잭션 — 실패 시 진입 시점 상태로 되돌린다(실제 asyncpg
+    conn.transaction()의 롤백 동작을 흉내)."""
+    def __init__(self, db):
+        self.db = db
+
+    async def __aenter__(self):
+        self._snapshot = (
+            list(self.db.trades), list(self.db.updates), list(self.db.audits), self.db.next_id,
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.db.trades, self.db.updates, self.db.audits, self.db.next_id = self._snapshot
+        return False  # 예외는 그대로 전파(apply_reconcile_plan 호출부가 처리)
+
+
+class _FakeReconcileDB:
+    """apply_reconcile_plan()이 요구하는 인터페이스를 실제 asyncpg 없이 흉내내는 페이크.
+    exists_backfill은 self.trades를 직접 검사하므로, 같은 plan을 두 번 적용해도
+    실제로 중복 INSERT가 쌓이지 않는지까지 검증할 수 있다."""
+    def __init__(self, fail_update_index=None):
+        self.trades = []
+        self.updates = []
+        self.audits = []
+        self.next_id = 1000
+        self.fail_update_index = fail_update_index
+
+    def transaction(self):
+        return _FakeTxn(self)
+
+    async def exists_backfill(self, symbol, side, date_str, quantity):
+        return any(
+            t["symbol"] == symbol and t["side"] == side and t["date"] == date_str
+            and t["quantity"] == quantity and t.get("strategy") == kr.RECONCILE_STRATEGY
+            for t in self.trades
+        )
+
+    async def insert_trade(self, ins):
+        tid = self.next_id
+        self.next_id += 1
+        self.trades.append({**ins, "id": tid})
+        return tid
+
+    async def update_trade(self, upd):
+        if self.fail_update_index == len(self.updates):
+            raise RuntimeError("induced failure")
+        self.updates.append(upd)
+
+    async def insert_audit(self, **fields):
+        self.audits.append(fields)
+
+
+def _sample_plan():
+    return {
+        "window": {"start": "2026-09-28", "end": "2026-10-11"},
+        "inserts": [{
+            "symbol": "034220", "side": "BUY", "date": "20261001", "quantity": 5,
+            "price": 8456.0, "amount": 42280.0, "time_kst": "140244", "odno": "123",
+            "strategy": kr.RECONCILE_STRATEGY,
+        }],
+        "updates": [{
+            "trade_history_id": 55, "symbol": "090710", "side": "SELL", "date": "20261001",
+            "old_quantity": 100, "new_quantity": 103, "old_amount": 100000.0,
+            "new_amount": 103000.0, "old_pnl": 5000.0, "new_pnl": 5150.0,
+        }],
+        "manual_review": [],
+    }
+
+
+class TestApplyReconcilePlan(unittest.IsolatedAsyncioTestCase):
+    async def test_inserts_and_updates_write_matching_audit_rows(self):
+        db = _FakeReconcileDB()
+        result = await kr.apply_reconcile_plan(_sample_plan(), db)
+        self.assertEqual(result, {"inserted": 1, "updated": 1, "skipped": 0, "manual_review": 0})
+        self.assertEqual(len(db.trades), 1)
+        self.assertEqual(len(db.updates), 1)
+        self.assertEqual(len(db.audits), 2)
+        self.assertEqual({a["action"] for a in db.audits}, {"INSERT", "UPDATE"})
+
+    async def test_applying_same_plan_twice_skips_duplicate_insert(self):
+        """같은 보정 계획을 두 번 적용해도 중복 INSERT가 생기지 않아야 한다."""
+        db = _FakeReconcileDB()
+        first = await kr.apply_reconcile_plan(_sample_plan(), db)
+        second = await kr.apply_reconcile_plan(_sample_plan(), db)
+        self.assertEqual(first["inserted"], 1)
+        self.assertEqual(second["inserted"], 0)
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual(len(db.trades), 1, "두 번째 적용에서 trade_history 행이 추가로 생기면 안 됨")
+
+    async def test_manual_review_items_are_never_written(self):
+        plan = _sample_plan()
+        plan["updates"] = []
+        plan["manual_review"] = [{"symbol": "007810", "side": "BUY", "date": "20260928",
+                                   "reason": "DB 행 2개"}]
+        db = _FakeReconcileDB()
+        result = await kr.apply_reconcile_plan(plan, db)
+        self.assertEqual(result["manual_review"], 1)
+        self.assertEqual(db.updates, [])
+
+    async def test_mid_failure_rolls_back_everything(self):
+        """두 번째 update에서 실패하면 그 전에 쓴 insert/audit까지 전부 롤백되어야 한다."""
+        plan = _sample_plan()
+        plan["updates"] = plan["updates"] * 2  # 두 번째 update에서 induced failure 유발
+        db = _FakeReconcileDB(fail_update_index=1)
+        with self.assertRaises(RuntimeError):
+            await kr.apply_reconcile_plan(plan, db)
+        self.assertEqual(db.trades, [], "실패 시 먼저 쓴 INSERT까지 롤백되어야 함")
+        self.assertEqual(db.updates, [], "실패 시 먼저 쓴 UPDATE까지 롤백되어야 함")
+        self.assertEqual(db.audits, [], "실패 시 감사 행도 남지 않아야 함")
 
 
 if __name__ == "__main__":

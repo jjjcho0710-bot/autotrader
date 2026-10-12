@@ -368,10 +368,11 @@ def _kis_ccld_page_fetcher(sess, base: str, token: str, cano: str, acnt_prdt_cd:
 
 async def _fetch_trade_history_for_range(start_date, end_date) -> list:
     """trade_history를 KST 날짜 구간(포함)으로 조회한다. crypto_trader는 제외(요구사항).
-    읽기 전용 — DB에 쓰지 않는다."""
+    읽기 전용 — DB에 쓰지 않는다. amount/pnl은 [AT] feat/reconcile-apply의 보정 계획
+    (qty_mismatch UPDATE 대상의 old_amount/old_pnl 계산)에 쓰인다."""
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT id, symbol, side, quantity, ts
+            SELECT id, symbol, side, quantity, amount, pnl, ts
             FROM trade_history
             WHERE bot != 'crypto_trader'
               AND DATE(ts AT TIME ZONE 'Asia/Seoul') BETWEEN $1 AND $2
@@ -381,6 +382,8 @@ async def _fetch_trade_history_for_range(start_date, end_date) -> list:
         {
             "id": r["id"], "symbol": r["symbol"], "side": (r["side"] or "").upper(),
             "qty": float(r["quantity"] or 0),
+            "amount": float(r["amount"]) if r["amount"] is not None else None,
+            "pnl": float(r["pnl"]) if r["pnl"] is not None else None,
             "date": r["ts"].astimezone(KST).strftime("%Y%m%d"),
         }
         for r in rows
@@ -2479,20 +2482,89 @@ async def reconcile_trades_delete(id: int):
         return {"success": False, "error": str(e)}
 
 
+def _kst_execution_ts(date_str: str, time_kst: str) -> datetime:
+    """YYYYMMDD + HHMMSS(KST) 체결시각을 KST가 달린 datetime으로 변환
+    ([AT] feat/reconcile-apply — 보정 INSERT의 ts 컬럼용)."""
+    time_kst = (time_kst or "000000").zfill(6)
+    return datetime.strptime(date_str + time_kst, "%Y%m%d%H%M%S").replace(tzinfo=KST)
+
+
+class _ReconcileDbAdapter:
+    """dashboard/kis_history_reconcile.py:apply_reconcile_plan()이 요구하는 db 인터페이스를
+    실제 asyncpg 트랜잭션 연결로 구현한다([AT] feat/reconcile-apply). 결정 로직(무엇을
+    쓸지, 중복인지, pnl을 어떻게 조정할지)은 전부 순수 함수인 kis_history_reconcile.py에
+    있고, 이 어댑터는 실제 SQL 실행만 담당한다."""
+    def __init__(self, conn):
+        self._conn = conn
+
+    def transaction(self):
+        return self._conn.transaction()
+
+    async def exists_backfill(self, symbol: str, side: str, date_str: str, quantity) -> bool:
+        d = datetime.strptime(date_str, "%Y%m%d").date()
+        row = await self._conn.fetchrow("""
+            SELECT 1 FROM trade_history
+            WHERE symbol=$1 AND side=$2 AND strategy=$3 AND quantity=$4
+              AND DATE(ts AT TIME ZONE 'Asia/Seoul')=$5
+            LIMIT 1
+        """, symbol, side, _kis_recon.RECONCILE_STRATEGY, quantity, d)
+        return row is not None
+
+    async def insert_trade(self, ins: dict) -> int:
+        ts = _kst_execution_ts(ins["date"], ins["time_kst"])
+        row = await self._conn.fetchrow("""
+            INSERT INTO trade_history (bot, asset_type, symbol, side, price, quantity, amount,
+                                        strategy, pnl, ts)
+            VALUES ('stock_trader', 'stock', $1, $2, $3, $4, $5, $6, NULL, $7)
+            RETURNING id
+        """, ins["symbol"], ins["side"], ins["price"], ins["quantity"], ins["amount"],
+            ins["strategy"], ts)
+        return row["id"]
+
+    async def update_trade(self, upd: dict) -> None:
+        await self._conn.execute("""
+            UPDATE trade_history SET quantity=$1, amount=$2, pnl=$3 WHERE id=$4
+        """, upd["new_quantity"], upd["new_amount"], upd["new_pnl"], upd["trade_history_id"])
+
+    async def insert_audit(self, action, trade_history_id, symbol, side, trade_date,
+                            old_quantity, new_quantity, old_amount, new_amount,
+                            old_pnl, new_pnl, note) -> None:
+        await self._conn.execute("""
+            INSERT INTO reconcile_audit (action, trade_history_id, symbol, side, trade_date,
+                old_quantity, new_quantity, old_amount, new_amount, old_pnl, new_pnl, note)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        """, action, trade_history_id, symbol, side, trade_date,
+            old_quantity, new_quantity, old_amount, new_amount, old_pnl, new_pnl, note)
+
+
 @app.get("/api/jarvis/reconcile_trades_period")
-async def reconcile_trades_period(start: str = None, end: str = None):
-    """[AT] feat/kis-history-reconcile (PM 승인) — KIS 체결내역(inquire-daily-ccld)과
-    trade_history를 기간으로 대조한다. 읽기 전용(DB에 쓰지 않음). crypto_trader는 제외.
+async def reconcile_trades_period(start: str = None, end: str = None,
+                                   apply: int = 0, confirm: str = None):
+    """[AT] feat/kis-history-reconcile / feat/reconcile-apply (PM 승인) — KIS 체결내역
+    (inquire-daily-ccld)과 trade_history를 기간으로 대조한다.
 
     start/end: YYYY-MM-DD (KST 기준, 기본값 2026-09-01~오늘). 모의투자 기간 조회 제한에
     대응하기 위해 KIS 조회는 항상 하루 단위로 나눠서 호출하고(PM 지시), 실패하거나 제한에
-    걸린 날짜는 unavailable_days에 명시한다."""
+    걸린 날짜는 unavailable_days에 명시한다.
+
+    apply/confirm([AT] feat/reconcile-apply): 기본(apply=0)은 드라이런 — 대조 결과 중
+    보정 가능 구간(2026-09-28~어제 KST)에 해당하는 항목만으로 보정 계획을 만들어 보여줄
+    뿐, 아무것도 쓰지 않는다. apply=1&confirm=<plan_hash>일 때만 실제로 쓴다 — confirm은
+    "지금 다시 계산한 보정 계획"의 해시와 정확히 일치해야 하며(새로고침 후 재요청해도
+    두 번 적용되지 않게), start/end도 보정 가능 구간 안이어야 한다. 실제 결정 로직(무엇을
+    쓸지, 중복 skip, pnl 비율 조정, 트랜잭션 롤백)은 전부 dashboard/kis_history_reconcile.py
+    의 순수 함수에 있다."""
     try:
         today_kst = datetime.now(KST).date()
         start_date = date.fromisoformat(start) if start else date(2026, 9, 1)
         end_date = date.fromisoformat(end) if end else today_kst
         if start_date > end_date:
             return {"success": False, "error": "start가 end보다 늦을 수 없음"}
+
+        if apply:
+            window_err = _kis_recon.validate_apply_window(start_date, end_date, today_kst)
+            if window_err:
+                return {"success": False, "error": window_err}
 
         token = await get_kis_token()
         if not token:
@@ -2525,6 +2597,31 @@ async def reconcile_trades_period(start: str = None, end: str = None):
             start_date, end_date, reconcile_result, kis_result["unavailable_days"])
         await _send_telegram(summary, dest="personal")
 
+        # 보정 가능 구간(2026-09-28~어제)과 요청 구간의 교집합만으로 보정 계획을 만든다.
+        plan_window_start = max(start_date, _kis_recon.RECONCILE_WINDOW_START)
+        plan_window_end = min(end_date, today_kst - timedelta(days=1))
+        if plan_window_start > plan_window_end:
+            plan = {"window": {"start": plan_window_start.isoformat(), "end": plan_window_end.isoformat()},
+                    "inserts": [], "updates": [], "manual_review": []}
+        else:
+            plan = _kis_recon.build_reconcile_plan(reconcile_result, plan_window_start, plan_window_end)
+        plan_hash = _kis_recon.compute_plan_hash(plan)
+
+        apply_result = None
+        if not apply:
+            await _send_telegram(_kis_recon.build_plan_summary_text(plan, plan_hash), dest="personal")
+        else:
+            if not confirm or confirm != plan_hash:
+                return {
+                    "success": False,
+                    "error": "보정 계획 해시 불일치 — 최신 대조 결과로 다시 확인 후 "
+                             "confirm=<plan_hash>로 재요청하세요",
+                    "plan_hash": plan_hash,
+                }
+            async with db_pool.acquire() as conn:
+                apply_result = await _kis_recon.apply_reconcile_plan(plan, _ReconcileDbAdapter(conn))
+            await _send_telegram(_kis_recon.build_apply_result_text(apply_result), dest="personal")
+
         return {
             "success": True,
             "start": start_date.isoformat(), "end": end_date.isoformat(),
@@ -2535,6 +2632,9 @@ async def reconcile_trades_period(start: str = None, end: str = None):
             "extra_in_db": reconcile_result["extra_in_db"],
             "qty_mismatch": reconcile_result["qty_mismatch"],
             "position_check": position_check,
+            "reconcile_plan": plan,
+            "plan_hash": plan_hash,
+            "apply_result": apply_result,
         }
     except Exception as e:
         return {"success": False, "error": _scrub_kis_msg(e)}

@@ -8,7 +8,13 @@ stock_trader(자동매매 스캔)와 router/handlers/order_handler.py(채팅 직
 ML 정확도(42~64%)가 확신도 기반 사이징의 근거가 되기엔 약해 "종목당 최대 손실 고정"
 방식을 쓴다: 기본 매수금액 = 자산 × RISK_PER_TRADE_PCT(%) ÷ |손절률(%)|, 여기에
 ATR(20일) 변동성 구간별 배율을 곱해 최종 상한을 정한다.
+
+종목당 비중 상한([AT] feat/single-stock-cap, PM 승인)도 같은 원칙으로 이 모듈에 둔다 —
+AI 자동매수(stark/execution_guard.py)와 수동 채팅매수·제안승인 매수(router/handlers/
+order_handler.py)가 compute_projected_weight_pct() 하나를 공용으로 쓴다.
 """
+
+from typing import Optional
 
 DEFAULT_STOP_LOSS_PCT = 7.0
 # ATR(20일, stock_daily_ohlcv)을 현재가 대비 %로 환산한 변동성 구간별 배율 — (상한%, 배율) 오름차순.
@@ -59,3 +65,17 @@ def volatility_multiplier(atr_pct: float) -> float:
         if atr_pct <= upper:
             return mult
     return VOLATILITY_MULT_HIGH
+
+
+def compute_projected_weight_pct(
+    current_value: float, buy_amount: float, equity: float
+) -> Optional[float]:
+    """매수 후 예상 비중(%) = (해당 종목 현재 평가금액 + 이번 매수금액) ÷ 총자산 × 100.
+
+    종목당 비중 상한([AT] feat/single-stock-cap)을 검사하는 모든 경로(AI 자동매수·
+    수동 채팅매수·제안승인 매수)가 이 계산 하나만 공용으로 쓴다 — 경로별로 복제하지 않는다.
+    equity<=0(총자산 조회 실패/알 수 없음)이면 계산 불가로 None을 반환한다. None일 때의
+    동작(차단 보류 vs 경고 후 통과)은 경로별 정책이 달라 호출부가 결정한다."""
+    if equity is None or equity <= 0:
+        return None
+    return (max(current_value, 0.0) + max(buy_amount, 0.0)) / equity * 100

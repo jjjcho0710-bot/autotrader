@@ -17,12 +17,14 @@ import re
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
+from common.config import config as _default_config
 from common.fill_recording import partial_fill_note, resolve_fill_price, resolve_filled_quantity
 from common.late_fill_tracker import register_partial_fill
 from common.position_sizing import (
     DEFAULT_STOP_LOSS_PCT,
     compute_atr_pct,
     compute_base_amount,
+    compute_projected_weight_pct,
     volatility_multiplier,
 )
 from stark.execution_guard import (
@@ -70,6 +72,48 @@ async def _momentum_warning_note(symbol: str, *, pool: Any) -> str:
         f"\n⚠️ 모멘텀 경고: 직전 {momentum['lookback_days']}거래일 수익률 "
         f"{momentum['pct']:.2f}% — 최근 하락 추세 종목입니다 (차단 아님, 참고용)"
     )
+
+
+async def _compute_single_stock_projected_pct(
+    *, get_positions_fn, symbol: str, price: float, qty: float,
+) -> dict:
+    """채팅 직접매수(handle_trade_command)·제안승인 매수(handle_proposal_response) 공용:
+    종목당 비중 상한 검사용 예상 비중(%) 계산 ([AT] feat/single-stock-cap). 유일한 계산
+    로직은 common.position_sizing.compute_projected_weight_pct()이고, 이 함수는 그
+    입력값(총자산·해당 종목 현재 평가금액)을 get_positions_fn으로 모아주는 래퍼다.
+
+    반환: {"pct": float|None, "fetch_failed": bool}. fetch_failed=True면 총자산을 못
+    구한 것이므로(조회 예외/실패/stale/0 이하) 호출부가 차단하지 않고 경고 문구를 답장에
+    붙여야 한다(PM 지시: 수동 매수는 총자산 조회 실패를 새로 차단하지 않는다). get_positions_fn이
+    성공했지만 account 필드 자체가 없는 경우(이 기능과 무관한 기존 테스트의 단순 더미
+    함수들 — 실제 운영 경로의 get_stock_positions_fn은 성공 시 항상 account를 포함한다)는
+    fetch_failed=False로 조용히 미적용한다."""
+    if get_positions_fn is None:
+        return {"pct": None, "fetch_failed": False}
+    try:
+        pos_res = await get_positions_fn()
+    except Exception as e:
+        logger.warning(f"종목당 비중 상한 확인 실패(경고만, 통과) [{symbol}]: {e}")
+        return {"pct": None, "fetch_failed": True}
+    if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
+        logger.warning(f"종목당 비중 상한: 총자산 조회 실패/stale(경고만, 통과) [{symbol}]")
+        return {"pct": None, "fetch_failed": True}
+    account = pos_res.get("account")
+    if not account:
+        return {"pct": None, "fetch_failed": False}
+    equity = float(account.get("total_eval", 0) or 0)
+    pos_row = next(
+        (p for p in (pos_res.get("data") or [])
+         if isinstance(p, dict) and p.get("symbol") == symbol), None,
+    )
+    current_value = 0.0
+    if pos_row:
+        current_value = float(pos_row.get("qty", 0) or 0) * float(pos_row.get("cur_price", 0) or 0)
+    pct = compute_projected_weight_pct(current_value, float(price) * float(qty), equity)
+    if pct is None:
+        logger.warning(f"종목당 비중 상한: 총자산 0 이하(경고만, 통과) [{symbol}]")
+        return {"pct": None, "fetch_failed": True}
+    return {"pct": pct, "fetch_failed": False}
 
 
 def _fill_channel_summary(name: str, symbol: str, action_kr: str, qty, price: float,
@@ -179,9 +223,38 @@ async def handle_proposal_response(
                 await redis.delete(f"proposal:{symbol}")
                 return f"⛔ {position_blocked['reason']}"
 
+            # 종목당 비중 상한 ([AT] feat/single-stock-cap, PM 지시). 총자산 조회 실패 시
+            # 차단하지 않고 경고만 붙인다. 상한 초과 시에는 차단하되, '강제매수' 키워드가
+            # 포함되면 통과시킨다 — proposal을 지우지 않아 사용자가 같은 제안에
+            # "승인 강제매수"로 재승인할 수 있게 둔다(지우면 재승인 대상이 사라짐).
+            max_pct = _default_config.SINGLE_STOCK_MAX_PCT
+            weight_note = ""
+            cap_info = await _compute_single_stock_projected_pct(
+                get_positions_fn=get_positions_fn, symbol=symbol,
+                price=float(target["price"]), qty=float(target["qty"]),
+            )
+            if cap_info["fetch_failed"]:
+                weight_note = "\n⚠️ 종목당 비중 상한 확인 실패 — 한도 미적용"
+            elif cap_info["pct"] is not None and cap_info["pct"] > max_pct:
+                projected_pct = cap_info["pct"]
+                if "강제매수" in um:
+                    weight_note = (
+                        f"\n⚠️ 종목당 비중 상한 초과 — 강제매수 적용 "
+                        f"(예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%)"
+                    )
+                    logger.info(
+                        f"⚠️ 종목당 비중 상한 초과 강제매수 적용(제안승인) [{symbol}]: "
+                        f"예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%"
+                    )
+                else:
+                    return (f"⛔ {target['name']} 예상 비중 {projected_pct:.1f}% > "
+                            f"상한 {max_pct:.1f}%. 그래도 매수하려면 '강제매수' 포함해서 "
+                            f"다시 지시해주세요")
+
             # 모멘텀 게이트 — 사용자가 승인한 제안 매수는 차단하지 않고 경고 문구만 첨부
             # ([AT] feat/momentum-gate).
             momentum_note = await _momentum_warning_note(symbol, pool=pool)
+            momentum_note += weight_note
 
             # 승인 → 실제 매수 (주문 전 보유 수량을 응답불명 시 체결 재확인용으로 미리 조회)
             pre_qty = await get_held_qty(symbol, get_positions_fn) if get_positions_fn else None
@@ -431,6 +504,35 @@ async def handle_trade_command(
                         return (f"⚠️ 사이징 한도(약 {max_amount / 10000:,.0f}만원) 초과로 "
                                 f"1주도 매수 불가 — 고가 종목")
                     sizing_note = f"\n요청 {requested_qty}주 → 사이징 한도로 {qty}주로 조정"
+
+        # 종목당 비중 상한 ([AT] feat/single-stock-cap, PM 지시: 채팅 수동매수로 총자산의
+        # 약 59%를 담아 손절한 사고 재발 방지). 사이징 한도 적용 후 최종 qty로 검사한다.
+        # 총자산 조회 실패 시 차단하지 않고 경고만 붙인다. 상한 초과 시에는 차단하되,
+        # '강제매수' 키워드가 포함되면 통과시킨다("한도무시"는 사이징 금액 한도만 무시할 뿐
+        # 이 상한은 넘지 못한다 — 별도 키워드로 명시적 의도를 요구한다).
+        if is_buy:
+            max_pct = getattr(config, "SINGLE_STOCK_MAX_PCT", None)
+            if max_pct is not None:
+                cap_info = await _compute_single_stock_projected_pct(
+                    get_positions_fn=get_stock_positions_fn, symbol=symbol, price=price, qty=qty,
+                )
+                if cap_info["fetch_failed"]:
+                    sizing_note += "\n⚠️ 종목당 비중 상한 확인 실패 — 한도 미적용"
+                elif cap_info["pct"] is not None and cap_info["pct"] > max_pct:
+                    projected_pct = cap_info["pct"]
+                    if "강제매수" in msg:
+                        sizing_note += (
+                            f"\n⚠️ 종목당 비중 상한 초과 — 강제매수 적용 "
+                            f"(예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%)"
+                        )
+                        logger.info(
+                            f"⚠️ 종목당 비중 상한 초과 강제매수 적용 [{symbol}]: "
+                            f"예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%"
+                        )
+                    else:
+                        return (f"⛔ {name}({symbol}) 예상 비중 {projected_pct:.1f}% > "
+                                f"상한 {max_pct:.1f}%. 그래도 매수하려면 '강제매수' 포함해서 "
+                                f"다시 지시해주세요")
 
         # 직전 같은 종목·같은 방향 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
         if redis is not None and await check_order_uncertain_block(symbol, is_buy, redis):

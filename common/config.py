@@ -86,6 +86,11 @@ class Config:
     MOMENTUM_GATE_DROP_THRESHOLD_PCT: float = float(os.getenv("MOMENTUM_GATE_DROP_THRESHOLD_PCT", "0"))
     MOMENTUM_GATE_SHADOW_THRESHOLD_PCT: float = float(os.getenv("MOMENTUM_GATE_SHADOW_THRESHOLD_PCT", "8"))
 
+    # ── 종목당 비중 상한 (PM 승인, [AT] feat/single-stock-cap) ──
+    # 매수 후 예상 비중 = (해당 종목 현재 평가금액 + 이번 매수금액) ÷ 총자산. 초과 시
+    # AI 자동매수는 차단, 수동 채팅매수·제안승인 매수는 경고 후 '강제매수' 키워드로만 통과.
+    SINGLE_STOCK_MAX_PCT: float = float(os.getenv("SINGLE_STOCK_MAX_PCT", "20"))
+
     def __post_init__(self):
         # 수집할 주식 종목 (환경변수로 override 가능)
         symbols_env = os.getenv("STOCK_SYMBOLS", "")

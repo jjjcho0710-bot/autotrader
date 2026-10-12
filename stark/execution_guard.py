@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from common.config import config
 from common.fill_recording import partial_fill_note, resolve_fill_price, resolve_filled_quantity
 from common.late_fill_tracker import register_partial_fill
+from common.position_sizing import compute_projected_weight_pct
 
 logger = logging.getLogger("stark.execution_guard")
 
@@ -352,6 +353,52 @@ async def check_buy_position_limits(
         reason_text = f"최대 보유 종목수 한도 초과 ({len(total_held_symbols)}/{limit})"
         return {"blocked": "max_positions_limit", "reason": reason_text, "limit": limit}
 
+    return None
+
+
+async def check_single_stock_cap(
+    symbol: str, price: float, qty: float, *, get_positions_fn, max_pct: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """종목당 비중 상한 검사 — 매수 후 예상 비중 = (해당 종목 현재 평가금액 + 이번 매수금액)
+    ÷ 총자산(KIS 계좌 총평가, get_positions_fn 결과의 account.total_eval) ([AT]
+    feat/single-stock-cap, PM 지시: 207940 삼성바이오로직스를 채팅 수동매수로 총자산의
+    약 59% 담아 손절한 사고 재발 방지).
+
+    AI 자동매수 경로(execute())에서만 쓴다 — 총자산 조회 실패 시 차단하지 않고 경고
+    로그만 남기고 기존 동작을 유지한다(check_momentum()과 동일한 fail-open 원칙, PM 지시:
+    AI 자동매수를 새로 막지 말 것). 수동 채팅매수·제안승인 매수는 반대로 조회 실패 시
+    경고만 붙이고 통과하되 상한 초과 시에는 차단(+'강제매수' 키워드로만 통과)하는 다른
+    정책을 쓰므로 router/handlers/order_handler.py에 별도로 구현돼 있다 — 공용 계산
+    로직(common.position_sizing.compute_projected_weight_pct)만 공유한다.
+
+    반환: 통과(또는 조회 실패로 미적용) 시 None. 차단 시 {"blocked": "single_stock_cap",
+    "reason": 사람이 읽을 문구, "projected_pct": float}."""
+    if get_positions_fn is None:
+        return None
+    limit = max_pct if max_pct is not None else config.SINGLE_STOCK_MAX_PCT
+    try:
+        pos_res = await get_positions_fn()
+    except Exception as e:
+        logger.warning(f"종목당 비중 상한 확인 실패(미적용, 기존 동작 유지) [{symbol}]: {e}")
+        return None
+    if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
+        logger.warning(f"종목당 비중 상한: 총자산 조회 실패/stale (미적용, 기존 동작 유지) [{symbol}]")
+        return None
+    equity = float((pos_res.get("account") or {}).get("total_eval", 0) or 0)
+    pos_row = next(
+        (p for p in (pos_res.get("data") or [])
+         if isinstance(p, dict) and p.get("symbol") == symbol), None,
+    )
+    current_value = 0.0
+    if pos_row:
+        current_value = float(pos_row.get("qty", 0) or 0) * float(pos_row.get("cur_price", 0) or 0)
+    projected_pct = compute_projected_weight_pct(current_value, float(price) * float(qty), equity)
+    if projected_pct is None:
+        logger.warning(f"종목당 비중 상한: 총자산 0 이하 (미적용, 기존 동작 유지) [{symbol}]")
+        return None
+    if projected_pct > limit:
+        reason_text = f"single_stock_cap: 예상 비중 {projected_pct:.1f}% > 상한 {limit:.1f}%"
+        return {"blocked": "single_stock_cap", "reason": reason_text, "projected_pct": projected_pct}
     return None
 
 
@@ -762,6 +809,49 @@ async def execute(
                     "executed": False,
                     "skipped": True,
                     "blocked": block_code,
+                    "reason": reason_text,
+                    "jarvis_reply": reply,
+                }
+
+        # (1a) 종목당 비중 상한 — 매수 후 예상 비중이 상한을 넘으면 AI 자동매수를 차단한다
+        # ([AT] feat/single-stock-cap, PM 지시). 총자산 조회 실패 시에는 차단하지 않고
+        # 경고만 남긴다(check_single_stock_cap()이 보장) — 새로 막지 말라는 PM 지시.
+        if is_buy and bot == "stock_trader" and get_positions_fn is not None:
+            cap_blocked = await check_single_stock_cap(
+                symbol, price, qty, get_positions_fn=get_positions_fn,
+            )
+            if cap_blocked:
+                reason_text = cap_blocked["reason"]
+                logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
+
+                from stark.decision_logger import log_decision
+                await log_decision(
+                    pool, symbol, "SKIP",
+                    name=name,
+                    confidence=decision.get("confidence", 0.0),
+                    reason=reason_text,
+                    rationale=(
+                        "실행 레이어 안전장치: 종목당 비중 상한(single_stock_cap) — "
+                        f"매수 후 예상 비중 {cap_blocked['projected_pct']:.1f}%가 상한을 "
+                        "초과해 매수 차단"
+                    ),
+                    strategy=strategy,
+                    source="execution_guard",
+                    executed=False,
+                    order_success=None,
+                    price=float(price),
+                    quantity=float(qty),
+                )
+
+                if log_journal_fn:
+                    await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                                         "SKIP", reason_text, False, False, price, qty)
+
+                return {
+                    "success": True,
+                    "executed": False,
+                    "skipped": True,
+                    "blocked": "single_stock_cap",
                     "reason": reason_text,
                     "jarvis_reply": reply,
                 }

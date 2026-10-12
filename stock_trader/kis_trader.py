@@ -543,9 +543,11 @@ class KISTrader:
                 logger.info(f"📝 매수 주문 접수: {symbol} {price:,}원 × {qty}주 (주문번호 {order_no}) — 체결 확인 중")
 
             # 접수 성공 ≠ 체결 성공. 잠시 대기 후 실제 체결 수량을 재조회해 확정한다.
+            # with_price=True로 체결평균가(avg_fill_price)도 함께 조회한다 — trade_history에
+            # 주문가가 아니라 실제 체결평균가를 남기기 위함([AT] record-fill-price).
             import asyncio as _aio
             await _aio.sleep(1.5)
-            filled_qty = await self._get_filled_qty(order_no, symbol, side="02")
+            filled_qty, avg_fill_price = await self._get_filled_qty(order_no, symbol, side="02", with_price=True)
             if filled_qty is None:
                 # 체결 조회 자체가 실패하면 판정 불가 — 접수는 됐으니 보수적으로 성공 처리하되 표시
                 self.invalidate_balance_cache()
@@ -556,7 +558,8 @@ class KISTrader:
                 # 실패로 단정하지 않고 +3초, +7초 두 번 더 재확인한다(총 약 10초).
                 for delay in self._FILL_RETRY_DELAYS_SEC:
                     await _aio.sleep(delay)
-                    filled_qty = await self._get_filled_qty(order_no, symbol, side="02")
+                    filled_qty, avg_fill_price = await self._get_filled_qty(
+                        order_no, symbol, side="02", with_price=True)
                     if filled_qty:
                         break
                 if not filled_qty:
@@ -567,13 +570,17 @@ class KISTrader:
                         "success": False, "pending": True, "order_no": order_no,
                         "error": "주문 접수, 체결 확인 대기",
                     }
+            result = {"success": True, "order_no": order_no, "filled_qty": filled_qty}
+            if avg_fill_price:
+                result["avg_fill_price"] = avg_fill_price
             if filled_qty < qty:
                 self.invalidate_balance_cache()
                 logger.warning(f"⚠️ 매수 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
-                return {"success": True, "order_no": order_no, "filled_qty": filled_qty, "partial": True}
+                result["partial"] = True
+                return result
             self.invalidate_balance_cache()
             logger.info(f"✅ 매수 체결 확인: {symbol} {price:,}원 × {filled_qty}주")
-            return {"success": True, "order_no": order_no, "filled_qty": filled_qty}
+            return result
         return {"success": False, "error": "매수 실패"}
 
     # ── 매도 주문 ───────────────────────────────────────
@@ -651,13 +658,17 @@ class KISTrader:
                     "error": "주문 접수, 체결 확인 대기",
                 }
         await self._check_sell_slippage(symbol, price, avg_fill_price)
+        result = {"success": True, "order_no": order_no, "filled_qty": filled_qty}
+        if avg_fill_price:
+            result["avg_fill_price"] = avg_fill_price
         if filled_qty < qty:
             self.invalidate_balance_cache()
             logger.warning(f"⚠️ 매도 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
-            return {"success": True, "order_no": order_no, "filled_qty": filled_qty, "partial": True}
+            result["partial"] = True
+            return result
         self.invalidate_balance_cache()
         logger.info(f"✅ 매도 체결 확인: {symbol} {price:,}원 × {filled_qty}주")
-        return {"success": True, "order_no": order_no, "filled_qty": filled_qty}
+        return result
 
     async def _check_sell_slippage(
         self, symbol: str, signal_price: int, avg_fill_price: Optional[float], threshold_pct: float = 3.0

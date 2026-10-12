@@ -319,6 +319,38 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx["requested_qty"], 10)
         self.assertEqual(ctx["recorded_qty"], 3)
 
+    async def test_approve_fill_records_avg_fill_price_not_target_price(self):
+        """[AT] record-fill-price: kis_order_fn 결과에 avg_fill_price가 있으면 제안가
+        (target["price"])가 아니라 체결평균가로 trade_history를 기록해야 한다."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 10}),
+        })
+        pool = FakePool()
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "P2", "filled_qty": 10, "avg_fill_price": 69800.0}
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        reply = await order_handler.handle_proposal_response(
+            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+            send_telegram_fn=send_telegram, get_positions_fn=get_positions, pool=pool)
+
+        self.assertIn("69,800", reply)
+        self.assertEqual(len(pool._conn.inserted), 1)
+        inserted = pool._conn.inserted[0]
+        # VALUES ('stock_trader','stock',$1,'BUY',$2,$3,$4,$5,NULL) → args[1]=price
+        self.assertEqual(inserted[1], 69800.0)
+        self.assertEqual(inserted[3], 69800.0 * 10)  # amount 컬럼
+
     async def test_approve_order_failure_reports_error(self):
         redis = FakeRedis({
             "proposal:latest": "005930",
@@ -582,6 +614,43 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
         self.assertIn("손익 +110,000원 (+7.7%)", reply)
         inserted_args = pool._conn.inserted[0]
         self.assertEqual(inserted_args[-1], 110000.0)
+
+    async def test_qty_sell_pnl_uses_avg_fill_price_not_quote_price(self):
+        """[AT] record-fill-price: kis_order_fn 결과에 avg_fill_price가 있으면 현재가(주문가)
+        대신 체결평균가로 pnl을 계산하고 trade_history.price도 체결평균가로 기록해야 한다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"data": [{"symbol": "005930", "qty": 30, "avg_price": 65000}]}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": True, "order_no": "T9", "filled_qty": 22, "avg_fill_price": 69500.0}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        reply = await order_handler.handle_trade_command(
+            "삼성전자 22주 매도", pool=pool, redis=redis, universe=universe,
+            get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+            get_stock_positions_fn=get_stock_positions,
+            send_telegram_fn=send_telegram, log_journal_fn=log_journal,
+            get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
+
+        # 현재가(70000) 기준이면 pnl=110,000이지만, 체결평균가(69500) 기준이면 99,000이다.
+        self.assertIn("손익 +99,000원", reply)
+        self.assertNotIn("110,000", reply)
+        inserted_args = pool._conn.inserted[0]
+        self.assertEqual(inserted_args[2], 69500.0)  # price 컬럼 = 체결평균가
+        self.assertEqual(inserted_args[-1], 99000.0)
 
     async def test_buy_success_has_no_pnl_display(self):
         """매수는 평단가 조회·손익 계산·표시를 하지 않는다(기존 동작 유지). 매수 안전장치

@@ -13,6 +13,7 @@ from datetime import datetime, time, timezone, timedelta
 from common.config import config, compute_total_pnl
 from common.database import db, cache
 from common import position_sizing
+from common.fill_recording import resolve_fill_price
 from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
 from kis_trader import KISTrader
 from ml_report import build_ml_report_text
@@ -823,14 +824,18 @@ class StockTrader:
         avg_price = ctx.get("avg_price")
         accepted_at = ctx.get("accepted_at", 0)
 
+        # with_price=True로 체결평균가도 함께 재조회한다 — 매수/매도 모두 trade_history에는
+        # 주문가(price)가 아니라 실제 체결평균가를 남겨야 한다([AT] record-fill-price).
         if side == "buy":
-            filled_qty = await self.trader._get_filled_qty(order_no, symbol, side="02")
-            fill_price = price
+            filled_qty, fetched_avg = await self.trader._get_filled_qty(
+                order_no, symbol, side="02", with_price=True)
         else:
             filled_qty, fetched_avg = await self.trader._get_filled_qty(order_no, symbol, with_price=True)
-            fill_price = fetched_avg or price
+        fill_price, _used_fallback = resolve_fill_price(fetched_avg, price)
 
         if filled_qty:
+            if _used_fallback:
+                logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {fill_price:,.0f}원")
             pnl = None
             if side == "sell" and avg_price is not None:
                 pnl = int((fill_price - avg_price) * filled_qty)
@@ -1045,12 +1050,18 @@ class StockTrader:
                         symbol, cur_price, qty, strategy=f"{strat_name}_손절", avg_price=avg_price)
                     if result.get("success"):
                         _fq = result.get("filled_qty", qty)
-                        _fpnl = int((cur_price - avg_price) * _fq)
+                        # trade_history.price는 체결평균가 기준으로 기록한다(주문가=cur_price는
+                        # 체결평균가를 못 구했을 때만 대체값으로 쓴다, [AT] record-fill-price).
+                        _fill_price, _used_fallback = resolve_fill_price(
+                            result.get("avg_fill_price"), cur_price)
+                        if _used_fallback:
+                            logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                        _fpnl = int((_fill_price - avg_price) * _fq)
                         remain = qty - _fq
                         await db.insert_trade(
                             bot="stock_trader", asset_type="stock",
-                            symbol=symbol, side="SELL", price=cur_price, quantity=_fq,
-                            amount=cur_price * _fq, strategy=f"{strat_name}_손절", pnl=_fpnl,
+                            symbol=symbol, side="SELL", price=_fill_price, quantity=_fq,
+                            amount=_fill_price * _fq, strategy=f"{strat_name}_손절", pnl=_fpnl,
                         )
                         await self._invalidate_position_cache()
                         try:
@@ -1061,8 +1072,8 @@ class StockTrader:
                         from common.telegram import send_stock
                         await send_stock(
                             f"🔴 <b>{nm}({symbol}) 손절 매도 체결 {pnl_rate:+.1f}%</b>\n"
-                            f"{_fq}주 @ {cur_price:,}원 (손실 {_fpnl:+,}원)\n"
-                            f"평단 {avg_price:,.0f} → 매도 {cur_price:,.0f}"
+                            f"{_fq}주 @ {_fill_price:,.0f}원 (손실 {_fpnl:+,}원)\n"
+                            f"평단 {avg_price:,.0f} → 매도 {_fill_price:,.0f}"
                             + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
                         )
                         logger.info(f"🔴 손절 자동매도 체결 [{symbol}] {pnl_rate:+.1f}% ({_fq}주 체결, 잔여 {remain}주)")
@@ -1144,12 +1155,16 @@ class StockTrader:
                         strategy=f"{strat_name}_급등절반익절", avg_price=avg_price)
                     if result["success"]:
                         half_qty = result.get("filled_qty", half_qty)
-                        half_pnl = int((cur_price - avg_price) * half_qty)
+                        _fill_price, _used_fallback = resolve_fill_price(
+                            result.get("avg_fill_price"), cur_price)
+                        if _used_fallback:
+                            logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                        half_pnl = int((_fill_price - avg_price) * half_qty)
                         await db.insert_trade(
                             bot="stock_trader", asset_type="stock",
                             symbol=symbol, side="SELL",
-                            price=cur_price, quantity=half_qty,
-                            amount=cur_price * half_qty,
+                            price=_fill_price, quantity=half_qty,
+                            amount=_fill_price * half_qty,
                             strategy=f"{strat_name}_급등절반익절", pnl=half_pnl,
                         )
                         await self._invalidate_position_cache()
@@ -1158,13 +1173,13 @@ class StockTrader:
                             from common.telegram import CHANNEL_SLIM, fill_summary_line, send_report, send_stock
                             await send_stock(
                                 f"🚀 <b>{pos.get('name', symbol)} 급등 절반 익절</b>\n"
-                                f"1시간 내 {surge_rate:+.1f}% 급등 — {half_qty}주 매도 @ {cur_price:,}원 "
+                                f"1시간 내 {surge_rate:+.1f}% 급등 — {half_qty}주 매도 @ {_fill_price:,.0f}원 "
                                 f"(전체 손익 {pnl_rate:+.1f}%, 실현 {half_pnl:+,}원)\n"
                                 f"잔여 {qty - half_qty}주는 트레일링으로 계속 관리합니다.")
                             if not CHANNEL_SLIM:
                                 await send_report(fill_summary_line(
                                     name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
-                                    qty=half_qty, price=cur_price, pnl_rate=pnl_rate))
+                                    qty=half_qty, price=_fill_price, pnl_rate=pnl_rate))
                         except Exception:
                             pass
                         pos["qty"] = qty - half_qty
@@ -1190,27 +1205,31 @@ class StockTrader:
                             strategy=f"{strat_name}_구간익절_신호소멸", avg_price=avg_price)
                         if result.get("success"):
                             sold_qty = result.get("filled_qty", qty)
-                            s_pnl = int((cur_price - avg_price) * sold_qty)
+                            _fill_price, _used_fallback = resolve_fill_price(
+                                result.get("avg_fill_price"), cur_price)
+                            if _used_fallback:
+                                logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                            s_pnl = int((_fill_price - avg_price) * sold_qty)
                             remain = qty - sold_qty
                             await db.insert_trade(
                                 bot="stock_trader", asset_type="stock",
                                 symbol=symbol, side="SELL",
-                                price=cur_price, quantity=sold_qty,
-                                amount=cur_price * sold_qty,
+                                price=_fill_price, quantity=sold_qty,
+                                amount=_fill_price * sold_qty,
                                 strategy=f"{strat_name}_구간익절_신호소멸", pnl=s_pnl,
                             )
                             await self._invalidate_position_cache()
                             from common.telegram import CHANNEL_SLIM, fill_summary_line, send_report, send_stock
                             await send_stock(
                                 f"🟡 <b>{pos.get('name', symbol)} 익절(+1~5% 신호소멸 전량매도)</b>\n"
-                                f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                f"{sold_qty}주 매도 @ {_fill_price:,.0f}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
                                 f"사유: {strat_name} 진입 신호 소멸(데드크로스 등)"
                                 + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
                             )
                             if not CHANNEL_SLIM:
                                 await send_report(fill_summary_line(
                                     name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
-                                    qty=sold_qty, price=cur_price, pnl_rate=pnl_rate))
+                                    qty=sold_qty, price=_fill_price, pnl_rate=pnl_rate))
                             if remain > 0:
                                 pos["qty"] = remain
                                 pos["sellable_qty"] = remain
@@ -1277,12 +1296,16 @@ class StockTrader:
                                 self._selling.discard(symbol)
                             if result.get("success"):
                                 sell_qty = result.get("filled_qty", sell_qty)
-                                s_pnl = int((cur_price - avg_price) * sell_qty)
+                                _fill_price, _used_fallback = resolve_fill_price(
+                                    result.get("avg_fill_price"), cur_price)
+                                if _used_fallback:
+                                    logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                                s_pnl = int((_fill_price - avg_price) * sell_qty)
                                 await db.insert_trade(
                                     bot="stock_trader", asset_type="stock",
                                     symbol=symbol, side="SELL",
-                                    price=cur_price, quantity=sell_qty,
-                                    amount=cur_price * sell_qty,
+                                    price=_fill_price, quantity=sell_qty,
+                                    amount=_fill_price * sell_qty,
                                     strategy=f"{strat_name}_AI익절{decision}", pnl=s_pnl,
                                 )
                                 await self._invalidate_position_cache()
@@ -1290,14 +1313,14 @@ class StockTrader:
                                 remain = qty - sell_qty
                                 await send_stock(
                                     f"🤖 <b>{pos.get('name', symbol)} 익절(+5%↑ AI판단 {decision})</b>\n"
-                                    f"{sell_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                    f"{sell_qty}주 매도 @ {_fill_price:,.0f}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
                                     f"근거: {reason}\n"
                                     + (f"잔여 {remain}주는 계속 보유·관찰합니다." if remain > 0 else "전량 매도 완료.")
                                 )
                                 if not CHANNEL_SLIM:
                                     await send_report(fill_summary_line(
                                         name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
-                                        qty=sell_qty, price=cur_price, pnl_rate=pnl_rate))
+                                        qty=sell_qty, price=_fill_price, pnl_rate=pnl_rate))
                                 if remain > 0:
                                     pos["qty"] = remain
                                     self.positions[symbol] = pos
@@ -1365,13 +1388,17 @@ class StockTrader:
                             self._selling.discard(symbol)
                         if result.get("success"):
                             sold_qty = result.get("filled_qty", half_qty)
-                            s_pnl = int((cur_price - avg_price) * sold_qty)
+                            _fill_price, _used_fallback = resolve_fill_price(
+                                result.get("avg_fill_price"), cur_price)
+                            if _used_fallback:
+                                logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                            s_pnl = int((_fill_price - avg_price) * sold_qty)
                             remain = qty - sold_qty
                             await db.insert_trade(
                                 bot="stock_trader", asset_type="stock",
                                 symbol=symbol, side="SELL",
-                                price=cur_price, quantity=sold_qty,
-                                amount=cur_price * sold_qty,
+                                price=_fill_price, quantity=sold_qty,
+                                amount=_fill_price * sold_qty,
                                 strategy=f"{strat_name}_절반확정", pnl=s_pnl,
                             )
                             await self._invalidate_position_cache()
@@ -1380,14 +1407,14 @@ class StockTrader:
                             from common.telegram import CHANNEL_SLIM, fill_summary_line, send_report, send_stock
                             await send_stock(
                                 f"🟢 <b>{pos.get('name', symbol)} 익절(+10%↑ 절반확정)</b>\n"
-                                f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                f"{sold_qty}주 매도 @ {_fill_price:,.0f}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
                                 f"잔여 {remain}주는 고점 대비 -{self.TRAILING_STOP_PCT:.0f}% 하락 시 "
                                 f"전량 매도하는 트레일링 스탑으로 관리합니다."
                             )
                             if not CHANNEL_SLIM:
                                 await send_report(fill_summary_line(
                                     name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
-                                    qty=sold_qty, price=cur_price, pnl_rate=pnl_rate))
+                                    qty=sold_qty, price=_fill_price, pnl_rate=pnl_rate))
                             if remain > 0:
                                 pos["qty"] = remain
                                 pos["sellable_qty"] = remain
@@ -1418,13 +1445,17 @@ class StockTrader:
                                 self._selling.discard(symbol)
                             if result.get("success"):
                                 sold_qty = result.get("filled_qty", qty)
-                                s_pnl = int((cur_price - avg_price) * sold_qty)
+                                _fill_price, _used_fallback = resolve_fill_price(
+                                    result.get("avg_fill_price"), cur_price)
+                                if _used_fallback:
+                                    logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                                s_pnl = int((_fill_price - avg_price) * sold_qty)
                                 remain = qty - sold_qty
                                 await db.insert_trade(
                                     bot="stock_trader", asset_type="stock",
                                     symbol=symbol, side="SELL",
-                                    price=cur_price, quantity=sold_qty,
-                                    amount=cur_price * sold_qty,
+                                    price=_fill_price, quantity=sold_qty,
+                                    amount=_fill_price * sold_qty,
                                     strategy=f"{strat_name}_트레일링스탑", pnl=s_pnl,
                                 )
                                 await self._invalidate_position_cache()
@@ -1432,14 +1463,14 @@ class StockTrader:
                                 await send_stock(
                                     f"📉 <b>{pos.get('name', symbol)} 트레일링 스탑 발동"
                                     f"(고점 대비 -{self.TRAILING_STOP_PCT:.0f}%)</b>\n"
-                                    f"{sold_qty}주 매도 @ {cur_price:,}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
+                                    f"{sold_qty}주 매도 @ {_fill_price:,.0f}원 (손익 {pnl_rate:+.1f}%, 실현 {s_pnl:+,}원)\n"
                                     f"고점 {high:,.0f}원 대비 {drop_pct:.1f}% 하락"
                                     + (f"\n잔여 {remain}주는 다음 사이클에 즉시 재시도합니다." if remain > 0 else "")
                                 )
                                 if not CHANNEL_SLIM:
                                     await send_report(fill_summary_line(
                                         name=pos.get('name', symbol), symbol=symbol, side_kr="매도",
-                                        qty=sold_qty, price=cur_price, pnl_rate=pnl_rate))
+                                        qty=sold_qty, price=_fill_price, pnl_rate=pnl_rate))
                                 if remain > 0:
                                     pos["qty"] = remain
                                     pos["sellable_qty"] = remain

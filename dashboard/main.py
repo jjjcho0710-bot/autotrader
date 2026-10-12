@@ -4881,7 +4881,7 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
             if filled_qty < qty:
                 result["partial"] = True
                 logger.warning(f"⚠️ {'매수' if is_buy else '매도'} 부분체결: {symbol} {filled_qty}/{qty}주만 체결")
-            if not is_buy and avg_fill_price:
+            if avg_fill_price:
                 result["avg_fill_price"] = avg_fill_price
             return result
         # KIS가 명확히 거절한 경우(rt_cd != "0" + msg1) — 확정 실패

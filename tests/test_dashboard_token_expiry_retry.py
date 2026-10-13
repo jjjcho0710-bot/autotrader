@@ -218,10 +218,34 @@ class TestStockPositionsTokenExpiryRetry(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.get("stale"))
         self.assertEqual(result["account"]["cash"], 500000)
 
-    async def test_rate_limit_egw00201_does_not_trigger_reissue(self):
-        """EGW00201(초당 거래건수 초과)은 만료가 아니므로 재발급을 시도하지 않고
-        1번만 조회해야 한다."""
+    async def test_rate_limit_egw00201_does_not_trigger_reissue_but_retries_once(self):
+        """EGW00201(초당 거래건수 초과)은 만료가 아니므로 재발급을 시도하지 않지만,
+        1.5초 후 1회 재시도해 성공 응답을 받아야 한다([AT] fix/token-reissue-condition)."""
         session = FakeSequenceSession([
+            {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"},
+            {"rt_cd": "0", "output1": [], "output2": [{"tot_evlu_amt": "1000000",
+                                                         "scts_evlu_amt": "0",
+                                                         "prvs_rcdl_excc_amt": "1000000"}]},
+        ])
+
+        mock_token = AsyncMock(return_value="TOK-OLD")
+
+        with patch("dashboard.main.get_kis_token", mock_token), \
+             patch("aiohttp.ClientSession", return_value=session), \
+             patch("asyncio.sleep", AsyncMock()) as mock_sleep:
+            result = await dm._get_stock_positions_raw()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(session.get_calls, 2)
+        self.assertEqual(mock_token.await_count, 1)
+        self.assertEqual(mock_token.await_args.kwargs.get("force_new", False), False)
+        mock_sleep.assert_awaited_once_with(1.5)
+
+    async def test_rate_limit_egw00201_retry_also_fails_falls_back_to_stale(self):
+        """재시도도 EGW00201이면 더 재시도하지 않고 재발급도 시도하지 않은 채
+        last_ok 스냅샷으로 stale 폴백해야 한다."""
+        session = FakeSequenceSession([
+            {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"},
             {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다"},
         ])
         dm.redis_client = _FakeRedisSnapshot({
@@ -233,13 +257,65 @@ class TestStockPositionsTokenExpiryRetry(unittest.IsolatedAsyncioTestCase):
         mock_token = AsyncMock(return_value="TOK-OLD")
 
         with patch("dashboard.main.get_kis_token", mock_token), \
-             patch("aiohttp.ClientSession", return_value=session):
+             patch("aiohttp.ClientSession", return_value=session), \
+             patch("asyncio.sleep", AsyncMock()) as mock_sleep:
+            result = await dm._get_stock_positions_raw()
+
+        self.assertEqual(session.get_calls, 2)
+        self.assertEqual(mock_token.await_count, 1)
+        self.assertEqual(mock_token.await_args.kwargs.get("force_new", False), False)
+        mock_sleep.assert_awaited_once_with(1.5)
+        self.assertTrue(result.get("stale"))
+
+    async def test_egw00215_without_expiry_wording_does_not_trigger_reissue(self):
+        """EGW00215는 재발급 조건(EGW00121/EGW00123, '만료'/'token' 포함)에 해당하지
+        않으므로 재발급을 시도하지 않고 1번만 조회 후 기존 stale 폴백으로 가야 한다
+        ([AT] fix/token-reissue-condition — 접두사 매칭 제거 회귀 방지)."""
+        session = FakeSequenceSession([
+            {"rt_cd": "1", "msg_cd": "EGW00215", "msg1": "알 수 없는 오류입니다"},
+        ])
+        dm.redis_client = _FakeRedisSnapshot({
+            "success": True,
+            "data": [],
+            "account": {"cash": 700000, "total_eval": 700000},
+        })
+
+        mock_token = AsyncMock(return_value="TOK-OLD")
+
+        with patch("dashboard.main.get_kis_token", mock_token), \
+             patch("aiohttp.ClientSession", return_value=session), \
+             patch("asyncio.sleep", AsyncMock()) as mock_sleep:
             result = await dm._get_stock_positions_raw()
 
         self.assertEqual(session.get_calls, 1)
         self.assertEqual(mock_token.await_count, 1)
         self.assertEqual(mock_token.await_args.kwargs.get("force_new", False), False)
+        mock_sleep.assert_not_awaited()
         self.assertTrue(result.get("stale"))
+        self.assertEqual(result["account"]["cash"], 700000)
+
+    async def test_egw00123_still_triggers_reissue(self):
+        """EGW00123은 좁혀진 조건에도 여전히 재발급을 트리거해야 한다(회귀 방지)."""
+        session = FakeSequenceSession([
+            {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "기간이 만료된 token 입니다"},
+            {"rt_cd": "0", "output1": [], "output2": [{"tot_evlu_amt": "1000000",
+                                                         "scts_evlu_amt": "0",
+                                                         "prvs_rcdl_excc_amt": "1000000"}]},
+        ])
+
+        async def fake_get_kis_token(force_new=False):
+            return "TOK-NEW" if force_new else "TOK-OLD"
+
+        mock_token = AsyncMock(side_effect=fake_get_kis_token)
+
+        with patch("dashboard.main.get_kis_token", mock_token), \
+             patch("aiohttp.ClientSession", return_value=session):
+            result = await dm._get_stock_positions_raw()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(session.get_calls, 2)
+        self.assertEqual(mock_token.await_count, 2)
+        self.assertEqual(mock_token.await_args_list[1].kwargs.get("force_new"), True)
 
 
 class TestGetKisTokenRedisTtlExpiry(unittest.IsolatedAsyncioTestCase):

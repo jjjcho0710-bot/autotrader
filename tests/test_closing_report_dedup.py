@@ -201,6 +201,8 @@ class TestSchedulerUsesRedisGate(unittest.TestCase):
             "scan_1300",     # 13:00 보충 스캔
             "morning",       # 08:30 장 시작 전 루틴
             "closing",       # 15:40 장 마감 후 자동 분석 (보고된 버그)
+            "health_report_0940",  # 09:40 자동 점검 리포트 ([AT] feat/health-report)
+            "health_report_1545",  # 15:45 자동 점검 리포트 ([AT] feat/health-report)
         ]
         for name in expected_gate_names:
             with self.subTest(gate=name):

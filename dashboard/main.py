@@ -59,6 +59,7 @@ from stark import context_collector, decision_engine, execution_guard
 from stark.decision_logger import get_recent_decisions, get_decisions_by_symbol
 from bot import telegram_bot
 from dashboard import kis_history_reconcile as _kis_recon
+from dashboard import health_report as _health_report
 
 import time as _time
 
@@ -2744,6 +2745,49 @@ async def reconcile_trades_period(start: str = None, end: str = None,
         return {"success": False, "error": _scrub_kis_msg(e)}
 
 
+async def _reconcile_dry_run_counts(target_date: date) -> dict:
+    """[AT] feat/health-report — 전일 정산 dry-run 건수만 계산한다.
+    reconcile_trades_period()과 동일한 KIS 대조 로직(fetch_kis_executions/reconcile/
+    build_reconcile_plan)을 재사용하지만, apply_reconcile_plan은 호출하지 않고(읽기 전용,
+    apply 절대 금지) 텔레그램 발송도 하지 않는다 — 건수만 돌려줘 health_report가 자체
+    요약 줄에 반영한다."""
+    token = await get_kis_token()
+    if not token:
+        raise RuntimeError("KIS 토큰 발급 실패")
+    acct = config.kis_account_no.replace("-", "")
+    cano = acct[:8]
+    acnt_prdt_cd = acct[8:] if len(acct) > 8 else "01"
+    tr_id = "VTTC0081R" if config.KIS_IS_PAPER else "TTTC0081R"
+
+    import ssl as _ssl
+    _ssl_ctx = _ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = _ssl.CERT_NONE
+    async with _aiohttp.ClientSession(connector=_aiohttp.TCPConnector(ssl=_ssl_ctx)) as sess:
+        fetch_page = _kis_ccld_page_fetcher(sess, config.kis_base_url, token, cano, acnt_prdt_cd, tr_id)
+        kis_result = await _kis_recon.fetch_kis_executions(
+            fetch_page, target_date, target_date, sleep_fn=lambda: asyncio.sleep(0.3))
+
+    db_rows = await _fetch_trade_history_for_range(target_date, target_date)
+    reconcile_result = _kis_recon.reconcile(kis_result["rows"], db_rows)
+
+    today_kst = datetime.now(KST).date()
+    window_start = max(target_date, _kis_recon.RECONCILE_WINDOW_START)
+    window_end = min(target_date, today_kst - timedelta(days=1))
+    manual_review = []
+    if window_start <= window_end:
+        plan = _kis_recon.build_reconcile_plan(reconcile_result, window_start, window_end)
+        manual_review = plan.get("manual_review") or []
+
+    return {
+        "missing_in_db": reconcile_result["missing_in_db"],
+        "extra_in_db": reconcile_result["extra_in_db"],
+        "qty_mismatch": reconcile_result["qty_mismatch"],
+        "manual_review": len(manual_review),
+        "unavailable_days": kis_result["unavailable_days"],
+    }
+
+
 @app.api_route("/api/jarvis/knowledge/clean_bad_lessons", methods=["GET", "POST"])
 async def clean_bad_lessons():
     """형식을 안 지킨 교훈(인사말이 통째로 저장된 것 등) 정리 — '주간 교훈:' 형식이 아니면서
@@ -2869,7 +2913,13 @@ async def _run_scheduled_job(name: str, scheduled: dtime, coro_func, *args, **kw
     try:
         return await coro_func(*args, **kwargs)
     finally:
-        logger.info(f"⏱️ [{name}] 종료 — 소요 {_time.monotonic() - t0:.2f}s")
+        elapsed = _time.monotonic() - t0
+        logger.info(f"⏱️ [{name}] 종료 — 소요 {elapsed:.2f}s")
+        if name == "morning_routine":  # [AT] feat/health-report — 점검 리포트용 기록
+            try:
+                await redis_client.setex(f"health:scan_timing:{start_dt.strftime('%Y-%m-%d')}", 86400 * 7, f"{elapsed:.2f}")
+            except Exception:
+                pass
 
 
 async def _morning_routine():
@@ -2975,6 +3025,14 @@ async def _jarvis_scheduler():
 
         if dtime(15, 40) <= cur_time <= dtime(15, 45) and await _daily_gate("closing", today):
             await _run_scheduled_job("closing_routine", dtime(15, 40), _closing_routine)
+
+        # 자동 점검 리포트 (09:40 / 15:45, [AT] feat/health-report) — 읽기 전용, 텔레그램 발송
+        if dtime(9, 40) <= cur_time <= dtime(9, 45) and await _daily_gate("health_report_0940", today):
+            asyncio.create_task(_run_scheduled_job(
+                "health_report_0940", dtime(9, 40), _build_and_maybe_send_health_report, send=True))
+        if dtime(15, 45) <= cur_time <= dtime(15, 50) and await _daily_gate("health_report_1545", today):
+            asyncio.create_task(_run_scheduled_job(
+                "health_report_1545", dtime(15, 45), _build_and_maybe_send_health_report, send=True))
 
 
 @app.on_event("shutdown")
@@ -4018,6 +4076,35 @@ async def full_health_check():
     statuses = [v.get("status") for v in result["checks"].values()]
     result["overall"] = "ok" if all(s=="ok" for s in statuses) else                         "error" if any(s=="error" for s in statuses) else "warning"
     return result
+
+
+async def _build_and_maybe_send_health_report(send: bool) -> dict:
+    """[AT] feat/health-report — build_health_report() 실행 + 필요 시 텔레그램 발송까지
+    감싸는 공용 함수. 스케줄러(09:40/15:45)와 수동 확인 엔드포인트(GET /api/health/report)가
+    둘 다 이 함수를 쓴다."""
+    report = await _health_report.build_health_report(
+        pool=db_pool,
+        redis=redis_client,
+        reconcile_dry_run_fn=_reconcile_dry_run_counts,
+        get_positions_fn=get_stock_positions,
+        now_kst=datetime.now(KST),
+    )
+    if send:
+        await _send_telegram(report["text"], dest="personal")
+    return report
+
+
+@app.get("/api/health/report")
+async def health_report_endpoint(send: int = 0):
+    """자동 점검 리포트 — send=0(기본)이면 텍스트만 반환, send=1이면 텔레그램까지 발송한다.
+    읽기 전용(apply 없음). 노출 수준은 기존 /api/jarvis/* 읽기 엔드포인트와 동일(인증 없음)."""
+    try:
+        report = await _build_and_maybe_send_health_report(send=bool(send))
+        return {"success": True, "status": report["status"], "issues": report["issues"],
+                "text": report["text"]}
+    except Exception as e:
+        logger.error(f"헬스리포트 생성 실패: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/events")
@@ -5850,6 +5937,12 @@ async def _get_stock_positions_raw():
                     logger.warning(
                         f"⚠️ KIS 토큰 만료 감지(msg_cd={msg_cd}) → 재발급 후 포지션 재조회 | msg1={_masked_msg1}"
                     )
+                    try:  # [AT] feat/health-report — 점검 리포트용 재발급 횟수 기록
+                        _reissue_key = f"health:token_reissue:{datetime.now(KST).strftime('%Y-%m-%d')}"
+                        await redis_client.incr(_reissue_key)
+                        await redis_client.expire(_reissue_key, 86400 * 7)
+                    except Exception:
+                        pass
                     token = await get_kis_token(force_new=True)
                     if not token:
                         break

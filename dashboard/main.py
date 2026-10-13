@@ -165,8 +165,17 @@ async def get_kis_token(force_new: bool = False) -> str:
                 cached = await redis_client.get(redis_key)
                 if cached:
                     token = cached if isinstance(cached, str) else cached.decode('utf-8')
+                    # 메모리 만료는 Redis 저장 당시(발급 시각)가 아니라 지금 남은 TTL
+                    # 기준으로 맞춘다 — 23시간으로 고정하면 실제로는 곧 만료될 토큰을
+                    # 한참 더 유효한 것처럼 캐싱해 "기간이 만료된 token" 에러가 계속
+                    # 재발급 없이 재사용되는 사고로 이어진다. TTL 조회 실패/만료정보
+                    # 없음(-1, -2)이면 보수적으로 짧게(10분)만 신뢰한다.
+                    try:
+                        ttl = await redis_client.ttl(redis_key)
+                    except Exception:
+                        ttl = -1
                     _kis_token_cache["token"] = token
-                    _kis_token_cache["expires"] = now + 82800  # 23시간
+                    _kis_token_cache["expires"] = now + ttl if ttl and ttl > 0 else now + 600
                     return token
         except Exception:
             pass
@@ -5776,12 +5785,24 @@ async def _get_stock_positions_raw():
                 raise RuntimeError("KIS 토큰 발급 실패")
 
             import ssl as _ssl
-            _ssl_ctx = _ssl.create_default_context()
-            _ssl_ctx.check_hostname = False
-            _ssl_ctx.verify_mode = _ssl.CERT_NONE
-            _connector = http.TCPConnector(ssl=_ssl_ctx)
+            acct = config.kis_account_no.replace("-", "")
+            params = {
+                "CANO": acct[:8],
+                "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
+                "AFHR_FLPR_YN": "N", "OFL_YN": "",
+                "INQR_DVSN": "02", "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+            }
+            timeout = http.ClientTimeout(total=10)
 
-            async with http.ClientSession(connector=_connector) as session:
+            data = {}
+            res_status = 0
+            # 만료 토큰(EGW00xxx, EGW00201 레이트리밋 제외) 응답이면 강제 재발급 후 1회만 재시도
+            for attempt in range(2):
+                _ssl_ctx = _ssl.create_default_context()
+                _ssl_ctx.check_hostname = False
+                _ssl_ctx.verify_mode = _ssl.CERT_NONE
                 headers = {
                     "authorization": f"Bearer {token}",
                     "appkey": config.kis_app_key,
@@ -5789,136 +5810,146 @@ async def _get_stock_positions_raw():
                     "tr_id": "VTTC8434R" if config.KIS_IS_PAPER else "TTTC8434R",
                     "custtype": "P",
                 }
-                acct = config.kis_account_no.replace("-", "")
-                params = {
-                    "CANO": acct[:8],
-                    "ACNT_PRDT_CD": acct[8:] if len(acct) > 8 else "01",
-                    "AFHR_FLPR_YN": "N", "OFL_YN": "",
-                    "INQR_DVSN": "02", "UNPR_DVSN": "01",
-                    "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
-                    "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
-                }
-                timeout = http.ClientTimeout(total=10)
+                async with http.ClientSession(connector=http.TCPConnector(ssl=_ssl_ctx)) as session:
+                    try:
+                        res = await session.get(
+                            f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
+                            headers=headers, params=params,
+                            timeout=timeout,
+                        )
+                    except (asyncio.TimeoutError, TimeoutError):
+                        logger.error("❌ KIS 보유 포지션 조회 타임아웃 (10초 초과)")
+                        raise
+
+                    data = await res.json()
+                    res_status = res.status
+
+                if res_status == 200 and data.get("rt_cd") == "0":
+                    break
+
+                msg_cd = data.get("msg_cd", "None")
+                msg1 = data.get("msg1", "")
+                is_expired_token = msg_cd != "EGW00201" and (
+                    (isinstance(msg_cd, str) and msg_cd.startswith("EGW00"))
+                    or "만료" in msg1 or "token" in msg1.lower()
+                )
+                if attempt == 0 and is_expired_token:
+                    logger.warning(f"⚠️ KIS 토큰 만료 감지(msg_cd={msg_cd}) → 재발급 후 포지션 재조회")
+                    token = await get_kis_token(force_new=True)
+                    if not token:
+                        break
+                    continue
+                break
+
+            if res_status != 200 or data.get("rt_cd") != "0":
+                rt_cd = data.get("rt_cd", "None")
+                msg_cd = data.get("msg_cd", "None")
+                msg1 = data.get("msg1", "")
+                if acct:
+                    msg1 = msg1.replace(acct, "********")
+                err_msg = msg1 or msg_cd or f"KIS 잔고 조회 실패 (HTTP {res_status})"
+                logger.error(
+                    f"❌ KIS 잔고 조회 실패: HTTP {res_status} | rt_cd={rt_cd} | msg_cd={msg_cd} | msg1={msg1}"
+                )
                 try:
-                    res = await session.get(
-                        f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
-                        headers=headers, params=params,
-                        timeout=timeout,
-                    )
-                except (asyncio.TimeoutError, TimeoutError):
-                    logger.error("❌ KIS 보유 포지션 조회 타임아웃 (10초 초과)")
-                    raise
-
-                data = await res.json()
-                if res.status != 200 or data.get("rt_cd") != "0":
-                    rt_cd = data.get("rt_cd", "None")
-                    msg_cd = data.get("msg_cd", "None")
-                    msg1 = data.get("msg1", "")
-                    if acct:
-                        msg1 = msg1.replace(acct, "********")
-                    err_msg = msg1 or msg_cd or f"KIS 잔고 조회 실패 (HTTP {res.status})"
-                    logger.error(
-                        f"❌ KIS 잔고 조회 실패: HTTP {res.status} | rt_cd={rt_cd} | msg_cd={msg_cd} | msg1={msg1}"
-                    )
-                    try:
-                        snap = await redis_client.get("positions:last_ok")
-                        if snap:
-                            d = json.loads(snap if isinstance(snap, str) else snap.decode())
-                            if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
-                                d["stale"] = True
-                                d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
-                                return d
-                    except Exception:
-                        pass
-                    return {"success": False, "error": err_msg, "data": []}
-
-                positions = []
-                for row in data.get("output1", []):
-                    qty = int(row.get("hldg_qty", 0))
-                    if qty <= 0:
-                        continue
-                    try:
-                        sellable = int(row.get("ord_psbl_qty", qty) or qty)
-                    except Exception:
-                        sellable = qty
-                    positions.append({
-                        "symbol":    row.get("pdno"),
-                        "name":      row.get("prdt_name"),
-                        "qty":       qty,
-                        "sellable_qty": sellable,
-                        "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
-                        "cur_price": int(row.get("prpr", 0)),
-                        "pnl":       int(row.get("evlu_pfls_amt", 0)),
-                        "pnl_rate":  float(row.get("evlu_pfls_rt", 0) or 0),
-                    })
-                # output2: 계좌 총평가 요약
-                out2 = data.get("output2", [{}])
-                summary = out2[0] if out2 else {}
-                if not summary:
-                    err_msg = data.get("msg1") or "KIS 잔고 응답(output2) 비어있음"
-                    logger.warning(f"⚠️ KIS 잔고 응답 이상: {err_msg}")
-                    # 다른 실패 분기(HTTP/rt_cd 오류, 예외)와 동일하게 last_ok 스냅샷으로
-                    # 폴백한다 — 여기만 폴백이 없으면 held_symbols가 빈 집합이 되어 아침
-                    # 스캐너가 실제 보유종목을 비활성화하는 사고로 이어진다([AT]
-                    # fix/holdings-daily-collect). 폴백 데이터에는 stale 표시를 유지한다.
-                    try:
-                        snap = await redis_client.get("positions:last_ok")
-                        if snap:
-                            d = json.loads(snap if isinstance(snap, str) else snap.decode())
-                            if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
-                                d["stale"] = True
-                                d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
-                                return d
-                    except Exception:
-                        pass
-                    return {"success": False, "error": err_msg, "data": []}
-
-                total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
-                stock_eval = int(summary.get("scts_evlu_amt", 0) or 0)  # 유가증권평가금액(주식평가)
-                # 예수금: 총평가-주식평가가 총자산과 항상 일관되는 값이라 최우선 —
-                # prvs_rcdl_excc_amt(D+2)/nxdy_excc_amt(D+1)는 모의투자 등에서 한동안 0으로
-                # 비어 있을 수 있고, dnca_tot_amt는 매수해도 D+2 결제 전까지 안 줄어 혼동
-                # 유발이라 위 값들이 모두 없을 때의 최후 폴백으로만 쓴다
-                derived_cash = total_eval - stock_eval
-                if 0 < derived_cash < total_eval:
-                    cash_val = derived_cash
-                    cash_source = "total_eval-stock_eval"
-                else:
-                    cash_val = int(summary.get("prvs_rcdl_excc_amt", 0) or 0)   # D+2 예수금
-                    cash_source = "prvs_rcdl_excc_amt"
-                    if cash_val == 0:
-                        cash_val = int(summary.get("nxdy_excc_amt", 0) or 0)    # D+1 예수금
-                        cash_source = "nxdy_excc_amt"
-                    if cash_val == 0:
-                        cash_val = int(summary.get("dnca_tot_amt", 0) or 0)     # 예수금총액
-                        cash_source = "dnca_tot_amt"
-                if cash_source != _last_cash_source:
-                    logger.info(f"💰 예수금 계산 소스 변경: {cash_source} (cash={cash_val:,}원)")
-                    _last_cash_source = cash_source
-
-                total_pnl, total_pnl_rate = compute_total_pnl(total_eval)
-                account = {
-                    "total_eval":   total_eval,
-                    "stock_eval":   stock_eval,
-                    "cash":         cash_val,
-                    "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),
-                    "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),
-                    "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0) or 0),
-                    "total_pnl":       total_pnl,       # 누적 손익 (시작 자금 대비)
-                    "total_pnl_rate":  total_pnl_rate,
-                    "_raw_keys":    list(summary.keys()),  # 디버그용
-                }
-                result = {"success": True, "data": positions, "account": account}
-                # 마지막 성공 스냅샷 보관 (주말 KIS 점검 등 실패 시 폴백용, 7일)
-                try:
-                    await redis_client.setex("positions:last_ok", 86400 * 7,
-                                              json.dumps({**result, "snapshot_at": datetime.now(KST).isoformat()}, default=str))
+                    snap = await redis_client.get("positions:last_ok")
+                    if snap:
+                        d = json.loads(snap if isinstance(snap, str) else snap.decode())
+                        if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
+                            d["stale"] = True
+                            d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
+                            return d
                 except Exception:
                     pass
+                return {"success": False, "error": err_msg, "data": []}
 
-                _stock_positions_cache = result
-                _stock_positions_cache_ts = time.time()
-                return result
+            positions = []
+            for row in data.get("output1", []):
+                qty = int(row.get("hldg_qty", 0))
+                if qty <= 0:
+                    continue
+                try:
+                    sellable = int(row.get("ord_psbl_qty", qty) or qty)
+                except Exception:
+                    sellable = qty
+                positions.append({
+                    "symbol":    row.get("pdno"),
+                    "name":      row.get("prdt_name"),
+                    "qty":       qty,
+                    "sellable_qty": sellable,
+                    "avg_price": int(float(row.get("pchs_avg_pric", 0) or 0)),
+                    "cur_price": int(row.get("prpr", 0)),
+                    "pnl":       int(row.get("evlu_pfls_amt", 0)),
+                    "pnl_rate":  float(row.get("evlu_pfls_rt", 0) or 0),
+                })
+            # output2: 계좌 총평가 요약
+            out2 = data.get("output2", [{}])
+            summary = out2[0] if out2 else {}
+            if not summary:
+                err_msg = data.get("msg1") or "KIS 잔고 응답(output2) 비어있음"
+                logger.warning(f"⚠️ KIS 잔고 응답 이상: {err_msg}")
+                # 다른 실패 분기(HTTP/rt_cd 오류, 예외)와 동일하게 last_ok 스냅샷으로
+                # 폴백한다 — 여기만 폴백이 없으면 held_symbols가 빈 집합이 되어 아침
+                # 스캐너가 실제 보유종목을 비활성화하는 사고로 이어진다([AT]
+                # fix/holdings-daily-collect). 폴백 데이터에는 stale 표시를 유지한다.
+                try:
+                    snap = await redis_client.get("positions:last_ok")
+                    if snap:
+                        d = json.loads(snap if isinstance(snap, str) else snap.decode())
+                        if d.get("account", {}).get("cash", 0) > 0 or d.get("account", {}).get("total_eval", 0) > 0:
+                            d["stale"] = True
+                            d["error"] = f"KIS 조회 실패({err_msg[:40]}) — 마지막 확인 데이터 표시"
+                            return d
+                except Exception:
+                    pass
+                return {"success": False, "error": err_msg, "data": []}
+
+            total_eval = int(summary.get("tot_evlu_amt", 0) or 0)
+            stock_eval = int(summary.get("scts_evlu_amt", 0) or 0)  # 유가증권평가금액(주식평가)
+            # 예수금: 총평가-주식평가가 총자산과 항상 일관되는 값이라 최우선 —
+            # prvs_rcdl_excc_amt(D+2)/nxdy_excc_amt(D+1)는 모의투자 등에서 한동안 0으로
+            # 비어 있을 수 있고, dnca_tot_amt는 매수해도 D+2 결제 전까지 안 줄어 혼동
+            # 유발이라 위 값들이 모두 없을 때의 최후 폴백으로만 쓴다
+            derived_cash = total_eval - stock_eval
+            if 0 < derived_cash < total_eval:
+                cash_val = derived_cash
+                cash_source = "total_eval-stock_eval"
+            else:
+                cash_val = int(summary.get("prvs_rcdl_excc_amt", 0) or 0)   # D+2 예수금
+                cash_source = "prvs_rcdl_excc_amt"
+                if cash_val == 0:
+                    cash_val = int(summary.get("nxdy_excc_amt", 0) or 0)    # D+1 예수금
+                    cash_source = "nxdy_excc_amt"
+                if cash_val == 0:
+                    cash_val = int(summary.get("dnca_tot_amt", 0) or 0)     # 예수금총액
+                    cash_source = "dnca_tot_amt"
+            if cash_source != _last_cash_source:
+                logger.info(f"💰 예수금 계산 소스 변경: {cash_source} (cash={cash_val:,}원)")
+                _last_cash_source = cash_source
+
+            total_pnl, total_pnl_rate = compute_total_pnl(total_eval)
+            account = {
+                "total_eval":   total_eval,
+                "stock_eval":   stock_eval,
+                "cash":         cash_val,
+                "buy_amount":   int(summary.get("pchs_amt_smtl_amt", 0)),
+                "pnl":          int(summary.get("evlu_pfls_smtl_amt", 0)),
+                "pnl_rate":     float(summary.get("asst_icdc_erng_rt", 0) or 0),
+                "total_pnl":       total_pnl,       # 누적 손익 (시작 자금 대비)
+                "total_pnl_rate":  total_pnl_rate,
+                "_raw_keys":    list(summary.keys()),  # 디버그용
+            }
+            result = {"success": True, "data": positions, "account": account}
+            # 마지막 성공 스냅샷 보관 (주말 KIS 점검 등 실패 시 폴백용, 7일)
+            try:
+                await redis_client.setex("positions:last_ok", 86400 * 7,
+                                          json.dumps({**result, "snapshot_at": datetime.now(KST).isoformat()}, default=str))
+            except Exception:
+                pass
+
+            _stock_positions_cache = result
+            _stock_positions_cache_ts = time.time()
+            return result
         except Exception as e:
             if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
                 logger.error("❌ KIS 보유 포지션 조회 타임아웃 (10초 초과)")

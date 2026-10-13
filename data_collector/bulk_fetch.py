@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, "/app")
 from common.config import config
 from common.database import db
+from common.change_rate import fill_change_rates
 import aiohttp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] — %(message)s", datefmt="%H:%M:%S")
@@ -52,7 +53,7 @@ async def fetch_ohlcv_kis(session: aiohttp.ClientSession, token: str, symbol: st
     )
     data = await res.json()
     output = data.get("output2", [])
-    candles = []
+    rows = []
     for row in output:
         date_str = row.get("stck_bsop_date", "")
         close    = int(row.get("stck_clpr", 0) or 0)
@@ -60,17 +61,26 @@ async def fetch_ohlcv_kis(session: aiohttp.ClientSession, token: str, symbol: st
             continue
         if not (START_DATE <= date_str <= END_DATE):
             continue
-        candles.append((
+        rows.append({
+            "date":   date_str,
+            "open":   int(row.get("stck_oprc", 0) or 0),
+            "high":   int(row.get("stck_hgpr", 0) or 0),
+            "low":    int(row.get("stck_lwpr", 0) or 0),
+            "close":  close,
+            "volume": int(row.get("acml_vol", 0) or 0),
+        })
+    # [AT] fix/change-rate-calc — 응답에 prdy_ctrt(전일대비율) 키가 없어 change_rate가
+    # 항상 0.00으로 저장되던 버그. 인접 일봉 종가로 직접 계산한다.
+    fill_change_rates(rows)
+    return [
+        (
             symbol,
-            datetime.strptime(date_str, "%Y%m%d"),
-            int(row.get("stck_oprc", 0) or 0),
-            int(row.get("stck_hgpr", 0) or 0),
-            int(row.get("stck_lwpr", 0) or 0),
-            close,
-            int(row.get("acml_vol", 0) or 0),
-            float(row.get("prdy_ctrt", 0) or 0),
-        ))
-    return candles
+            datetime.strptime(r["date"], "%Y%m%d"),
+            r["open"], r["high"], r["low"], r["close"], r["volume"],
+            r["change_rate"],
+        )
+        for r in rows
+    ]
 
 
 async def main():

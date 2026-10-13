@@ -99,7 +99,9 @@ class TestDailyCollectorStoresKisBusinessDate(unittest.IsolatedAsyncioTestCase):
         kis_output2 = [{
             "stck_bsop_date": "20261009",
             "stck_oprc": "70000", "stck_hgpr": "71000", "stck_lwpr": "69500",
-            "stck_clpr": "70500", "acml_vol": "12345678", "prdy_ctrt": "1.23",
+            "stck_clpr": "70500", "acml_vol": "12345678",
+            # prdy_ctrt 없음 — 실제 KIS 응답과 동일(이 키는 더 이상 읽지 않는다,
+            # [AT] fix/change-rate-calc).
         }]
 
         collector = DailyCollector()
@@ -113,10 +115,12 @@ class TestDailyCollectorStoresKisBusinessDate(unittest.IsolatedAsyncioTestCase):
             mock_dt.strptime = datetime.strptime
 
             candles = await collector.get_daily_ohlcv("005930", days=200)
+            # change_rate는 이제 인접 일봉 종가로 직접 계산한다([AT] fix/change-rate-calc).
+            # 응답이 1건뿐이라 전일 종가가 없어 0.0이어야 한다.
             self.assertEqual(candles, [{
                 "date": "20261009",
                 "open": 70000, "high": 71000, "low": 69500, "close": 70500,
-                "volume": 12345678, "change_rate": 1.23,
+                "volume": 12345678, "change_rate": 0.0,
             }])
 
             await collector.save_daily_ohlcv("005930", candles)

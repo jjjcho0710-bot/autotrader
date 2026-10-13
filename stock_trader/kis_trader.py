@@ -13,6 +13,7 @@ import aiohttp
 
 from common.config import config
 from common.database import cache
+from common.change_rate import fill_change_rates
 
 logger = logging.getLogger(__name__)
 
@@ -780,6 +781,8 @@ class KISTrader:
                 "low":         int(row.get("stck_lwpr", 0) or 0),
                 "close":       close,
                 "volume":      int(row.get("acml_vol", 0) or 0),
-                "change_rate": float(row.get("prdy_ctrt", 0) or 0),
             })
+        # [AT] fix/change-rate-calc — 응답에 prdy_ctrt(전일대비율) 키가 없어 change_rate가
+        # 항상 0.00으로 저장되던 버그. 인접 일봉 종가로 직접 계산한다.
+        fill_change_rates(candles)
         return candles

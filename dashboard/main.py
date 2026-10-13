@@ -5798,7 +5798,11 @@ async def _get_stock_positions_raw():
 
             data = {}
             res_status = 0
-            # 만료 토큰(EGW00xxx, EGW00201 레이트리밋 제외) 응답이면 강제 재발급 후 1회만 재시도
+            # 재발급 조건은 의미가 확인된 코드만 사용한다: EGW00121/EGW00123(토큰 관련) 또는
+            # msg1에 "만료"/"token" 포함. 예전엔 "EGW00" 접두사 전체를 매칭해 토큰 만료가
+            # 아닌 다른 오류에도 force_new가 발생, 공유 Redis 토큰 키가 지워져 다른 서비스에
+            # 영향을 줬다([AT] fix/token-reissue-condition). EGW00201(초당 거래건수 초과)은
+            # 재발급이 아니라 1.5초 후 1회 재시도만 한다(get_market_warning 등과 동일 패턴).
             for attempt in range(2):
                 _ssl_ctx = _ssl.create_default_context()
                 _ssl_ctx.check_hostname = False
@@ -5829,12 +5833,23 @@ async def _get_stock_positions_raw():
 
                 msg_cd = data.get("msg_cd", "None")
                 msg1 = data.get("msg1", "")
-                is_expired_token = msg_cd != "EGW00201" and (
-                    (isinstance(msg_cd, str) and msg_cd.startswith("EGW00"))
+                _masked_msg1 = msg1.replace(acct, "********") if acct else msg1
+
+                if attempt == 0 and msg_cd == "EGW00201":
+                    logger.warning(
+                        f"⏳ KIS 보유 포지션 조회 속도제한(EGW00201) — 1.5초 후 재시도 | msg1={_masked_msg1}"
+                    )
+                    await asyncio.sleep(1.5)
+                    continue
+
+                is_expired_token = (
+                    msg_cd in ("EGW00121", "EGW00123")
                     or "만료" in msg1 or "token" in msg1.lower()
                 )
                 if attempt == 0 and is_expired_token:
-                    logger.warning(f"⚠️ KIS 토큰 만료 감지(msg_cd={msg_cd}) → 재발급 후 포지션 재조회")
+                    logger.warning(
+                        f"⚠️ KIS 토큰 만료 감지(msg_cd={msg_cd}) → 재발급 후 포지션 재조회 | msg1={_masked_msg1}"
+                    )
                     token = await get_kis_token(force_new=True)
                     if not token:
                         break

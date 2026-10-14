@@ -238,29 +238,68 @@ class TestSectionEntryRiskShadow(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSectionMarketIndex(unittest.IsolatedAsyncioTestCase):
-    """j) 당일 코스피/코스닥 등락률([AT] feat/entry-risk-shadow)."""
+    """j) 당일 코스피/코스닥 등락률([AT] feat/entry-risk-shadow,
+    fix/market-index-collect)."""
 
     async def test_reads_kospi_and_kosdaq_change_rate(self):
         pool = FakePool(FakeConn(market_index_rows=[
             {"index_code": "0001", "change_rate": -1.23},
             {"index_code": "1001", "change_rate": 0.45},
         ]))
-        result = await hr._section_market_index(pool, date(2026, 10, 13))
+        redis = FakeRedis({})
+        result = await hr._section_market_index(pool, redis, date(2026, 10, 13))
         self.assertAlmostEqual(result["kospi_change_rate"], -1.23)
         self.assertAlmostEqual(result["kosdaq_change_rate"], 0.45)
+        self.assertIsNone(result["kospi_fail_reason"])
+        self.assertIsNone(result["kosdaq_fail_reason"])
 
-    async def test_missing_data_is_none(self):
-        """장마감 후 저장 스케줄러가 아직 돌지 않았거나 실패했으면 두 지수 모두 None —
-        리포트에는 "데이터 없음"으로 표시된다(_fmt_index_rate)."""
+    async def test_missing_data_without_collect_log_is_not_executed(self):
+        """market_index_daily에 행이 없고 health:index_collect 키도 없으면(스케줄러가
+        아직 안 돌았음) "미실행"으로 구분해야 한다."""
         pool = FakePool(FakeConn())
-        result = await hr._section_market_index(pool, date(2026, 10, 13))
+        redis = FakeRedis({})
+        result = await hr._section_market_index(pool, redis, date(2026, 10, 13))
         self.assertIsNone(result["kospi_change_rate"])
         self.assertIsNone(result["kosdaq_change_rate"])
+        self.assertEqual(result["kospi_fail_reason"], "미실행")
+        self.assertEqual(result["kosdaq_fail_reason"], "미실행")
+
+    async def test_missing_data_with_collect_log_shows_kis_failure_reason(self):
+        """스케줄러는 실행됐지만 KIS 조회가 실패한 경우(health:index_collect 기록 있음) —
+        rt_cd/msg_cd/msg1을 짧게 붙여 보여준다."""
+        today = date(2026, 10, 13)
+        pool = FakePool(FakeConn())
+        collect_log = json.dumps({
+            "KOSPI": {"ok": False, "error": {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "조회 실패"}},
+            "KOSDAQ": {"ok": False, "error": {"reason": "KIS 토큰 발급 실패"}},
+        })
+        redis = FakeRedis({f"health:index_collect:{today.isoformat()}": collect_log})
+        result = await hr._section_market_index(pool, redis, today)
+        self.assertIsNone(result["kospi_change_rate"])
+        self.assertIn("EGW00123", result["kospi_fail_reason"])
+        self.assertEqual(result["kosdaq_fail_reason"], "KIS 토큰 발급 실패")
+
+    async def test_success_entry_does_not_override_stored_value(self):
+        """해당 지수는 DB에 값이 있으면(ok=True) fail_reason을 붙이지 않는다."""
+        today = date(2026, 10, 13)
+        pool = FakePool(FakeConn(market_index_rows=[{"index_code": "0001", "change_rate": -1.23}]))
+        collect_log = json.dumps({
+            "KOSPI": {"ok": True, "close": 2500.0, "change_rate": -1.23},
+            "KOSDAQ": {"ok": False, "error": {"reason": "원인 미상"}},
+        })
+        redis = FakeRedis({f"health:index_collect:{today.isoformat()}": collect_log})
+        result = await hr._section_market_index(pool, redis, today)
+        self.assertIsNone(result["kospi_fail_reason"])
+        self.assertEqual(result["kosdaq_fail_reason"], "원인 미상")
 
 
 class TestFmtIndexRate(unittest.TestCase):
     def test_none_renders_no_data_text(self):
         self.assertEqual(hr._fmt_index_rate("KOSPI", None), "KOSPI 데이터 없음")
+
+    def test_none_with_reason_appends_reason(self):
+        self.assertEqual(
+            hr._fmt_index_rate("KOSPI", None, "미실행"), "KOSPI 데이터 없음 (미실행)")
 
     def test_value_renders_percent_text(self):
         self.assertEqual(hr._fmt_index_rate("KOSPI", -1.2), "KOSPI -1.20%")
@@ -364,9 +403,11 @@ class TestBuildHealthReportSummary(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["status"], "ok")
         self.assertTrue(report["text"].startswith("✅ 이상 없음"))
         self.assertEqual(report["issues"], [])
-        # [AT] feat/entry-risk-shadow — i)/j) 줄이 실제로 조립되는지(기본값: 0건/데이터 없음)
+        # [AT] feat/entry-risk-shadow — i)/j) 줄이 실제로 조립되는지(기본값: 0건/데이터 없음).
+        # j)는 health:index_collect 키가 없으면(fix/market-index-collect) "미실행"으로 표시된다.
         self.assertIn("i) 오늘 매수 관찰(저가주/급등): low_price 0건, surge_5d 0건", report["text"])
-        self.assertIn("j) 당일 지수: KOSPI 데이터 없음, KOSDAQ 데이터 없음", report["text"])
+        self.assertIn(
+            "j) 당일 지수: KOSPI 데이터 없음 (미실행), KOSDAQ 데이터 없음 (미실행)", report["text"])
 
     async def test_circuit_breaker_triggers_warn(self):
         kwargs = self._base_kwargs()

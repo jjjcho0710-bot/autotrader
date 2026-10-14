@@ -1649,17 +1649,29 @@ async def _score_journal() -> str:
                     if rate >= SCORE_HIT_THRESHOLD_PCT: scored["skip_missed"] += 1; tag = "⚠️기회놓침"; good = False
                     else: scored["skip_good"] += 1; tag = "✅잘거름"; good = True
                     lines.append(f"SKIP {nm}: 이후 {rate:+.1f}% {tag}")
-                # 원칙별 성과 누적
+                # 원칙별 성과 누적. K(jarvis_notes.id)는 양수, R(learning_rules.rule_id)는
+                # 음수로 principle_stats.principle_id에 저장해 같은 정수 컬럼 안에서 두
+                # 테이블의 id가 충돌하지 않게 한다 — jarvis_notes.id는 SERIAL(항상 1 이상)
+                # 이라 음수는 그 공간과 절대 겹치지 않고, learning/curator.py의
+                # "JOIN jarvis_notes n ON n.id = ps.principle_id" 조회도 이 덕분에 R 항목을
+                # 자동으로 걸러낸다(코드 수정 없이 안정화 기간 중 격리됨, [AT]
+                # fix/principle-stats-rid).
                 try:
+                    import re as _pr_re
                     pr = (r.get("principles") if hasattr(r, "get") else r["principles"]) or ""
-                    for pid in [x for x in pr.split(",") if x.strip().isdigit()]:
+                    for tok in [x.strip() for x in pr.split(",") if x.strip()]:
+                        m_pr = _pr_re.fullmatch(r"([KR])(\d+)", tok)
+                        if not m_pr:
+                            continue
+                        kind, num = m_pr.group(1), int(m_pr.group(2))
+                        stat_id = num if kind == "K" else -num
                         await conn.execute("""
                             INSERT INTO principle_stats (principle_id, applied, hits, updated_at)
                             VALUES ($1, 1, $2, NOW())
                             ON CONFLICT (principle_id) DO UPDATE
                             SET applied = principle_stats.applied + 1,
                                 hits = principle_stats.hits + $2, updated_at = NOW()""",
-                            int(pid), 1 if good else 0)
+                            stat_id, 1 if good else 0)
                 except Exception:
                     pass
         total = sum(scored.values())
@@ -6379,12 +6391,16 @@ async def remove_watchlist(symbol: str):
 
 
 def _extract_principles(text: str) -> str:
+    """'근거원칙: K12,R7' 인용에서 K(jarvis_notes id)·R(learning_rules rule_id) 토큰을
+    모두 뽑는다. 두 글자는 서로 다른 테이블의 id라 접두사를 지우면 구분이 사라지므로
+    보존해서 반환한다([AT] fix/principle-stats-rid — 이전엔 K만 매칭해 learning_rules
+    기반 R 인용이 principle_stats 집계에서 통째로 누락됐다)."""
     import re as _r
-    m = _r.search(r"근거\s*원칙\s*[:：]\s*([K\d,\s]+)", text or "")
+    m = _r.search(r"근거\s*원칙\s*[:：]\s*([KR\d,\s]+)", text or "")
     if not m:
         return ""
-    ids = _r.findall(r"K(\d+)", m.group(1))
-    return ",".join(sorted(set(ids)))
+    tokens = _r.findall(r"[KR]\d+", m.group(1))
+    return ",".join(sorted(set(tokens)))
 
 
 async def _log_journal(bot: str, symbol: str, name: str, action: str,

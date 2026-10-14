@@ -151,6 +151,24 @@ async def _section_scan_timing(redis: Any, today: date) -> Dict[str, Any]:
         return {"elapsed_sec": None}
 
 
+async def _section_scan_detail(redis: Any, today: date) -> Dict[str, Any]:
+    """e) 아침스캔 상세 계측 — dashboard/main.py의 _jarvis_stock_scanner가 기록한
+    health:scan_detail:YYYY-MM-DD(종목수/실패수/조회초)를 읽기만 한다
+    ([AT] fix/scan-parallel)."""
+    raw = await redis.get(f"health:scan_detail:{today.isoformat()}")
+    if raw is None:
+        return {"total": None, "fail": None, "fetch_elapsed": None}
+    try:
+        d = json.loads(raw if isinstance(raw, str) else raw.decode())
+        return {
+            "total": d.get("total"),
+            "fail": d.get("fail"),
+            "fetch_elapsed": d.get("fetch_elapsed"),
+        }
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"total": None, "fail": None, "fetch_elapsed": None}
+
+
 async def _section_token_reissue(redis: Any, today: date) -> Dict[str, Any]:
     """f) 포지션 조회 토큰 재발급 횟수 — _get_stock_positions_raw가 기록한
     health:token_reissue:YYYY-MM-DD를 읽기만 한다."""
@@ -293,6 +311,8 @@ async def build_health_report(
         "positions", _section_positions(redis, get_positions_fn, now_kst))
     sections["scan_timing"] = await _run_section(
         "scan_timing", _section_scan_timing(redis, today))
+    sections["scan_detail"] = await _run_section(
+        "scan_detail", _section_scan_detail(redis, today))
     sections["token_reissue"] = await _run_section(
         "token_reissue", _section_token_reissue(redis, today))
     sections["stop_loss_pnl"] = await _run_section(
@@ -364,10 +384,17 @@ async def build_health_report(
                if d.get("snapshot_age_min") is not None else " (스냅샷 기록 없음)")
         )))
     st = sections["scan_timing"]
-    lines.append(_fmt_section_line(
-        "e) 아침스캔 소요:", st,
-        lambda d: (f"{d['elapsed_sec']:.1f}s" if d.get("elapsed_sec") is not None else "기록 없음")
-    ))
+    sd = sections["scan_detail"]
+
+    def _fmt_scan_timing(d: Dict[str, Any]) -> str:
+        base = f"{d['elapsed_sec']:.1f}s" if d.get("elapsed_sec") is not None else "기록 없음"
+        if "error" not in sd and sd.get("total") is not None:
+            fetch_sec = sd.get("fetch_elapsed")
+            base += (f" (종목수 {sd['total']} · 실패 {sd.get('fail') or 0} · "
+                     + (f"조회 {fetch_sec:.1f}s)" if fetch_sec is not None else "조회 기록 없음)"))
+        return base
+
+    lines.append(_fmt_section_line("e) 아침스캔 소요:", st, _fmt_scan_timing))
     lines.append(_fmt_section_line(
         "f) 토큰 재발급:", reissue,
         lambda d: f"{d['reissue_count']}회"

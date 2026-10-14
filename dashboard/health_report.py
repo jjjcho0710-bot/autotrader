@@ -250,14 +250,36 @@ async def _section_entry_risk_shadow(pool: Any, today: date) -> Dict[str, Any]:
     }
 
 
-def _fmt_index_rate(label: str, rate: Optional[float]) -> str:
-    return f"{label} 데이터 없음" if rate is None else f"{label} {rate:+.2f}%"
+def _fmt_index_rate(label: str, rate: Optional[float], fail_reason: Optional[str] = None) -> str:
+    if rate is not None:
+        return f"{label} {rate:+.2f}%"
+    suffix = f" ({fail_reason})" if fail_reason else ""
+    return f"{label} 데이터 없음{suffix}"
 
 
-async def _section_market_index(pool: Any, today: date) -> Dict[str, Any]:
+def _market_index_fail_reason(collect_log: Optional[dict], label: str) -> Optional[str]:
+    """health:index_collect:YYYY-MM-DD(dashboard/main.py._collect_market_index_daily가
+    저장, [AT] fix/market-index-collect)에서 지수(label="KOSPI"/"KOSDAQ")별 실패 사유를
+    짧은 문자열로 뽑아낸다. 키 자체가 없으면("미실행") 스케줄러가 아직 돌지 않았다는
+    뜻이고, 있지만 ok=False면 조회/저장이 실패했다는 뜻이다."""
+    if collect_log is None:
+        return "미실행"
+    entry = collect_log.get(label)
+    if not entry or entry.get("ok"):
+        return None
+    err = entry.get("error") or {}
+    if not isinstance(err, dict):
+        return str(err)
+    if err.get("rt_cd") or err.get("msg_cd") or err.get("msg1"):
+        return f"rt_cd={err.get('rt_cd')} msg_cd={err.get('msg_cd')} msg1={err.get('msg1')}"
+    return err.get("reason", "원인 미상")
+
+
+async def _section_market_index(pool: Any, redis: Any, today: date) -> Dict[str, Any]:
     """j) 당일 코스피/코스닥 등락률 — market_index_daily(장마감 후 1회 저장, [AT]
     feat/entry-risk-shadow)를 읽기만 한다. 아직 저장 전이거나 실패했으면 해당 지수는
-    None(표시는 "데이터 없음")."""
+    None(표시는 "데이터 없음")이고, health:index_collect:YYYY-MM-DD([AT]
+    fix/market-index-collect)에 기록된 실패 사유를 함께 붙인다."""
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT index_code, change_rate FROM market_index_daily
@@ -267,9 +289,22 @@ async def _section_market_index(pool: Any, today: date) -> Dict[str, Any]:
         r["index_code"]: float(r["change_rate"]) if r["change_rate"] is not None else None
         for r in rows
     }
+
+    collect_log: Optional[dict] = None
+    try:
+        raw = await redis.get(f"health:index_collect:{today.isoformat()}")
+        if raw:
+            collect_log = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+    except Exception:
+        collect_log = None
+
+    kospi_rate = by_code.get("0001")
+    kosdaq_rate = by_code.get("1001")
     return {
-        "kospi_change_rate": by_code.get("0001"),
-        "kosdaq_change_rate": by_code.get("1001"),
+        "kospi_change_rate": kospi_rate,
+        "kosdaq_change_rate": kosdaq_rate,
+        "kospi_fail_reason": _market_index_fail_reason(collect_log, "KOSPI") if kospi_rate is None else None,
+        "kosdaq_fail_reason": _market_index_fail_reason(collect_log, "KOSDAQ") if kosdaq_rate is None else None,
     }
 
 
@@ -322,7 +357,7 @@ async def build_health_report(
     sections["entry_risk_shadow"] = await _run_section(
         "entry_risk_shadow", _section_entry_risk_shadow(pool, today))
     sections["market_index"] = await _run_section(
-        "market_index", _section_market_index(pool, today))
+        "market_index", _section_market_index(pool, redis, today))
 
     issues: List[str] = []
 
@@ -420,8 +455,8 @@ async def build_health_report(
     lines.append(_fmt_section_line(
         "j) 당일 지수:", mi,
         lambda d: (
-            f"{_fmt_index_rate('KOSPI', d['kospi_change_rate'])}, "
-            f"{_fmt_index_rate('KOSDAQ', d['kosdaq_change_rate'])}"
+            f"{_fmt_index_rate('KOSPI', d['kospi_change_rate'], d.get('kospi_fail_reason'))}, "
+            f"{_fmt_index_rate('KOSDAQ', d['kosdaq_change_rate'], d.get('kosdaq_fail_reason'))}"
         )
     ))
 

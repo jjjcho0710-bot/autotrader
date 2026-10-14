@@ -3048,24 +3048,35 @@ async def _closing_routine():
 MARKET_INDEX_CODES = {"KOSPI": "0001", "KOSDAQ": "1001"}
 
 
-async def _collect_market_index_daily():
+async def _collect_market_index_daily() -> dict:
     """장마감 후 1회, 코스피/코스닥 업종지수(현재가·전일대비율)를 KIS에서 조회해
     market_index_daily에 UPSERT한다([AT] feat/entry-risk-shadow, PM 승인) — 관찰 전용,
     다른 작업(매매·리포트)에 영향 없음. 지수별로 독립적으로 try/except 처리해, 하나가
     실패해도 나머지 지수 저장은 계속된다(fail-open). 스케줄러 중복 실행(재배포 등)에도
-    안전하도록 UNIQUE(date,index_code) 기준 UPSERT를 쓴다."""
+    안전하도록 UNIQUE(date,index_code) 기준 UPSERT를 쓴다.
+
+    지수별 성공/실패 결과(KIS rt_cd/msg_cd/msg1 또는 예외 요약)를 반환하고, 같은 내용을
+    Redis health:index_collect:YYYY-MM-DD(7일 TTL)에도 저장한다([AT]
+    fix/market-index-collect, PM 승인) — 헬스리포트 j)와 수동 확인 엔드포인트
+    (GET /api/health/market_index)가 이 결과를 읽어 실패 사유를 보여준다."""
     from stock_trader.kis_trader import KISTrader
 
     today = datetime.now(KST).date()
-    for index_code in MARKET_INDEX_CODES.values():
+    results: Dict[str, Any] = {}
+    for name, index_code in MARKET_INDEX_CODES.items():
         try:
             trader = KISTrader()
             await trader._get_token()
             if not trader.access_token:
                 logger.warning(f"시장지수 저장 건너뜀(KIS 토큰 발급 실패) [{index_code}]")
+                results[name] = {"ok": False, "error": {"reason": "KIS 토큰 발급 실패"}}
                 continue
             data = await trader.get_index_price(index_code)
             if not data:
+                results[name] = {
+                    "ok": False,
+                    "error": trader.last_error or {"reason": "조회 실패(원인 미상)"},
+                }
                 continue
             async with db_pool.acquire() as conn:
                 await conn.execute("""
@@ -3074,8 +3085,19 @@ async def _collect_market_index_daily():
                     ON CONFLICT (date, index_code) DO UPDATE
                     SET close = $3, change_rate = $4
                 """, today, index_code, data["close"], data["change_rate"])
+            results[name] = {"ok": True, "close": data["close"], "change_rate": data["change_rate"]}
         except Exception as e:
             logger.warning(f"시장지수 저장 실패(무시, 관찰 전용) [{index_code}]: {e}")
+            results[name] = {"ok": False, "error": {"reason": f"{type(e).__name__}: {e}"}}
+
+    try:
+        await redis_client.setex(
+            f"health:index_collect:{today.isoformat()}", 7 * 86400,
+            json.dumps(results, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"시장지수 수집 결과 Redis 저장 실패(무시): {e}")
+
+    return results
 
 
 async def _jarvis_scheduler():
@@ -3149,9 +3171,11 @@ async def _jarvis_scheduler():
         if dtime(15, 40) <= cur_time <= dtime(15, 45) and await _daily_gate("closing", today):
             await _run_scheduled_job("closing_routine", dtime(15, 40), _closing_routine)
 
-        # 시장지수(코스피/코스닥) 일별 저장 (15:41, [AT] feat/entry-risk-shadow) — 장마감
-        # 후 1회, health_report_1545보다 먼저 끝나도록 closing_routine 바로 뒤에 둔다.
-        if dtime(15, 41) <= cur_time <= dtime(15, 44) and await _daily_gate("market_index_daily", today):
+        # 시장지수(코스피/코스닥) 일별 저장 (15:41~16:30, [AT] feat/entry-risk-shadow,
+        # 창 확대는 fix/market-index-collect, PM 승인) — 장마감 후 1회, _daily_gate로
+        # 하루 1회만 실행된다. closing_routine을 await로 실행해 지연되면 원래 좁은 창
+        # (15:41~15:44)을 놓칠 수 있었던 문제를 창을 16:30까지 넓혀 완화한다.
+        if dtime(15, 41) <= cur_time <= dtime(16, 30) and await _daily_gate("market_index_daily", today):
             asyncio.create_task(_run_scheduled_job(
                 "market_index_daily", dtime(15, 41), _collect_market_index_daily))
 
@@ -4233,6 +4257,30 @@ async def health_report_endpoint(send: int = 0):
                 "text": report["text"]}
     except Exception as e:
         logger.error(f"헬스리포트 생성 실패: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/health/market_index")
+async def health_market_index_endpoint(collect: int = 0):
+    """시장지수(코스피/코스닥) 수동 확인/즉시 실행([AT] fix/market-index-collect, PM
+    승인) — 읽기 전용(apply 없음), 노출 수준은 /api/health/report와 동일(인증 없음).
+    collect=1이면 _collect_market_index_daily()를 즉시 1회 실행해 지수별 성공/실패
+    (KIS rt_cd/msg_cd/msg1 또는 예외 요약)를 반환한다. collect=0(기본)이면 오늘
+    저장된 market_index_daily 행만 조회한다. 토큰 등 비밀값은 응답에 포함하지 않는다."""
+    today = datetime.now(KST).date()
+    try:
+        if collect:
+            results = await _collect_market_index_daily()
+            return {"success": True, "date": today.isoformat(), "collected": True, "results": results}
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT index_code, close, change_rate FROM market_index_daily
+                WHERE date = $1 AND index_code IN ('0001', '1001')
+            """, today)
+        return {"success": True, "date": today.isoformat(), "collected": False,
+                "rows": [dict(r) for r in rows]}
+    except Exception as e:
+        logger.error(f"시장지수 수동 확인 실패: {e}")
         return {"success": False, "error": str(e)}
 
 

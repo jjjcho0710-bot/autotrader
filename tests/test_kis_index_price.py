@@ -190,5 +190,65 @@ class TestGetIndexPrice(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.call_count, 2)
 
 
+class TestGetIndexPriceLastError(unittest.IsolatedAsyncioTestCase):
+    """get_index_price()가 실패 시 self.last_error에 사유를 남기는지([AT]
+    fix/market-index-collect, PM 승인) — 기존 반환값(성공 dict/실패 None)은 그대로다."""
+
+    async def asyncSetUp(self):
+        self.trader = KISTrader()
+        config.KIS_ACCOUNT_NO = "50193041"
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_success_clears_last_error(self, mock_sleep):
+        resp = {"rt_cd": "0", "output": {"bstp_nmix_prpr": "3123.45", "bstp_nmix_prdy_ctrt": "-0.52"}}
+        self.trader._new_session = lambda: DummySession(resp)
+        self.trader.last_error = {"reason": "이전 호출의 낡은 실패 기록"}
+
+        result = await self.trader.get_index_price("0001")
+
+        self.assertIsNotNone(result)
+        self.assertIsNone(self.trader.last_error)
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_api_error_sets_rt_cd_msg_cd_msg1(self, mock_sleep):
+        resp = {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "조회 실패"}
+        self.trader._new_session = lambda: DummySession(resp)
+
+        result = await self.trader.get_index_price("0001")
+
+        self.assertIsNone(result)
+        self.assertEqual(self.trader.last_error,
+                          {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "조회 실패"})
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_zero_close_sets_reason(self, mock_sleep):
+        resp = {"rt_cd": "0", "output": {"bstp_nmix_prpr": "0", "bstp_nmix_prdy_ctrt": "0"}}
+        self.trader._new_session = lambda: DummySession(resp)
+
+        result = await self.trader.get_index_price("0001")
+
+        self.assertIsNone(result)
+        self.assertEqual(self.trader.last_error["reason"], "현재가 0 이하")
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_unparseable_output_sets_reason(self, mock_sleep):
+        resp = {"rt_cd": "0", "output": {"bstp_nmix_prpr": "N/A", "bstp_nmix_prdy_ctrt": "N/A"}}
+        self.trader._new_session = lambda: DummySession(resp)
+
+        result = await self.trader.get_index_price("0001")
+
+        self.assertIsNone(result)
+        self.assertIn("응답 파싱 실패", self.trader.last_error["reason"])
+
+    @patch("asyncio.sleep", new_callable=AsyncMock)
+    async def test_network_exception_sets_reason(self, mock_sleep):
+        self.trader._new_session = lambda: DummySession(raise_exc=ConnectionError("boom"))
+
+        result = await self.trader.get_index_price("0001")
+
+        self.assertIsNone(result)
+        self.assertIn("ConnectionError", self.trader.last_error["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

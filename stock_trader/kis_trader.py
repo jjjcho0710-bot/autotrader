@@ -38,6 +38,7 @@ class KISTrader:
 
     def __init__(self):
         self.access_token: str = ""
+        self.last_error: Optional[dict] = None
         self._last_cash: int = 0
         self.session: aiohttp.ClientSession = None
         self._balance_lock: Optional[asyncio.Lock] = None
@@ -264,7 +265,13 @@ class KISTrader:
 
         실패하거나 현재지수가 0 이하이면 None — 호출부(시장지수 일별 저장 스케줄러)가
         관찰 전용 저장을 건너뛰도록 한다. 이 종목 상태 조회(get_market_warning)와 동일한
-        공용 최소 호출 간격을 적용한다."""
+        공용 최소 호출 간격을 적용한다.
+
+        반환이 None인 경우 self.last_error에 실패 사유({"rt_cd","msg_cd","msg1"} 또는
+        {"reason": ...})를 남긴다([AT] fix/market-index-collect, PM 승인) — 기존
+        반환 타입(성공 dict / 실패 None)은 그대로 유지하고, 호출부가 원하면 이 속성으로
+        원인을 추가로 조회할 수 있게 한 것뿐이다."""
+        self.last_error = None
         await self._throttle_kis_call()
         url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-index-price"
         params = {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": index_code}
@@ -285,6 +292,7 @@ class KISTrader:
                         data = await resp.json()
         except Exception as e:
             logger.warning(f"⚠️ [{index_code}] 업종지수 조회 예외: {type(e).__name__}: {e}")
+            self.last_error = {"reason": f"{type(e).__name__}: {e}"}
             return None
 
         if data.get("rt_cd") != "0":
@@ -292,6 +300,9 @@ class KISTrader:
                 f"⚠️ [{index_code}] 업종지수 조회 실패: rt_cd={data.get('rt_cd')} | "
                 f"msg_cd={data.get('msg_cd')} | msg1={data.get('msg1')}"
             )
+            self.last_error = {
+                "rt_cd": data.get("rt_cd"), "msg_cd": data.get("msg_cd"), "msg1": data.get("msg1"),
+            }
             return None
 
         output = data.get("output") or {}
@@ -300,9 +311,11 @@ class KISTrader:
             change_rate = float(output.get("bstp_nmix_prdy_ctrt", 0) or 0)
         except (TypeError, ValueError):
             logger.warning(f"⚠️ [{index_code}] 업종지수 응답 파싱 실패: {output}")
+            self.last_error = {"reason": f"응답 파싱 실패: {output}"}
             return None
         if close <= 0:
             logger.warning(f"⚠️ [{index_code}] 업종지수 현재가 0 이하 — 조회 실패로 간주")
+            self.last_error = {"reason": "현재가 0 이하", "rt_cd": data.get("rt_cd")}
             return None
 
         return {"close": close, "change_rate": change_rate}

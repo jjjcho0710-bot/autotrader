@@ -419,6 +419,52 @@ async def check_momentum(
     }
 
 
+# 진입위험 관찰(shadow) 기준 — 차단 없음, 매수는 그대로 진행하고 trade_journal에 플래그만
+# 남긴다([AT] feat/entry-risk-shadow, PM 승인). EDITH 41건 매수 분석: 저가주(<5,000원)
+# 8/8 손실, 직전 5거래일 +20% 이상 급등 후 매수 7/9 손실 — 둘 다 아직 차단 근거로 쓸 만큼
+# 검증되지 않아 관찰만 한다. ENTRY_RISK_SHADOW_LOOKBACK_DAYS는 모멘텀 게이트의
+# MOMENTUM_GATE_LOOKBACK_DAYS(환경변수로 바뀔 수 있음)와 별개로 항상 5거래일로 고정한다.
+ENTRY_RISK_SHADOW_LOOKBACK_DAYS = 5
+ENTRY_RISK_SHADOW_SURGE_THRESHOLD_PCT = 20.0
+ENTRY_RISK_SHADOW_LOW_PRICE_THRESHOLD = 5000
+
+
+async def check_entry_risk_shadow(symbol: str, price: Any, *, pool: Any, redis: Optional[Any] = None) -> Dict[str, Any]:
+    """저가주(low_price)/단기급등(surge_5d) 관찰 플래그. 차단하지 않는다 — 호출부는 반환값을
+    로그·trade_journal 기록에만 쓰고 매수 흐름을 바꾸면 안 된다.
+
+    surge_5d는 check_momentum()과 동일한 종가 조회 경로(_fetch_recent_closes →
+    실패/stale 시 _fetch_closes_with_kis_fallback)를 그대로 재사용한다 — 모멘텀 게이트가
+    이미 KIS 레이트리밋 회피, 6시간 Redis 캐시, DB stale 대체 조회를 검증해 둔 로직이라
+    새로 만들지 않는다. 계산 실패/데이터 부족 시 fail-open(False) — 예외를 올리지 않는다."""
+    low_price = False
+    try:
+        low_price = float(price) < ENTRY_RISK_SHADOW_LOW_PRICE_THRESHOLD
+    except Exception:
+        low_price = False
+
+    pct = None
+    try:
+        closes, _latest_date = await _fetch_recent_closes(pool, symbol, ENTRY_RISK_SHADOW_LOOKBACK_DAYS + 1)
+        pct = _compute_momentum_pct(closes, ENTRY_RISK_SHADOW_LOOKBACK_DAYS)
+    except Exception as e:
+        logger.warning(f"entry_risk_shadow 종가 조회 실패(DB, KIS 대체 조회 시도) [{symbol}]: {e}")
+        pct = None
+
+    if pct is None:
+        try:
+            fallback_closes = await _fetch_closes_with_kis_fallback(
+                symbol, ENTRY_RISK_SHADOW_LOOKBACK_DAYS + 1, redis)
+            if fallback_closes is not None:
+                pct = _compute_momentum_pct(fallback_closes, ENTRY_RISK_SHADOW_LOOKBACK_DAYS)
+        except Exception as e:
+            logger.warning(f"entry_risk_shadow KIS 대체 조회 실패(무시) [{symbol}]: {e}")
+            pct = None
+
+    surge_5d = pct is not None and pct >= ENTRY_RISK_SHADOW_SURGE_THRESHOLD_PCT
+    return {"low_price": low_price, "surge_5d": surge_5d, "surge_5d_pct": pct}
+
+
 async def _resolve_held_and_inflight_symbols(redis: Any, get_positions_fn) -> tuple:
     """KIS 실제 보유 종목 + 접수됐지만 잔고에 아직 안 나타난 in-flight 매수 기록의 합집합을
     구한다. 반환: (합집합 set 또는 None, 조회실패 여부). 조회 자체가 실패/예외/stale이면
@@ -744,6 +790,7 @@ async def _finalize_filled_order(
     save_trade_memory_fn, invalidate_cache_fn, label: str = "완료",
     send_channel_fn: Optional[Any] = None, requested_qty: Optional[float] = None,
     order_no: Optional[str] = None, avg_fill_price: Optional[float] = None,
+    low_price: bool = False, surge_5d: bool = False,
 ) -> Dict[str, Any]:
     """체결이 확인된 주문(정상 성공 또는 응답불명→보유수량 재확인으로 체결 확정)의 공통
     후처리: in-flight 기록, pnl 계산, trade_history/매매일지 기록, 텔레그램 보고, 캐시 무효화.
@@ -848,7 +895,8 @@ async def _finalize_filled_order(
                                     amount=float(price * qty), result="성공", reason=reason)
     await log_journal_fn(bot, symbol, name, action, strategy, reason,
                           "EXECUTE_SMALL" if is_small else "EXECUTE",
-                          reply, True, True, price, qty)
+                          reply, True, True, price, qty,
+                          low_price=low_price, surge_5d=surge_5d)
     result = {"success": True, "executed": True, "jarvis_reply": reply}
     if pnl is not None:
         result["pnl"] = pnl
@@ -891,6 +939,9 @@ async def execute(
     is_small = decision.get("is_small", False)
     reply = decision.get("reply", "")
     is_buy = action in ("buy", "BUY")
+    # 진입위험 관찰(shadow) 플래그 — 매수·stock_trader가 아니면 기본값(False) 그대로 둔다
+    # ([AT] feat/entry-risk-shadow, 차단 없음).
+    entry_risk = {"low_price": False, "surge_5d": False}
 
     # (2) 매수 판단과 주문을 하나의 Lock으로 직렬화 — 매도는 이 락과 무관하게 즉시 진행된다
     # (손절·익절이 매수 처리 대기 때문에 지연되면 안 됨, [AT] fix/buy-lock-chat-path).
@@ -1058,6 +1109,22 @@ async def execute(
                     f"— 매수는 정상 진행"
                 )
 
+            # 진입위험 관찰(shadow) — 차단하지 않음([AT] feat/entry-risk-shadow). 계산 자체가
+            # 예외를 던져도 매수 흐름을 막지 않도록 한 번 더 감싼다(fail-open 이중 보장).
+            try:
+                entry_risk = await check_entry_risk_shadow(symbol, price, pool=pool, redis=redis)
+            except Exception as e:
+                logger.warning(f"entry_risk_shadow 계산 실패(무시, 매수 영향 없음) [{symbol}]: {e}")
+                entry_risk = {"low_price": False, "surge_5d": False, "surge_5d_pct": None}
+            if entry_risk["low_price"] or entry_risk["surge_5d"]:
+                logger.info(
+                    f"🔎 진입위험 관찰 shadow [{symbol}] low_price={entry_risk['low_price']} "
+                    f"surge_5d={entry_risk['surge_5d']}"
+                    + (f"(직전 5거래일 수익률 {entry_risk['surge_5d_pct']:.2f}%)"
+                       if entry_risk.get("surge_5d_pct") is not None else "")
+                    + " — 매수는 정상 진행(차단 없음)"
+                )
+
         # 주문 전 보유 현황 사전 조회 — (a) 매도 손익(pnl) 계산용 평단가: 주문 성공 후에
         # 조회하면 전량 매도 시 이미 보유 목록에서 빠져 avg_price를 못 구해 pnl=None이 되므로
         # 주문 전에 미리 조회해 둔다. (b) 보유 수량(pre_qty): 주문 응답이 불명(uncertain)일 때
@@ -1092,6 +1159,7 @@ async def execute(
                 log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
                 invalidate_cache_fn=invalidate_cache_fn, send_channel_fn=send_channel_fn,
                 order_no=order.get("order_no"), avg_fill_price=order.get("avg_fill_price"),
+                low_price=entry_risk["low_price"], surge_5d=entry_risk["surge_5d"],
             )
 
         if order.get("uncertain") or order.get("fill_unconfirmed"):
@@ -1113,6 +1181,7 @@ async def execute(
                     log_journal_fn=log_journal_fn, save_trade_memory_fn=save_trade_memory_fn,
                     invalidate_cache_fn=invalidate_cache_fn, label="체결 확인(응답 지연)",
                     send_channel_fn=send_channel_fn,
+                    low_price=entry_risk["low_price"], surge_5d=entry_risk["surge_5d"],
                 )
             reason_text = "주문 결과 불명 — 보유 수량 변화 없음"
             logger.warning(f"⚠️ {reason_text}: {symbol}")

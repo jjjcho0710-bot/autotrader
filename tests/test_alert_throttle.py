@@ -384,7 +384,7 @@ class TestRegressionNoSuppression(unittest.IsolatedAsyncioTestCase):
         async def fake_save_memory(**kw):
             pass
 
-        async def fake_log_journal(*args):
+        async def fake_log_journal(*args, **kwargs):
             pass
 
         # 연속 3회 매수 성공 체결 시뮬레이션

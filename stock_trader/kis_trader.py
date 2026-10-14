@@ -257,6 +257,56 @@ class KISTrader:
             "vi_cls_code": output.get("vi_cls_code", ""),
         }
 
+    # ── 업종지수(코스피/코스닥) 조회 ──────────────────────
+    async def get_index_price(self, index_code: str) -> Optional[dict]:
+        """국내업종 현재지수 조회(FHPUP02100000, [AT] feat/entry-risk-shadow).
+        index_code: "0001"(코스피), "1001"(코스닥).
+
+        실패하거나 현재지수가 0 이하이면 None — 호출부(시장지수 일별 저장 스케줄러)가
+        관찰 전용 저장을 건너뛰도록 한다. 이 종목 상태 조회(get_market_warning)와 동일한
+        공용 최소 호출 간격을 적용한다."""
+        await self._throttle_kis_call()
+        url = f"{self.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-index-price"
+        params = {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": index_code}
+        tr_id = "FHPUP02100000"
+        try:
+            async with self._new_session() as sess:
+                async with sess.get(
+                    url, headers=self._headers(tr_id), params=params
+                ) as resp:
+                    data = await resp.json()
+            if self._is_rate_limited(data):
+                logger.warning(f"⏳ [{index_code}] 업종지수 조회 KIS 속도제한(EGW00201) — 1.5초 후 재시도")
+                await asyncio.sleep(1.5)
+                async with self._new_session() as sess:
+                    async with sess.get(
+                        url, headers=self._headers(tr_id), params=params
+                    ) as resp:
+                        data = await resp.json()
+        except Exception as e:
+            logger.warning(f"⚠️ [{index_code}] 업종지수 조회 예외: {type(e).__name__}: {e}")
+            return None
+
+        if data.get("rt_cd") != "0":
+            logger.warning(
+                f"⚠️ [{index_code}] 업종지수 조회 실패: rt_cd={data.get('rt_cd')} | "
+                f"msg_cd={data.get('msg_cd')} | msg1={data.get('msg1')}"
+            )
+            return None
+
+        output = data.get("output") or {}
+        try:
+            close = float(output.get("bstp_nmix_prpr", 0) or 0)
+            change_rate = float(output.get("bstp_nmix_prdy_ctrt", 0) or 0)
+        except (TypeError, ValueError):
+            logger.warning(f"⚠️ [{index_code}] 업종지수 응답 파싱 실패: {output}")
+            return None
+        if close <= 0:
+            logger.warning(f"⚠️ [{index_code}] 업종지수 현재가 0 이하 — 조회 실패로 간주")
+            return None
+
+        return {"close": close, "change_rate": change_rate}
+
     # ── 잔고 조회 ───────────────────────────────────────
     async def _get_total_eval(self) -> tuple:
         """총평가금액(total) 조회. (총평가금액, stale 여부) 튜플을 반환한다.

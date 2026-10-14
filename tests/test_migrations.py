@@ -76,6 +76,7 @@ class TestMigrationFilesStructure(unittest.TestCase):
                 "V012__widen_jarvis_decision_column_40.sql",
                 "V013__reconcile_audit.sql",
                 "V014__reconcile_audit_add_price_ts.sql",
+                "V015__entry_risk_shadow_and_market_index.sql",
             ],
             "migrations/ 파일 구성이 예상과 다름 (버전 순 정렬 포함)",
         )
@@ -122,7 +123,7 @@ class TestMigrationRoundTrip(unittest.TestCase):
 
     def setUp(self):
         self.migrations = load_migrations()
-        self.assertEqual(len(self.migrations), 14, "마이그레이션 파일 14개가 모두 로드되어야 함")
+        self.assertEqual(len(self.migrations), 15, "마이그레이션 파일 15개가 모두 로드되어야 함")
 
     def test_up_then_down_round_trip_restores_empty_state(self):
         tables, indexes = set(), set()
@@ -158,7 +159,12 @@ class TestMigrationRoundTrip(unittest.TestCase):
         # V011/V012(jarvis_decision 컬럼 타입 변경)/V014(reconcile_audit 컬럼 추가)도
         # CREATE/DROP TABLE·INDEX가 아니라서 tables/indexes 상태에는 영향을 주지 않는다.
 
-        # Down: V012 -> V001 역순
+        # 중간 상태 확인: V015(market_index_daily 테이블 생성, trade_journal에
+        # low_price/surge_5d 컬럼 추가)도 반영되어야 함 — 컬럼 추가는 ALTER TABLE이라
+        # CREATE/DROP TABLE 정규식으로는 추적되지 않는다.
+        self.assertIn("market_index_daily", tables)
+
+        # Down: V015 -> V001 역순
         for version, _up_sql, down_sql in reversed(self.migrations):
             apply_sql_to_state(down_sql, tables, indexes)
 
@@ -304,6 +310,29 @@ class TestMigrationRoundTrip(unittest.TestCase):
         self.assertEqual(tables, {"reconcile_audit"})
         apply_sql_to_state(down_sql, tables, indexes)
         self.assertEqual(tables, {"reconcile_audit"})
+
+    def test_v015_adds_entry_risk_columns_and_market_index_daily_table(self):
+        """V015([AT] feat/entry-risk-shadow): trade_journal에 low_price/surge_5d 컬럼을
+        추가하고(관찰 전용 shadow 플래그), market_index_daily 테이블을 새로 만든다.
+        컬럼 추가는 V008/V014와 같은 ADD/DROP COLUMN 패턴, 테이블 생성은 V013과 같은
+        CREATE/DROP TABLE 패턴으로 대칭을 직접 확인한다."""
+        _version, up_sql, down_sql = next(
+            m for m in self.migrations if m[0].startswith("V015")
+        )
+        self.assertIn("ADD COLUMN IF NOT EXISTS low_price", up_sql)
+        self.assertIn("ADD COLUMN IF NOT EXISTS surge_5d", up_sql)
+        self.assertIn("DROP COLUMN IF EXISTS surge_5d", down_sql)
+        self.assertIn("DROP COLUMN IF EXISTS low_price", down_sql)
+        self.assertIn("market_index_daily", up_sql)
+        self.assertIn("UNIQUE(date, index_code)", up_sql)
+        self.assertIn("DROP TABLE", down_sql)
+        self.assertIn("market_index_daily", down_sql)
+
+        tables, indexes = {"trade_journal"}, set()
+        apply_sql_to_state(up_sql, tables, indexes)
+        self.assertEqual(tables, {"trade_journal", "market_index_daily"})
+        apply_sql_to_state(down_sql, tables, indexes)
+        self.assertEqual(tables, {"trade_journal"})
 
 
 if __name__ == "__main__":

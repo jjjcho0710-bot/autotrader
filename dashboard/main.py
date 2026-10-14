@@ -776,6 +776,23 @@ async def _kis_scan_candidates() -> list:
     return sorted(results, key=lambda x: x["score"], reverse=True)[:20]
 
 
+# [AT] fix/scan-parallel — 아침스캔 종목별 일봉 조회 동시 요청 수. 환경변수
+# SCAN_FETCH_WORKERS로 조정하되 KRX 차단 위험을 고려해 1~8로 클램프한다(기본 5).
+_SCAN_FETCH_WORKERS_DEFAULT = 5
+_SCAN_FETCH_WORKERS_MAX = 8
+# 병렬 조회 실패율이 이 값을 넘으면 KRX 동시요청 차단으로 의심하고 순차 조회로
+# 폴백한다([AT] fix/scan-parallel).
+_SCAN_FETCH_FAIL_RATIO_FALLBACK = 0.3
+
+
+def _scan_fetch_workers() -> int:
+    try:
+        n = int(os.getenv("SCAN_FETCH_WORKERS", str(_SCAN_FETCH_WORKERS_DEFAULT)))
+    except (TypeError, ValueError):
+        n = _SCAN_FETCH_WORKERS_DEFAULT
+    return max(1, min(n, _SCAN_FETCH_WORKERS_MAX))
+
+
 async def _jarvis_stock_scanner():
     """08:30 — 코스피/코스닥 전종목 스캔 → 유망 종목 watchlist 자동 추가"""
     try:
@@ -823,12 +840,54 @@ async def _jarvis_stock_scanner():
 
         def _scan():
             import time as _t
+            import concurrent.futures
             results = []
             stats = {"total": 0, "no_data": 0, "low_price": 0, "scored": 0, "err": 0}
             fetch_elapsed = 0.0  # [AT] feat/scan-timing — 데이터 조회(get_market_ohlcv) 누적 소요
             score_elapsed = 0.0  # [AT] feat/scan-timing — 스코어링 계산 누적 소요
+            fetch_fail_count = 0  # [AT] fix/scan-parallel — 조회 실패(예외) 종목 수
             fallback_markets = []
             db_universe_used = False
+            fetch_workers = _scan_fetch_workers()
+
+            def _fetch_one(ticker):
+                _tf0 = _t.time()
+                try:
+                    return ticker, pykrx_stock.get_market_ohlcv(d30, today, ticker), _t.time() - _tf0, None
+                except Exception as e:
+                    return ticker, None, _t.time() - _tf0, e
+
+            def _fetch_batch(ticker_list):
+                """ticker_list 전체의 일봉을 동시 N개로 조회해 {ticker: (df, exc)}를 반환하고
+                누적 조회시간·실패수를 더한다. 실패율이 너무 높으면(KRX 동시요청 차단 의심)
+                WARNING을 남기고 기존 순차 방식으로 다시 조회한다([AT] fix/scan-parallel)."""
+                nonlocal fetch_elapsed, fetch_fail_count
+                dfs = {}
+                batch_fail = 0
+                with concurrent.futures.ThreadPoolExecutor(max_workers=fetch_workers) as ex:
+                    for ticker, df, dur, err in ex.map(_fetch_one, ticker_list):
+                        fetch_elapsed += dur
+                        dfs[ticker] = (df, err)
+                        if err is not None:
+                            batch_fail += 1
+
+                if ticker_list and batch_fail / len(ticker_list) > _SCAN_FETCH_FAIL_RATIO_FALLBACK:
+                    logger.warning(
+                        f"🔍 병렬 조회 실패율 {batch_fail}/{len(ticker_list)} > "
+                        f"{_SCAN_FETCH_FAIL_RATIO_FALLBACK:.0%} — 순차 조회로 폴백(KRX 동시요청 차단 의심)")
+                    dfs = {}
+                    batch_fail = 0
+                    for ticker in ticker_list:
+                        _tf0 = _t.time()
+                        try:
+                            dfs[ticker] = (pykrx_stock.get_market_ohlcv(d30, today, ticker), None)
+                        except Exception as e:
+                            dfs[ticker] = (None, e)
+                            batch_fail += 1
+                        fetch_elapsed += _t.time() - _tf0
+
+                fetch_fail_count += batch_fail
+                return dfs
             for market in ["KOSPI", "KOSDAQ"]:
                 # KRX가 간헐적으로 빈 응답 반환 → 최대 3회 재시도
                 tickers = []
@@ -856,13 +915,16 @@ async def _jarvis_stock_scanner():
                     db_universe_used = True
                     fallback_markets.append(market)
                 try:
+                    # [AT] fix/scan-parallel — 종목별 일봉 조회를 동시 N개로 병렬화.
+                    # 이후 루프는 원래 순서(tickers)대로 돌아 스코어링·결과 순서는 그대로다.
+                    fetched = _fetch_batch(tickers)
                     for ticker in tickers:  # 전체 종목
                         stats["total"] += 1
                         try:
                             # 30일 데이터로 MA크로스 체크
-                            _tf0 = _t.time()  # [AT] feat/scan-timing
-                            df = pykrx_stock.get_market_ohlcv(d30, today, ticker)
-                            fetch_elapsed += _t.time() - _tf0  # [AT] feat/scan-timing
+                            df, _fetch_err = fetched.get(ticker, (None, None))
+                            if _fetch_err is not None:
+                                raise _fetch_err
                             if df is None or len(df) < 22:
                                 stats["no_data"] += 1
                                 continue
@@ -964,11 +1026,25 @@ async def _jarvis_stock_scanner():
             logger.info(f"🔍 스캔 통계: 전체 {stats['total']} · 데이터부족 {stats['no_data']} · "
                         f"동전주 {stats['low_price']} · 통과 {stats['scored']} · 오류 {stats['err']}")
             # [AT] feat/scan-timing — 데이터 조회/스코어링 단계별 소요시간도 함께 반환
+            # [AT] fix/scan-parallel — 조회 종목수·실패 종목수도 함께 반환(헬스리포트 계측용)
             return (sorted(results, key=lambda x: x["score"], reverse=True)[:20], fallback_markets,
-                    fetch_elapsed, score_elapsed)
+                    fetch_elapsed, score_elapsed, stats["total"], fetch_fail_count)
 
-        candidates, fallback_markets, fetch_elapsed, score_elapsed = await loop.run_in_executor(None, _scan)
-        logger.info(f"⏱️ [아침스캔] 데이터조회 {fetch_elapsed:.1f}s · 스코어링 {score_elapsed:.1f}s")
+        (candidates, fallback_markets, fetch_elapsed, score_elapsed,
+         scan_total, scan_fetch_fail) = await loop.run_in_executor(None, _scan)
+        logger.info(f"⏱️ [아침스캔] 데이터조회 {fetch_elapsed:.1f}s · 스코어링 {score_elapsed:.1f}s · "
+                    f"종목수 {scan_total} · 실패 {scan_fetch_fail}")
+        try:  # [AT] fix/scan-parallel — 헬스리포트용 상세 계측(7일 TTL, 관측 전용)
+            await redis_client.setex(
+                f"health:scan_detail:{now_kst.strftime('%Y-%m-%d')}", 86400 * 7,
+                json.dumps({
+                    "fetch_elapsed": round(fetch_elapsed, 2),
+                    "score_elapsed": round(score_elapsed, 2),
+                    "total": scan_total,
+                    "fail": scan_fetch_fail,
+                }, ensure_ascii=False))
+        except Exception:
+            pass
 
         fallback_notes = []
         if fallback_markets:

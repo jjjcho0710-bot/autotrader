@@ -14,6 +14,7 @@ pool/redis/콜러블만 쓰므로(dashboard/kis_history_reconcile.py와 동일�
   포지션 stale, pnl NULL, 슬리피지, 서킷브레이커, 토큰 재발급 3회 이상 각각).
 - _previous_trading_day가 주말/휴장일을 건너뛰는지.
 """
+import json
 import sys
 import unittest
 from datetime import date, datetime, timedelta, timezone
@@ -287,6 +288,32 @@ class TestSectionScanTimingAndTokenReissue(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reissue_count"], 0)
 
 
+class TestSectionScanDetail(unittest.IsolatedAsyncioTestCase):
+    """[AT] fix/scan-parallel — health:scan_detail:YYYY-MM-DD(종목수/실패수/조회초) 읽기."""
+
+    async def test_reads_recorded_detail(self):
+        redis = FakeRedis({
+            "health:scan_detail:2026-10-13": json.dumps(
+                {"total": 2800, "fail": 3, "fetch_elapsed": 410.5, "score_elapsed": 2.1})
+        })
+        result = await hr._section_scan_detail(redis, date(2026, 10, 13))
+        self.assertEqual(result["total"], 2800)
+        self.assertEqual(result["fail"], 3)
+        self.assertEqual(result["fetch_elapsed"], 410.5)
+
+    async def test_missing_is_none(self):
+        redis = FakeRedis({})
+        result = await hr._section_scan_detail(redis, date(2026, 10, 13))
+        self.assertIsNone(result["total"])
+        self.assertIsNone(result["fail"])
+        self.assertIsNone(result["fetch_elapsed"])
+
+    async def test_malformed_json_is_none(self):
+        redis = FakeRedis({"health:scan_detail:2026-10-13": "not-json"})
+        result = await hr._section_scan_detail(redis, date(2026, 10, 13))
+        self.assertIsNone(result["total"])
+
+
 # ── 전체 조립: 섹션 격리 + 요약 줄 판정 ───────────────────────────────────
 class TestBuildHealthReportIsolation(unittest.IsolatedAsyncioTestCase):
     async def test_one_section_failure_does_not_block_others(self):
@@ -394,6 +421,27 @@ class TestBuildHealthReportSummary(unittest.IsolatedAsyncioTestCase):
         report = await hr.build_health_report(**kwargs)
         self.assertEqual(report["status"], "warn")
         self.assertTrue(any("정산 불일치" in i for i in report["issues"]))
+
+    async def test_scan_detail_appends_to_scan_timing_line(self):
+        """[AT] fix/scan-parallel — e) 아침스캔 소요 줄에 종목수/실패/조회초가 붙는다."""
+        kwargs = self._base_kwargs()
+        kwargs["redis"] = FakeRedis({
+            "health:scan_timing:2026-10-13": "95.20",
+            "health:scan_detail:2026-10-13": json.dumps(
+                {"total": 2800, "fail": 12, "fetch_elapsed": 80.3, "score_elapsed": 1.9}),
+        })
+        report = await hr.build_health_report(**kwargs)
+        self.assertIn(
+            "e) 아침스캔 소요: 95.2s (종목수 2800 · 실패 12 · 조회 80.3s)",
+            report["text"])
+
+    async def test_scan_detail_missing_keeps_line_unchanged(self):
+        """scan_detail 기록이 없으면(기존 배포) e) 줄은 소요시간만 표시한다(회귀 아님)."""
+        kwargs = self._base_kwargs()
+        kwargs["redis"] = FakeRedis({"health:scan_timing:2026-10-13": "95.20"})
+        report = await hr.build_health_report(**kwargs)
+        self.assertIn("e) 아침스캔 소요: 95.2s", report["text"])
+        self.assertNotIn("종목수", report["text"])
 
 
 if __name__ == "__main__":

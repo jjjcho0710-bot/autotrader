@@ -109,6 +109,31 @@ class _FakeTokenSession:
         return _FakeTokenResp(self._token)
 
 
+class _FakeTokenErrorResp:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+class _FakeTokenErrorSession:
+    """get_kis_token() 발급 실패 경로 테스트용 — post()가 access_token 없는
+    KIS 오류 payload(error_description 등)를 반환한다."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, timeout=None):
+        return _FakeTokenErrorResp(self._payload)
+
+
 class _FakeGetResp:
     def __init__(self, payload: dict, status: int = 200):
         self._payload = payload
@@ -148,6 +173,7 @@ class _BaseDashboardTestCase(unittest.IsolatedAsyncioTestCase):
         dm._kis_token_cache["token"] = ""
         dm._kis_token_cache["expires"] = 0
         dm._kis_token_lock = None
+        dm._kis_token_last_error = ""
         dm.redis_client = None
 
     def tearDown(self):
@@ -186,6 +212,21 @@ class TestGetKisTokenSharedCache(_BaseDashboardTestCase):
 
         self.assertEqual(counter["count"], 1)
         self.assertTrue(all(r == "TOK-B" for r in results))
+
+    async def test_issuance_failure_records_kis_error_description(self):
+        """토큰 발급이 빈 access_token으로 끝나면 KIS가 돌려준 error_description을
+        _kis_token_last_error에 남긴다([AT] fix/market-index-shared-token) —
+        호출부(_collect_market_index_daily 등)가 "토큰 없음"보다 구체적인 실패
+        사유를 health:index_collect/헬스리포트에 보여줄 수 있게 한 것. 비밀값
+        (토큰/키) 자체는 기록하지 않는다."""
+        self._start(patch("aiohttp.ClientSession", MagicMock(
+            return_value=_FakeTokenErrorSession(
+                {"error_description": "유효하지 않은 appkey 입니다.", "error_code": "EGW00123"}))))
+
+        token = await self.dm.get_kis_token()
+
+        self.assertEqual(token, "")
+        self.assertEqual(self.dm._kis_token_last_error, "유효하지 않은 appkey 입니다.")
 
 
 class TestKisTokenCallSitesUseSharedCache(_BaseDashboardTestCase):

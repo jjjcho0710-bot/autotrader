@@ -128,12 +128,16 @@ universe: Universe = Universe(None)
 import aiohttp as _aiohttp
 _kis_token_cache: dict = {"token": "", "expires": 0}
 _kis_token_lock: Optional[asyncio.Lock] = None
+# 신규 발급이 빈 토큰/예외로 끝났을 때의 실제 사유(비밀값 아님, KIS error_description 등) —
+# 토큰이 빈 문자열이라는 사실만으로는 호출부가 원인을 알 수 없어 추가([AT]
+# fix/market-index-shared-token, PM 승인).
+_kis_token_last_error: str = ""
 
 async def get_kis_token(force_new: bool = False) -> str:
     """KIS 액세스 토큰 — Redis 캐시 우선 (force_new=True면 강제 재발급).
     모든 KIS 호출 경로가 이 함수를 통해서만 토큰을 받아야 한다 — 발급은 락으로
     직렬화해 동시에 여러 호출이 들어와도 실제 발급은 한 번만 일어난다."""
-    global _kis_token_lock
+    global _kis_token_lock, _kis_token_last_error
     import time
     now = time.time()
 
@@ -197,6 +201,7 @@ async def get_kis_token(force_new: bool = False) -> str:
                 data = await res.json()
                 token = data.get("access_token", "")
                 if token:
+                    _kis_token_last_error = ""
                     _kis_token_cache["token"] = token
                     _kis_token_cache["expires"] = now + 82800  # 23시간
                     # Redis에 저장
@@ -206,9 +211,15 @@ async def get_kis_token(force_new: bool = False) -> str:
                             await redis_client.setex(save_key, 82800, token)
                     except Exception:
                         pass
+                else:
+                    _kis_token_last_error = (
+                        data.get("error_description") or data.get("error_code")
+                        or data.get("msg1") or "발급 실패(원인 미상)"
+                    )
                 return token
         except Exception as e:
             logger.error(f"KIS 토큰 발급 실패: {e}")
+            _kis_token_last_error = f"{type(e).__name__}: {e}"
             return _kis_token_cache.get("token", "")
 
 def _code_to_name_sync(code: str) -> str:
@@ -3051,9 +3062,19 @@ MARKET_INDEX_CODES = {"KOSPI": "0001", "KOSDAQ": "1001"}
 async def _collect_market_index_daily() -> dict:
     """장마감 후 1회, 코스피/코스닥 업종지수(현재가·전일대비율)를 KIS에서 조회해
     market_index_daily에 UPSERT한다([AT] feat/entry-risk-shadow, PM 승인) — 관찰 전용,
-    다른 작업(매매·리포트)에 영향 없음. 지수별로 독립적으로 try/except 처리해, 하나가
-    실패해도 나머지 지수 저장은 계속된다(fail-open). 스케줄러 중복 실행(재배포 등)에도
-    안전하도록 UNIQUE(date,index_code) 기준 UPSERT를 쓴다.
+    다른 작업(매매·리포트)에 영향 없음. 스케줄러 중복 실행(재배포 등)에도 안전하도록
+    UNIQUE(date,index_code) 기준 UPSERT를 쓴다.
+
+    지수마다 KISTrader를 새로 만들어 trader._get_token()을 호출하던 이전 구현은,
+    KISTrader가 쓰는 common.database.cache.client가 dashboard 프로세스에서는
+    connect()된 적이 없어(None) 매번 신규 토큰 발급으로 빠지고, 모의투자 KIS의 토큰
+    발급 1분 1회 제한에 걸려 두 번째 지수가 "KIS 토큰 발급 실패"로 실패했다(코드 확인
+    완료 — [AT] fix/market-index-shared-token, PM 승인). 이제 KISTrader 인스턴스를
+    1개만 만들어 두 지수에 재사용하고, 토큰은 dashboard가 이미 쓰는 get_kis_token()
+    (Redis 공유 캐시, 다른 KIS 호출 경로와 동일)으로 받아 trader.access_token에
+    주입한다 — trader._get_token()으로 신규 발급하지 않는다. get_kis_token()이 빈
+    값이면 두 지수 모두 조회를 시도하지 않고 "토큰 없음" 사유로 기록한다(지수별
+    독립 실패였던 기존 fail-open 동작은 토큰 조회 성공 이후 단계에서는 그대로 유지).
 
     지수별 성공/실패 결과(KIS rt_cd/msg_cd/msg1 또는 예외 요약)를 반환하고, 같은 내용을
     Redis health:index_collect:YYYY-MM-DD(7일 TTL)에도 저장한다([AT]
@@ -3063,32 +3084,36 @@ async def _collect_market_index_daily() -> dict:
 
     today = datetime.now(KST).date()
     results: Dict[str, Any] = {}
-    for name, index_code in MARKET_INDEX_CODES.items():
-        try:
-            trader = KISTrader()
-            await trader._get_token()
-            if not trader.access_token:
-                logger.warning(f"시장지수 저장 건너뜀(KIS 토큰 발급 실패) [{index_code}]")
-                results[name] = {"ok": False, "error": {"reason": "KIS 토큰 발급 실패"}}
-                continue
-            data = await trader.get_index_price(index_code)
-            if not data:
-                results[name] = {
-                    "ok": False,
-                    "error": trader.last_error or {"reason": "조회 실패(원인 미상)"},
-                }
-                continue
-            async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO market_index_daily (date, index_code, close, change_rate)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (date, index_code) DO UPDATE
-                    SET close = $3, change_rate = $4
-                """, today, index_code, data["close"], data["change_rate"])
-            results[name] = {"ok": True, "close": data["close"], "change_rate": data["change_rate"]}
-        except Exception as e:
-            logger.warning(f"시장지수 저장 실패(무시, 관찰 전용) [{index_code}]: {e}")
-            results[name] = {"ok": False, "error": {"reason": f"{type(e).__name__}: {e}"}}
+
+    token = await get_kis_token()
+    if not token:
+        reason = _kis_token_last_error or "토큰 없음"
+        logger.warning(f"시장지수 저장 건너뜀(KIS 토큰 없음): {reason}")
+        for name in MARKET_INDEX_CODES:
+            results[name] = {"ok": False, "error": {"reason": reason}}
+    else:
+        trader = KISTrader()
+        trader.access_token = token
+        for name, index_code in MARKET_INDEX_CODES.items():
+            try:
+                data = await trader.get_index_price(index_code)
+                if not data:
+                    results[name] = {
+                        "ok": False,
+                        "error": trader.last_error or {"reason": "조회 실패(원인 미상)"},
+                    }
+                    continue
+                async with db_pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO market_index_daily (date, index_code, close, change_rate)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (date, index_code) DO UPDATE
+                        SET close = $3, change_rate = $4
+                    """, today, index_code, data["close"], data["change_rate"])
+                results[name] = {"ok": True, "close": data["close"], "change_rate": data["change_rate"]}
+            except Exception as e:
+                logger.warning(f"시장지수 저장 실패(무시, 관찰 전용) [{index_code}]: {e}")
+                results[name] = {"ok": False, "error": {"reason": f"{type(e).__name__}: {e}"}}
 
     try:
         await redis_client.setex(

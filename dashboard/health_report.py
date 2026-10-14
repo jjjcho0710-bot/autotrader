@@ -210,6 +210,51 @@ async def _section_pnl_null(pool: Any, today: date) -> Dict[str, Any]:
     return {"pnl_null_count": int(n or 0)}
 
 
+async def _section_entry_risk_shadow(pool: Any, today: date) -> Dict[str, Any]:
+    """i) 오늘 체결된 매수 중 저가주(low_price)/단기급등(surge_5d) 관찰 플래그 건수
+    ([AT] feat/entry-risk-shadow — 관찰 전용, 차단 없음). trade_journal.low_price/
+    surge_5d는 stark/execution_guard.py가 체결 확정 시점에 기록한다."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                COUNT(*) FILTER (WHERE low_price IS TRUE) AS low_price_n,
+                COUNT(*) FILTER (WHERE surge_5d IS TRUE) AS surge_5d_n
+            FROM trade_journal
+            WHERE action IN ('buy', 'BUY') AND executed IS TRUE
+              AND DATE(ts AT TIME ZONE 'Asia/Seoul') = $1
+        """, today)
+    if not rows:
+        return {"low_price_count": 0, "surge_5d_count": 0}
+    row = rows[0]
+    return {
+        "low_price_count": int(row["low_price_n"] or 0),
+        "surge_5d_count": int(row["surge_5d_n"] or 0),
+    }
+
+
+def _fmt_index_rate(label: str, rate: Optional[float]) -> str:
+    return f"{label} 데이터 없음" if rate is None else f"{label} {rate:+.2f}%"
+
+
+async def _section_market_index(pool: Any, today: date) -> Dict[str, Any]:
+    """j) 당일 코스피/코스닥 등락률 — market_index_daily(장마감 후 1회 저장, [AT]
+    feat/entry-risk-shadow)를 읽기만 한다. 아직 저장 전이거나 실패했으면 해당 지수는
+    None(표시는 "데이터 없음")."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT index_code, change_rate FROM market_index_daily
+            WHERE date = $1 AND index_code IN ('0001', '1001')
+        """, today)
+    by_code = {
+        r["index_code"]: float(r["change_rate"]) if r["change_rate"] is not None else None
+        for r in rows
+    }
+    return {
+        "kospi_change_rate": by_code.get("0001"),
+        "kosdaq_change_rate": by_code.get("1001"),
+    }
+
+
 async def _run_section(label: str, coro: Awaitable[dict]) -> Dict[str, Any]:
     try:
         return await coro
@@ -254,6 +299,10 @@ async def build_health_report(
         "stop_loss_pnl", _section_stop_loss_pnl(pool, today))
     sections["pnl_null"] = await _run_section(
         "pnl_null", _section_pnl_null(pool, today))
+    sections["entry_risk_shadow"] = await _run_section(
+        "entry_risk_shadow", _section_entry_risk_shadow(pool, today))
+    sections["market_index"] = await _run_section(
+        "market_index", _section_market_index(pool, today))
 
     issues: List[str] = []
 
@@ -334,6 +383,19 @@ async def build_health_report(
     lines.append(_fmt_section_line(
         "h) pnl NULL:", pnl_null,
         lambda d: f"{d['pnl_null_count']}건"
+    ))
+    er = sections["entry_risk_shadow"]
+    lines.append(_fmt_section_line(
+        "i) 오늘 매수 관찰(저가주/급등):", er,
+        lambda d: f"low_price {d['low_price_count']}건, surge_5d {d['surge_5d_count']}건"
+    ))
+    mi = sections["market_index"]
+    lines.append(_fmt_section_line(
+        "j) 당일 지수:", mi,
+        lambda d: (
+            f"{_fmt_index_rate('KOSPI', d['kospi_change_rate'])}, "
+            f"{_fmt_index_rate('KOSDAQ', d['kosdaq_change_rate'])}"
+        )
     ))
 
     return {"text": "\n".join(lines), "status": status, "issues": issues, "sections": sections}

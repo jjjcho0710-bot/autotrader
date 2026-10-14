@@ -2967,6 +2967,41 @@ async def _closing_routine():
     asyncio.create_task(_score_then_review())  # 채점 → 복기 → 교훈 저장
 
 
+# 코스피/코스닥 업종지수 코드([AT] feat/entry-risk-shadow) — market_index_daily.index_code와
+# KIS FID_INPUT_ISCD(업종/지수 조회)가 공유하는 값.
+MARKET_INDEX_CODES = {"KOSPI": "0001", "KOSDAQ": "1001"}
+
+
+async def _collect_market_index_daily():
+    """장마감 후 1회, 코스피/코스닥 업종지수(현재가·전일대비율)를 KIS에서 조회해
+    market_index_daily에 UPSERT한다([AT] feat/entry-risk-shadow, PM 승인) — 관찰 전용,
+    다른 작업(매매·리포트)에 영향 없음. 지수별로 독립적으로 try/except 처리해, 하나가
+    실패해도 나머지 지수 저장은 계속된다(fail-open). 스케줄러 중복 실행(재배포 등)에도
+    안전하도록 UNIQUE(date,index_code) 기준 UPSERT를 쓴다."""
+    from stock_trader.kis_trader import KISTrader
+
+    today = datetime.now(KST).date()
+    for index_code in MARKET_INDEX_CODES.values():
+        try:
+            trader = KISTrader()
+            await trader._get_token()
+            if not trader.access_token:
+                logger.warning(f"시장지수 저장 건너뜀(KIS 토큰 발급 실패) [{index_code}]")
+                continue
+            data = await trader.get_index_price(index_code)
+            if not data:
+                continue
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO market_index_daily (date, index_code, close, change_rate)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (date, index_code) DO UPDATE
+                    SET close = $3, change_rate = $4
+                """, today, index_code, data["close"], data["change_rate"])
+        except Exception as e:
+            logger.warning(f"시장지수 저장 실패(무시, 관찰 전용) [{index_code}]: {e}")
+
+
 async def _jarvis_scheduler():
     """Jarvis 자동 분석 스케줄러 — 08:30 장 시작 전 / 15:40 장 마감 후"""
     import asyncio
@@ -3037,6 +3072,12 @@ async def _jarvis_scheduler():
 
         if dtime(15, 40) <= cur_time <= dtime(15, 45) and await _daily_gate("closing", today):
             await _run_scheduled_job("closing_routine", dtime(15, 40), _closing_routine)
+
+        # 시장지수(코스피/코스닥) 일별 저장 (15:41, [AT] feat/entry-risk-shadow) — 장마감
+        # 후 1회, health_report_1545보다 먼저 끝나도록 closing_routine 바로 뒤에 둔다.
+        if dtime(15, 41) <= cur_time <= dtime(15, 44) and await _daily_gate("market_index_daily", today):
+            asyncio.create_task(_run_scheduled_job(
+                "market_index_daily", dtime(15, 41), _collect_market_index_daily))
 
         # 자동 점검 리포트 (09:40 / 15:45, [AT] feat/health-report) — 읽기 전용, 텔레그램 발송
         if dtime(9, 40) <= cur_time <= dtime(9, 45) and await _daily_gate("health_report_0940", today):
@@ -6407,17 +6448,23 @@ async def _log_journal(bot: str, symbol: str, name: str, action: str,
                         strategy: str, signal_reason: str,
                         jarvis_decision: str, jarvis_reason: str,
                         executed: bool, order_success: bool,
-                        price: float, qty: float, source: str = "auto"):
-    """매매일지: 모든 판단(EXECUTE/SKIP 포함)을 구조화 기록 — 학습의 원재료"""
+                        price: float, qty: float, source: str = "auto",
+                        low_price: bool = False, surge_5d: bool = False):
+    """매매일지: 모든 판단(EXECUTE/SKIP 포함)을 구조화 기록 — 학습의 원재료.
+
+    low_price/surge_5d는 진입위험 관찰(shadow) 플래그([AT] feat/entry-risk-shadow) —
+    stark/execution_guard.py가 체결 확정 시점에 넘겨준다. 매매 판단에는 쓰지 않는 관찰
+    전용 값이라 호출부 대부분은 기본값(False)을 그대로 쓴다."""
     try:
         async with db_pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO trade_journal (bot,symbol,name,action,strategy,signal_reason,
-                 jarvis_decision,jarvis_reason,executed,order_success,price,qty,source, principles) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, $14)
+                 jarvis_decision,jarvis_reason,executed,order_success,price,qty,source, principles,
+                 low_price,surge_5d) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, $14, $15, $16)
             """, bot, symbol, name, action, strategy, (signal_reason or "")[:500],
                  jarvis_decision, (jarvis_reason or "")[:300],
                  executed, order_success, float(price or 0), float(qty or 0), source,
-                 _extract_principles(jarvis_reason))
+                 _extract_principles(jarvis_reason), bool(low_price), bool(surge_5d))
     except Exception as e:
         logger.warning(f"매매일지 기록 실패: {e}")
 

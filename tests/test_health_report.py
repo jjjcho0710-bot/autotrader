@@ -46,7 +46,8 @@ class FakeConn:
     def __init__(self, *, stop_loss_sell=0, buy_count=0, gate_counts=None,
                  stop_loss_rows=None, pnl_null_count=0,
                  raise_on_today_counts=False, raise_on_gate=False,
-                 raise_on_stop_loss_pnl=False, raise_on_pnl_null=False):
+                 raise_on_stop_loss_pnl=False, raise_on_pnl_null=False,
+                 entry_risk_rows=None, market_index_rows=None):
         self.stop_loss_sell = stop_loss_sell
         self.buy_count = buy_count
         self.gate_counts = gate_counts or {}  # {gate_name: (journal_n, decisions_n)}
@@ -56,6 +57,9 @@ class FakeConn:
         self.raise_on_gate = raise_on_gate
         self.raise_on_stop_loss_pnl = raise_on_stop_loss_pnl
         self.raise_on_pnl_null = raise_on_pnl_null
+        # [AT] feat/entry-risk-shadow: i) 저가주/급등 매수 관찰 건수, j) 시장지수 행
+        self.entry_risk_rows = entry_risk_rows if entry_risk_rows is not None else []
+        self.market_index_rows = market_index_rows if market_index_rows is not None else []
 
     async def fetchrow(self, query, *args):
         if "stop_loss_sell" in query:
@@ -86,6 +90,10 @@ class FakeConn:
             if self.raise_on_stop_loss_pnl:
                 raise RuntimeError("DB down")
             return list(self.stop_loss_rows)
+        if "low_price" in query and "surge_5d" in query:
+            return list(self.entry_risk_rows)
+        if "market_index_daily" in query:
+            return list(self.market_index_rows)
         return []
 
 
@@ -212,6 +220,51 @@ class TestSectionPositions(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["snapshot_age_min"])
 
 
+class TestSectionEntryRiskShadow(unittest.IsolatedAsyncioTestCase):
+    """i) 오늘 체결 매수 중 low_price/surge_5d 관찰 건수([AT] feat/entry-risk-shadow)."""
+
+    async def test_counts_low_price_and_surge_5d_flags(self):
+        pool = FakePool(FakeConn(entry_risk_rows=[{"low_price_n": 2, "surge_5d_n": 1}]))
+        result = await hr._section_entry_risk_shadow(pool, date(2026, 10, 13))
+        self.assertEqual(result["low_price_count"], 2)
+        self.assertEqual(result["surge_5d_count"], 1)
+
+    async def test_no_rows_returns_zero_counts(self):
+        pool = FakePool(FakeConn())
+        result = await hr._section_entry_risk_shadow(pool, date(2026, 10, 13))
+        self.assertEqual(result["low_price_count"], 0)
+        self.assertEqual(result["surge_5d_count"], 0)
+
+
+class TestSectionMarketIndex(unittest.IsolatedAsyncioTestCase):
+    """j) 당일 코스피/코스닥 등락률([AT] feat/entry-risk-shadow)."""
+
+    async def test_reads_kospi_and_kosdaq_change_rate(self):
+        pool = FakePool(FakeConn(market_index_rows=[
+            {"index_code": "0001", "change_rate": -1.23},
+            {"index_code": "1001", "change_rate": 0.45},
+        ]))
+        result = await hr._section_market_index(pool, date(2026, 10, 13))
+        self.assertAlmostEqual(result["kospi_change_rate"], -1.23)
+        self.assertAlmostEqual(result["kosdaq_change_rate"], 0.45)
+
+    async def test_missing_data_is_none(self):
+        """장마감 후 저장 스케줄러가 아직 돌지 않았거나 실패했으면 두 지수 모두 None —
+        리포트에는 "데이터 없음"으로 표시된다(_fmt_index_rate)."""
+        pool = FakePool(FakeConn())
+        result = await hr._section_market_index(pool, date(2026, 10, 13))
+        self.assertIsNone(result["kospi_change_rate"])
+        self.assertIsNone(result["kosdaq_change_rate"])
+
+
+class TestFmtIndexRate(unittest.TestCase):
+    def test_none_renders_no_data_text(self):
+        self.assertEqual(hr._fmt_index_rate("KOSPI", None), "KOSPI 데이터 없음")
+
+    def test_value_renders_percent_text(self):
+        self.assertEqual(hr._fmt_index_rate("KOSPI", -1.2), "KOSPI -1.20%")
+
+
 class TestSectionScanTimingAndTokenReissue(unittest.IsolatedAsyncioTestCase):
     async def test_scan_timing_reads_recorded_value(self):
         redis = FakeRedis({"health:scan_timing:2026-10-13": "12.34"})
@@ -284,6 +337,9 @@ class TestBuildHealthReportSummary(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["status"], "ok")
         self.assertTrue(report["text"].startswith("✅ 이상 없음"))
         self.assertEqual(report["issues"], [])
+        # [AT] feat/entry-risk-shadow — i)/j) 줄이 실제로 조립되는지(기본값: 0건/데이터 없음)
+        self.assertIn("i) 오늘 매수 관찰(저가주/급등): low_price 0건, surge_5d 0건", report["text"])
+        self.assertIn("j) 당일 지수: KOSPI 데이터 없음, KOSDAQ 데이터 없음", report["text"])
 
     async def test_circuit_breaker_triggers_warn(self):
         kwargs = self._base_kwargs()

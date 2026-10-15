@@ -338,7 +338,10 @@ async def handle_proposal_response(
             if (order.get("uncertain") or order.get("fill_unconfirmed")) and get_positions_fn is not None:
                 recon = await reconcile_uncertain_order(
                     symbol, True, pre_qty=pre_qty, get_positions_fn=get_positions_fn, redis=redis,
-                    invalidate_cache_fn=invalidate_cache_fn)
+                    invalidate_cache_fn=invalidate_cache_fn,
+                    bot="stock_trader", name=target["name"], qty=float(target["qty"]),
+                    price=float(target["price"]), strategy=target.get("strategy", "제안"),
+                    reason=target.get("reason", ""), reply="주인 승인", order_no=order.get("order_no"))
                 if recon["status"] == "filled":
                     diff_qty = int(round(recon.get("qty_diff") or target["qty"]))
                     if pool:
@@ -375,6 +378,10 @@ async def handle_proposal_response(
                             _fill_channel_summary(target["name"], symbol, "매수", diff_qty, float(target["price"])),
                             dest="channel")
                     return msg.replace("<b>", "").replace("</b>", "")
+                await log_journal_fn("stock_trader", symbol, target["name"], "buy",
+                                      target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
+                                      target.get("reason", ""), True, False,
+                                      float(target["price"]), float(target["qty"]))
                 return (f"⚠️ {target['name']} 주문 결과 불명 — 보유 수량 변화 없음. "
                         f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
 
@@ -660,7 +667,11 @@ async def handle_trade_command(
         if (result.get("uncertain") or result.get("fill_unconfirmed")) and get_stock_positions_fn is not None:
             recon = await reconcile_uncertain_order(
                 symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_stock_positions_fn, redis=redis,
-                invalidate_cache_fn=invalidate_cache_fn)
+                invalidate_cache_fn=invalidate_cache_fn,
+                bot="stock_trader", name=name, qty=float(qty), price=float(price), strategy=_strategy_tag,
+                reason=user_msg[:200], reply="사용자 직접 지시" if not is_advice_approved else "능동 제안 승인",
+                order_no=result.get("order_no"),
+                pre_avg_price=avg_price if (is_sell and avg_price > 0) else None)
             if recon["status"] == "filled":
                 diff_qty = int(round(recon.get("qty_diff") or qty))
                 pnl = None
@@ -705,6 +716,10 @@ async def handle_trade_command(
                                       True, True, price, diff_qty, source="chat")
                 return (f"✅ 체결 확인(응답 지연) — {name}({symbol}) {diff_qty}주 {action_kr} "
                         f"— {price:,}원 × {diff_qty}주 = {price*diff_qty:,}원{pnl_text}{sizing_note}{momentum_note}")
+            await log_journal_fn("stock_trader", symbol, name, action, _strategy_tag,
+                                  user_msg[:200], _decision_tag,
+                                  "사용자 직접 지시" if not is_advice_approved else "능동 제안 승인",
+                                  True, False, price, qty, source="chat")
             return (f"⚠️ {name}({symbol}) 주문 결과 불명 — 보유 수량 변화 없음. "
                     f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
 

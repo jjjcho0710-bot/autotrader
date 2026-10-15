@@ -383,18 +383,28 @@ class TestKisStockOrderFillConfirmation(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_fill_sets_partial_flag_and_avg_fill_price(self):
         """부분체결(filled_qty < 주문 qty)이면 partial=True와 매도 평균체결단가를 함께
-        돌려준다 — 10/8 부국철강 100주 주문·34주 체결 사고 재현."""
+        돌려준다 — 10/8 부국철강 100주 주문·34주 체결 사고 재현.
+
+        [AT] fix/filled-qty-final: 부분체결(0<filled_qty<qty)이어도 바로 확정하지 않고
+        +3초, +7초 재확인을 거친다 — 전량 미도달이면 재확인 중 관찰된 최댓값을 최종값으로
+        쓴다(중간에 더 작은 값이 와도 덮어쓰지 않음)."""
         dm = _load_dashboard_main()
-        get_resp = FakePostResponse({
+        get_resp1 = FakePostResponse({
+            "output1": [{"odno": "O2", "tot_ccld_qty": "34", "avg_prvs": "5000"}]})
+        get_resp2 = FakePostResponse({
+            "output1": [{"odno": "O2", "tot_ccld_qty": "20", "avg_prvs": "5000"}]})
+        get_resp3 = FakePostResponse({
             "output1": [{"odno": "O2", "tot_ccld_qty": "34", "avg_prvs": "5000"}]})
         with patch.object(dm, "config", FakeKisConfig()), \
              patch.object(dm, "get_kis_token", new=AsyncMock(return_value="FAKE_TOKEN")), \
              patch("dashboard.main.asyncio.sleep", new=AsyncMock()), \
              patch("aiohttp.ClientSession", return_value=FakeOrderAndFillSession(
-                 FakePostResponse({"rt_cd": "0", "output": {"ODNO": "O2"}}), [get_resp])):
+                 FakePostResponse({"rt_cd": "0", "output": {"ODNO": "O2"}}),
+                 [get_resp1, get_resp2, get_resp3])):
             result = await dm._kis_stock_order("026940", 5000, 100, False)
 
         self.assertTrue(result["success"])
+        # 중간 재확인(20주)이 첫 확인(34주)보다 작으므로 최종값을 덮어쓰지 않아야 한다
         self.assertEqual(result["filled_qty"], 34)
         self.assertTrue(result["partial"])
         self.assertEqual(result["avg_fill_price"], 5000.0)

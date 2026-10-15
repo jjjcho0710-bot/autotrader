@@ -27,6 +27,7 @@ except ImportError:
     _stub.ClientTimeout = lambda *a, **kw: None
     sys.modules["aiohttp"] = _stub
 
+from common import uncertain_order_tracker as uot  # noqa: E402
 from market.universe import Universe  # noqa: E402
 from router.handlers import order_handler  # noqa: E402
 from stark import execution_guard  # noqa: E402
@@ -417,6 +418,118 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             get_positions_fn=get_positions, pool=FakePool())
         self.assertIn("한도", reply)
         self.assertEqual(len(orders), 0)
+
+    async def test_approve_uncertain_unknown_registers_tracker_and_logs_journal(self):
+        """[AT] fix/order-handler-uncertain-tracking: 제안 승인 매수가 응답불명(uncertain)으로
+        끝나고 보유 수량 변화도 없으면(판정 불가) execute()와 동일하게 common.uncertain_order_tracker
+        백그라운드 재확인을 등록하고, trade_journal에도 흔적(체결시도 True, 성공 False)을 남겨야
+        한다 — 이전엔 둘 다 하지 않고 "주문 결과 불명" 알림만 내보냈다(014100 매도 10/14 11:01:27
+        누락 사고)."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 1}),
+        })
+        logged = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": False, "uncertain": True, "order_no": "P9", "error": "TimeoutError"}
+
+        async def log_journal(*args, **kwargs):
+            logged.append(args)
+
+        async def get_positions():
+            return {"success": True, "data": []}  # 주문 전후 변화 없음 → 판정 불가(unknown)
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            reply = await order_handler.handle_proposal_response(
+                "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+                send_telegram_fn=None, get_positions_fn=get_positions)
+
+        self.assertIn("주문 결과 불명", reply)
+
+        tracker_keys = [k for k in redis.store if k.startswith(uot.UNCERTAIN_ORDER_KEY_PREFIX)]
+        self.assertEqual(len(tracker_keys), 1)
+        ctx = json.loads(redis.store[tracker_keys[0]])
+        self.assertEqual(ctx["symbol"], "005930")
+        self.assertEqual(ctx["name"], "삼성전자")
+        self.assertEqual(ctx["bot"], "stock_trader")
+        self.assertEqual(ctx["qty"], 1)
+        self.assertEqual(ctx["price"], 70000)
+        self.assertEqual(ctx["order_no"], "P9")
+
+        self.assertEqual(len(logged), 1)
+        self.assertEqual(logged[0], (
+            "stock_trader", "005930", "삼성전자", "buy", "제안", "주인 승인",
+            "PROPOSE_APPROVED", "", True, False, 70000.0, 1.0))
+
+    async def test_approve_uncertain_filled_behavior_unchanged(self):
+        """응답불명 후 보유 수량 재확인으로 실제 체결이 확인되면, 트래커 등록 kwarg가
+        추가돼도 기존 "체결 확인(응답 지연)" 기록/응답 동작은 그대로여야 한다."""
+        redis = FakeRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 1}),
+        })
+        pool = FakePool()
+        state = {"ordered": False}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            state["ordered"] = True
+            return {"success": False, "uncertain": True, "order_no": "P10"}
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def get_positions():
+            # 주문 전 조회(한도 체크 포함, 여러 번 호출됨)는 보유 0, 주문 이후(reconcile의
+            # 재확인 포함) 조회는 체결 확인용으로 보유가 늘어난 값을 돌려준다.
+            if not state["ordered"]:
+                return {"success": True, "data": []}
+            return {"success": True, "data": [{"symbol": "005930", "qty": 1}]}
+
+        async def send_telegram(text, **kw):
+            pass
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            reply = await order_handler.handle_proposal_response(
+                "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+                send_telegram_fn=send_telegram, get_positions_fn=get_positions, pool=pool)
+
+        self.assertIn("체결 확인", reply)
+        self.assertEqual(len(pool._conn.inserted), 1)
+        tracker_keys = [k for k in redis.store if k.startswith(uot.UNCERTAIN_ORDER_KEY_PREFIX)]
+        self.assertEqual(tracker_keys, [])  # filled이면 백그라운드 재확인을 등록하지 않는다
+
+    async def test_approve_uncertain_registration_failure_leaves_reply_unchanged(self):
+        """백그라운드 재확인 등록(redis.setex)이 실패해도 register_uncertain_order 내부에서
+        예외를 삼키므로, 사용자 응답("주문 결과 불명")은 그대로여야 한다."""
+        class _FlakyRedis(FakeRedis):
+            async def setex(self, key, ttl, value):
+                if key.startswith(uot.UNCERTAIN_ORDER_KEY_PREFIX):
+                    raise ConnectionError("redis down")
+                await super().setex(key, ttl, value)
+
+        redis = _FlakyRedis({
+            "proposal:latest": "005930",
+            "proposal:005930": json.dumps({"symbol": "005930", "name": "삼성전자", "price": 70000, "qty": 1}),
+        })
+        logged = []
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": False, "uncertain": True, "order_no": "P11"}
+
+        async def log_journal(*args, **kwargs):
+            logged.append(args)
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            reply = await order_handler.handle_proposal_response(
+                "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+                send_telegram_fn=None, get_positions_fn=get_positions)
+
+        self.assertIn("주문 결과 불명", reply)
+        self.assertEqual(len(logged), 1)
 
 
 class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
@@ -866,6 +979,144 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
 
         self.assertNotIn("late_fill_pending:T3", redis.store)
+
+    async def test_uncertain_unknown_registers_tracker_and_logs_journal(self):
+        """[AT] fix/order-handler-uncertain-tracking: 채팅 직접매매(및 능동제안 승인 경로를
+        공유하는 handle_trade_command)가 응답불명 후 보유 수량 변화도 없으면(판정 불가)
+        execute()와 동일하게 백그라운드 재확인을 등록하고 trade_journal에도 흔적을 남겨야
+        한다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+        logged = []
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"success": True, "data": []}  # 주문 전후 보유 변화 없음 → 판정 불가
+
+        async def get_market_warning(symbol):
+            return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": False, "uncertain": True, "order_no": "T9", "error": "TimeoutError"}
+
+        async def log_journal(*args, **kwargs):
+            logged.append((args, kwargs))
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 5주 매수", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions, get_market_warning_fn=get_market_warning,
+                send_telegram_fn=None, log_journal_fn=log_journal,
+                get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
+
+        self.assertIn("주문 결과 불명", reply)
+
+        tracker_keys = [k for k in redis.store if k.startswith(uot.UNCERTAIN_ORDER_KEY_PREFIX)]
+        self.assertEqual(len(tracker_keys), 1)
+        ctx = json.loads(redis.store[tracker_keys[0]])
+        self.assertEqual(ctx["symbol"], "005930")
+        self.assertEqual(ctx["name"], "삼성전자")
+        self.assertEqual(ctx["bot"], "stock_trader")
+        self.assertEqual(ctx["qty"], 5)
+        self.assertEqual(ctx["order_no"], "T9")
+
+        self.assertEqual(len(logged), 1)
+        args, kwargs = logged[0]
+        self.assertEqual(args, (
+            "stock_trader", "005930", "삼성전자", "buy", "수동지시", "삼성전자 5주 매수",
+            "MANUAL", "사용자 직접 지시", True, False, 70000, 5))
+        self.assertEqual(kwargs.get("source"), "chat")
+
+    async def test_uncertain_filled_behavior_unchanged(self):
+        """응답불명 후 보유 수량 재확인으로 실제 체결이 확인되면, 트래커 등록 kwarg가
+        추가돼도 기존 "체결 확인(응답 지연)" 기록/응답 동작은 그대로여야 한다."""
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = FakeRedis()
+        state = {"ordered": False}
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            # 주문 전 조회(한도 체크 포함, 여러 번 호출됨)는 보유 0, 주문 이후(reconcile의
+            # 재확인 포함) 조회는 체결 확인용으로 보유가 늘어난 값을 돌려준다.
+            if not state["ordered"]:
+                return {"success": True, "data": []}
+            return {"success": True, "data": [{"symbol": "005930", "qty": 5}]}
+
+        async def get_market_warning(symbol):
+            return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            state["ordered"] = True
+            return {"success": False, "uncertain": True, "order_no": "T10"}
+
+        async def log_journal(*args, **kwargs):
+            pass
+
+        async def send_telegram(text, **kw):
+            pass
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 5주 매수", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions, get_market_warning_fn=get_market_warning,
+                send_telegram_fn=send_telegram, log_journal_fn=log_journal,
+                get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
+
+        self.assertIn("체결 확인", reply)
+        self.assertEqual(len(pool._conn.inserted), 1)
+        tracker_keys = [k for k in redis.store if k.startswith(uot.UNCERTAIN_ORDER_KEY_PREFIX)]
+        self.assertEqual(tracker_keys, [])  # filled이면 백그라운드 재확인을 등록하지 않는다
+
+    async def test_uncertain_registration_failure_leaves_reply_unchanged(self):
+        """백그라운드 재확인 등록(redis.setex)이 실패해도 register_uncertain_order 내부에서
+        예외를 삼키므로, 사용자 응답("주문 결과 불명")은 그대로여야 한다."""
+        class _FlakyRedis(FakeRedis):
+            async def setex(self, key, ttl, value):
+                if key.startswith(uot.UNCERTAIN_ORDER_KEY_PREFIX):
+                    raise ConnectionError("redis down")
+                await super().setex(key, ttl, value)
+
+        universe = Universe(None)
+        universe.replace_cache({"삼성전자": "005930"})
+        pool = FakePool()
+        redis = _FlakyRedis()
+        logged = []
+
+        async def get_kis_token():
+            return "FAKE_TOKEN"
+
+        async def get_stock_positions():
+            return {"success": True, "data": []}
+
+        async def get_market_warning(symbol):
+            return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
+
+        async def kis_order(symbol, price, qty, is_buy):
+            return {"success": False, "uncertain": True, "order_no": "T11"}
+
+        async def log_journal(*args, **kwargs):
+            logged.append(args)
+
+        with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
+            reply = await order_handler.handle_trade_command(
+                "삼성전자 5주 매수", pool=pool, redis=redis, universe=universe,
+                get_kis_token_fn=get_kis_token, config=FakeConfig(), kis_order_fn=kis_order,
+                get_stock_positions_fn=get_stock_positions, get_market_warning_fn=get_market_warning,
+                send_telegram_fn=None, log_journal_fn=log_journal,
+                get_quote_fn=make_quote_fn({"output": {"stck_prpr": "70000", "hts_kor_isnm": "삼성전자"}}))
+
+        self.assertIn("주문 결과 불명", reply)
+        self.assertEqual(len(logged), 1)
 
 
 if __name__ == "__main__":

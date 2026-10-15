@@ -5100,13 +5100,21 @@ async def _get_kis_filled_qty(token: str, cano: str, prdt: str, order_no: str, s
             if attempt < _KIS_RATE_LIMIT_RETRIES:
                 await asyncio.sleep(_KIS_RATE_LIMIT_DELAY)
         rows = data.get("output1") or []
+        # 같은 odno 행이 여러 개로 쪼개져 내려오는 경우가 있어 첫 행만 쓰지 않고
+        # 누적체결수량(tot_ccld_qty) 최댓값을 가진 행을 최종값으로 쓴다
+        # ([AT] fix/filled-qty-final).
+        best_fq = None
+        best_avg = 0.0
         for row in rows:
-            if row.get("odno") == order_no:
-                fq = int(row.get("tot_ccld_qty", 0) or 0)
-                if with_price:
-                    return fq, float(row.get("avg_prvs", 0) or 0)
-                return fq
-        return (0, 0.0) if with_price else 0
+            if row.get("odno") != order_no:
+                continue
+            fq = int(row.get("tot_ccld_qty", 0) or 0)
+            if best_fq is None or fq > best_fq:
+                best_fq = fq
+                best_avg = float(row.get("avg_prvs", 0) or 0)
+        if best_fq is None:
+            return (0, 0.0) if with_price else 0
+        return (best_fq, best_avg) if with_price else best_fq
     except Exception as e:
         logger.warning(f"체결 수량 조회 실패 [{symbol}] 주문 {order_no}: {e}")
         return (None, None) if with_price else None
@@ -5173,12 +5181,17 @@ async def _kis_stock_order(symbol: str, price: int, qty: int, is_buy: bool,
                 # 처리)으로 넘기게 fill_unconfirmed만 표시하고 성공 여부는 단정하지 않는다.
                 logger.warning(f"⚠️ 체결 확인 API 실패 [{symbol}] — 접수 결과만으로 판정")
                 return {"success": True, "order_no": order_no, "fill_unconfirmed": True}
-            if filled_qty <= 0:
+            if filled_qty < qty:
+                # 미체결(0) 또는 부분체결 상태 — 바로 확정하지 않고 +3초, +7초 두 번 더
+                # 재확인하며, 중간에 더 작은 값이 조회돼도 덮어쓰지 않도록 관찰된 최댓값을
+                # 최종값으로 쓴다(총 대기시간은 그대로, [AT] fix/filled-qty-final).
                 for delay in _KIS_FILL_RETRY_DELAYS_SEC:
                     await asyncio.sleep(delay)
-                    filled_qty, avg_fill_price = await _get_kis_filled_qty(
+                    next_qty, next_avg = await _get_kis_filled_qty(
                         token, cano, prdt, order_no, symbol, is_buy, with_price=True)
-                    if filled_qty:
+                    if next_qty is not None and next_qty > filled_qty:
+                        filled_qty, avg_fill_price = next_qty, next_avg
+                    if filled_qty >= qty:
                         break
                 if not filled_qty:
                     logger.warning(f"⚠️ 체결 확인 재시도 종료 [{symbol}] 주문 {qty}주 접수 — "

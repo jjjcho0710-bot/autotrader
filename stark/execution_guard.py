@@ -626,6 +626,9 @@ async def reconcile_uncertain_order(
     symbol: str, is_buy: bool, *, pre_qty: Optional[float],
     get_positions_fn=None, invalidate_cache_fn=None, redis: Any = None,
     wait_sec: float = 4.0,
+    bot: str = "", name: str = "", qty: float = 0, price: float = 0,
+    strategy: str = "", reason: str = "", reply: str = "",
+    order_no: Optional[str] = None, pre_avg_price: Optional[float] = None,
 ) -> Dict[str, Any]:
     """_kis_stock_order가 uncertain(응답 불명) 결과를 반환했을 때, 주문 전 보유 수량(pre_qty)과
     wait_sec 후 재조회한 보유 수량을 비교해 실제 체결 여부를 판정한다. 캐시(메모리+redis)를
@@ -633,7 +636,13 @@ async def reconcile_uncertain_order(
 
     반환: {"status": "filled", "qty_diff": 변동 수량} 또는 {"status": "unknown"}
     (조회 자체가 실패해도 "unknown"으로 묶는다 — 호출부는 재시도하지 말고 사람에게 확인을 요청해야 한다).
-    status != "filled"이면 같은 종목·방향 중복 주문 차단 키를 ORDER_UNCERTAIN_BLOCK_TTL초 동안 건다."""
+    status != "filled"이면 같은 종목·방향 중복 주문 차단 키를 ORDER_UNCERTAIN_BLOCK_TTL초 동안 건다.
+
+    bot/name을 넘겨준 호출부는 status != "filled"일 때 common.uncertain_order_tracker에
+    백그라운드 재확인(+30초/+90초/+180초, 보유수량을 pre_qty와 재비교)도 등록한다 —
+    이 4초 확인 1회로 끝나던 재확인 범위를 넓혀 늦게 들어오는 체결을 잡아낸다([AT]
+    fix/uncertain-order-recheck). bot/name을 안 넘기는 호출부(order_handler.py 등 아직
+    미연동)는 기존처럼 이 1회 확인으로 끝난다."""
     post_qty = None
     if get_positions_fn is not None and pre_qty is not None:
         await asyncio.sleep(wait_sec)
@@ -664,6 +673,14 @@ async def reconcile_uncertain_order(
             await redis.setex(f"order_uncertain:{symbol}:{side}", ORDER_UNCERTAIN_BLOCK_TTL, "1")
         except Exception:
             pass
+        if bot and name:
+            from common.uncertain_order_tracker import register_uncertain_order
+            await register_uncertain_order(
+                redis, symbol=symbol, name=name, is_buy=is_buy, bot=bot,
+                pre_qty=pre_qty, qty=qty, price=price, strategy=strategy,
+                reason=reason, reply=reply, order_no=order_no,
+                pre_avg_price=pre_avg_price,
+            )
 
     result: Dict[str, Any] = {"status": status}
     if status == "filled":
@@ -1170,6 +1187,9 @@ async def execute(
             recon = await reconcile_uncertain_order(
                 symbol, is_buy, pre_qty=pre_qty, get_positions_fn=get_positions_fn,
                 invalidate_cache_fn=invalidate_cache_fn, redis=redis,
+                bot=bot, name=name, qty=qty, price=price, strategy=strategy,
+                reason=reason, reply=reply, order_no=order.get("order_no"),
+                pre_avg_price=pre_avg_price,
             )
             if recon["status"] == "filled":
                 diff_qty = recon.get("qty_diff") or qty

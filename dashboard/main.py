@@ -23,6 +23,7 @@ import redis.asyncio as aioredis
 
 from common.config import config, compute_total_pnl
 from common.late_fill_tracker import late_fill_tracker_loop
+from common.uncertain_order_tracker import uncertain_order_tracker_loop
 from common.migrations import run_migrations
 from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
 from market.universe import Universe
@@ -279,6 +280,10 @@ async def startup():
     asyncio.create_task(late_fill_tracker_loop(
         redis_client, db_pool, _late_fill_get_filled_qty,
         lambda msg: _send_telegram(msg, dest="personal"),
+    ))
+    asyncio.create_task(uncertain_order_tracker_loop(
+        redis_client, db_pool, get_stock_positions, invalidate_stock_positions_cache,
+        lambda msg: _send_telegram(msg, dest="personal"), _log_journal,
     ))
 
 

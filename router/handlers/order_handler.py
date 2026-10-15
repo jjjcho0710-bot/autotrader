@@ -61,6 +61,26 @@ async def _invalidate_cache(invalidate_cache_fn: Optional[Any]) -> None:
         pass
 
 
+async def _alert_db_record_failure(
+    send_telegram_fn, *, name: str, symbol: str, side_kr: str, qty: float, price: float, error: Exception,
+) -> None:
+    """체결은 됐으나 trade_history INSERT가 실패했을 때 쓰는 공용 알림([AT]
+    fix/order-handler-record-failure) — 기존에는 이 INSERT 실패를 try/except pass로
+    완전히 삼킨 채 "체결 완료" 성공 알림만 보내서 014100 BUY/SELL 두 건처럼 실제 체결과
+    DB 기록이 어긋나도 아무도 알 수 없었다. 성공 알림/응답 문구는 그대로 유지하고, 이
+    알림을 별도로 추가 발송한다."""
+    logger.error(
+        f"체결 기록 실패(DB) [{symbol}] {side_kr} {qty:.0f}주 @ {price:,.0f}원: {error}",
+        exc_info=True)
+    try:
+        await send_telegram_fn(
+            f"🚨 <b>{name} {side_kr} 체결은 됐으나 DB 기록 실패</b>\n"
+            f"{symbol} {side_kr} {qty:.0f}주 @ {price:,.0f}원 — 수동 확인 필요",
+            dest="personal")
+    except Exception as e:
+        logger.warning(f"DB 기록 실패 알림 전송 실패(무시) [{symbol}]: {e}")
+
+
 async def _momentum_warning_note(symbol: str, *, pool: Any, redis: Optional[Any] = None) -> str:
     """수동(채팅) 매수·사용자 승인 매수용 모멘텀 경고 문구([AT] feat/momentum-gate).
     AI 자동매수(stark.execution_guard.execute())와 달리 이 경로는 차단하지 않고 경고
@@ -280,8 +300,14 @@ async def handle_proposal_response(
                                 VALUES ('stock_trader','stock',$1,'BUY',$2,$3,$4,$5,NULL)
                             """, symbol, fill_price, float(filled_qty),
                                 fill_price * filled_qty, target.get("strategy", "제안"))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        await _alert_db_record_failure(
+                            send_telegram_fn, name=target["name"], symbol=symbol, side_kr="매수",
+                            qty=filled_qty, price=fill_price, error=e)
+                else:
+                    logger.warning(
+                        f"체결 기록 INSERT 건너뜀(제안승인 매수) [{symbol}] "
+                        f"pool={'있음' if pool else '없음'} filled_qty={filled_qty}")
                 if pool is not None and filled_qty > 0:
                     # 제안 승인 매수 체결 종목을 watchlist에 활성화([AT] fix/holdings-daily-collect).
                     try:
@@ -323,8 +349,13 @@ async def handle_proposal_response(
                                     VALUES ('stock_trader','stock',$1,'BUY',$2,$3,$4,$5,NULL)
                                 """, symbol, float(target["price"]), float(diff_qty),
                                     float(target["price"]) * diff_qty, target.get("strategy", "제안"))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            await _alert_db_record_failure(
+                                send_telegram_fn, name=target["name"], symbol=symbol, side_kr="매수",
+                                qty=diff_qty, price=float(target["price"]), error=e)
+                    else:
+                        logger.warning(
+                            f"체결 기록 INSERT 건너뜀(제안승인 매수, 응답지연) [{symbol}] pool 없음")
                     if pool is not None and diff_qty > 0:
                         try:
                             from router.handlers import watchlist_handler
@@ -581,8 +612,12 @@ async def handle_trade_command(
                             VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
                         """, symbol, action.upper(), fill_price, float(filled_qty), fill_price * filled_qty,
                             _strategy_tag, pnl)
-                except Exception:
-                    pass
+                except Exception as e:
+                    await _alert_db_record_failure(
+                        send_telegram_fn, name=name, symbol=symbol, side_kr=action_kr,
+                        qty=filled_qty, price=fill_price, error=e)
+            else:
+                logger.warning(f"체결 기록 INSERT 건너뜀(채팅 직접매매) [{symbol}] filled_qty={filled_qty}")
             if is_buy and filled_qty > 0 and pool is not None:
                 # 수동 채팅 매수 체결 종목을 watchlist에 활성화([AT] fix/holdings-daily-collect)
                 # — 채팅으로 담은 종목이 watchlist에 없으면 보유 중인데도 일봉 수집이
@@ -642,8 +677,10 @@ async def handle_trade_command(
                             VALUES ('stock_trader','stock',$1,$2,$3,$4,$5,$6,$7)
                         """, symbol, action.upper(), float(price), float(diff_qty),
                             float(price) * diff_qty, _strategy_tag + "(응답지연)", pnl)
-                except Exception:
-                    pass
+                except Exception as e:
+                    await _alert_db_record_failure(
+                        send_telegram_fn, name=name, symbol=symbol, side_kr=action_kr,
+                        qty=diff_qty, price=price, error=e)
                 if is_buy and diff_qty > 0 and pool is not None:
                     try:
                         from router.handlers import watchlist_handler

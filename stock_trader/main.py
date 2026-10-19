@@ -14,6 +14,7 @@ from common.config import config, compute_total_pnl
 from common.database import db, cache
 from common import position_sizing
 from common.fill_recording import resolve_fill_price
+from common.late_fill_tracker import register_partial_fill
 from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
 from kis_trader import KISTrader
 from ml_report import build_ml_report_text
@@ -1071,6 +1072,19 @@ class StockTrader:
                             symbol=symbol, side="SELL", price=_fill_price, quantity=_fq,
                             amount=_fill_price * _fq, strategy=f"{strat_name}_손절", pnl=_fpnl,
                         )
+                        if remain > 0 and result.get("order_no"):
+                            # 재조회 윈도(1.5+3+7초) 안에 KIS가 전량 체결을 아직 반영하지
+                            # 못했을 수 있어, 늦게 들어오는 추가 체결분을 공용
+                            # late_fill_tracker가 잡아내도록 등록한다(중복 매도 주문은 내지
+                            # 않음 — 증가분만 trade_history에 추가 기록, [AT]
+                            # fix/sell-partial-fill-tracking, 10/16 002030 SELL KIS=3
+                            # DB=2 사고 수정).
+                            await register_partial_fill(
+                                cache.client, order_no=result["order_no"], symbol=symbol,
+                                side="SELL", bot="stock_trader", requested_qty=qty, recorded_qty=_fq,
+                                strategy=f"{strat_name}_손절", price=_fill_price,
+                                cost_basis_avg_price=avg_price,
+                            )
                         await self._invalidate_position_cache()
                         try:
                             await cache.client.delete(f"sell_fail_streak:{symbol}")
@@ -1158,6 +1172,7 @@ class StockTrader:
                 if surge_rate >= 10.0 and qty >= 2 and \
                    not await cache.client.get(f"surge_tp:{symbol}"):
                     half_qty = qty // 2
+                    requested_half_qty = half_qty
                     result = await self.trader.sell(
                         symbol, cur_price, half_qty,
                         strategy=f"{strat_name}_급등절반익절", avg_price=avg_price)
@@ -1175,6 +1190,13 @@ class StockTrader:
                             amount=_fill_price * half_qty,
                             strategy=f"{strat_name}_급등절반익절", pnl=half_pnl,
                         )
+                        if half_qty < requested_half_qty and result.get("order_no"):
+                            await register_partial_fill(
+                                cache.client, order_no=result["order_no"], symbol=symbol,
+                                side="SELL", bot="stock_trader", requested_qty=requested_half_qty,
+                                recorded_qty=half_qty, strategy=f"{strat_name}_급등절반익절",
+                                price=_fill_price, cost_basis_avg_price=avg_price,
+                            )
                         await self._invalidate_position_cache()
                         await cache.client.setex(f"surge_tp:{symbol}", 86400, "1")
                         try:
@@ -1226,6 +1248,13 @@ class StockTrader:
                                 amount=_fill_price * sold_qty,
                                 strategy=f"{strat_name}_구간익절_신호소멸", pnl=s_pnl,
                             )
+                            if remain > 0 and result.get("order_no"):
+                                await register_partial_fill(
+                                    cache.client, order_no=result["order_no"], symbol=symbol,
+                                    side="SELL", bot="stock_trader", requested_qty=qty,
+                                    recorded_qty=sold_qty, strategy=f"{strat_name}_구간익절_신호소멸",
+                                    price=_fill_price, cost_basis_avg_price=avg_price,
+                                )
                             await self._invalidate_position_cache()
                             from common.telegram import CHANNEL_SLIM, fill_summary_line, send_report, send_stock
                             await send_stock(
@@ -1296,6 +1325,7 @@ class StockTrader:
                         if decision in ("HALF", "ALL") and symbol not in self._selling:
                             self._selling.add(symbol)
                             sell_qty = max(1, qty // 2) if (decision == "HALF" and qty >= 2) else qty
+                            requested_sell_qty = sell_qty
                             try:
                                 result = await self.trader.sell(
                                     symbol, cur_price, sell_qty,
@@ -1316,6 +1346,13 @@ class StockTrader:
                                     amount=_fill_price * sell_qty,
                                     strategy=f"{strat_name}_AI익절{decision}", pnl=s_pnl,
                                 )
+                                if sell_qty < requested_sell_qty and result.get("order_no"):
+                                    await register_partial_fill(
+                                        cache.client, order_no=result["order_no"], symbol=symbol,
+                                        side="SELL", bot="stock_trader", requested_qty=requested_sell_qty,
+                                        recorded_qty=sell_qty, strategy=f"{strat_name}_AI익절{decision}",
+                                        price=_fill_price, cost_basis_avg_price=avg_price,
+                                    )
                                 await self._invalidate_position_cache()
                                 from common.telegram import CHANNEL_SLIM, fill_summary_line, send_report, send_stock
                                 remain = qty - sell_qty
@@ -1409,6 +1446,13 @@ class StockTrader:
                                 amount=_fill_price * sold_qty,
                                 strategy=f"{strat_name}_절반확정", pnl=s_pnl,
                             )
+                            if remain > 0 and result.get("order_no"):
+                                await register_partial_fill(
+                                    cache.client, order_no=result["order_no"], symbol=symbol,
+                                    side="SELL", bot="stock_trader", requested_qty=half_qty,
+                                    recorded_qty=sold_qty, strategy=f"{strat_name}_절반확정",
+                                    price=_fill_price, cost_basis_avg_price=avg_price,
+                                )
                             await self._invalidate_position_cache()
                             await cache.client.setex(half_lock_key, 30 * 86400, "1")
                             await cache.client.setex(trailing_high_key, 30 * 86400, str(cur_price))
@@ -1466,6 +1510,13 @@ class StockTrader:
                                     amount=_fill_price * sold_qty,
                                     strategy=f"{strat_name}_트레일링스탑", pnl=s_pnl,
                                 )
+                                if remain > 0 and result.get("order_no"):
+                                    await register_partial_fill(
+                                        cache.client, order_no=result["order_no"], symbol=symbol,
+                                        side="SELL", bot="stock_trader", requested_qty=qty,
+                                        recorded_qty=sold_qty, strategy=f"{strat_name}_트레일링스탑",
+                                        price=_fill_price, cost_basis_avg_price=avg_price,
+                                    )
                                 await self._invalidate_position_cache()
                                 from common.telegram import CHANNEL_SLIM, fill_summary_line, send_report, send_stock
                                 await send_stock(

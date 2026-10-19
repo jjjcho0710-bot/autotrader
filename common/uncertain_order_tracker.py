@@ -118,6 +118,7 @@ async def _finalize_confirmed(
     reason = ctx.get("reason") or ""
     reply = ctx.get("reply") or ""
     pre_avg_price = ctx.get("pre_avg_price")
+    ordered_qty = ctx.get("qty") or 0
     db_side = "BUY" if side == "buy" else "SELL"
 
     if await _already_recorded(pool, bot=bot, symbol=symbol, side=db_side, qty=qty_diff):
@@ -144,11 +145,22 @@ async def _finalize_confirmed(
                                       price, qty_diff)
             except Exception as e:
                 logger.warning(f"불명 주문 지연 체결 매매일지 기록 실패(무시) [{symbol}]: {e}")
+        shortfall = ordered_qty - qty_diff
+        if shortfall > 0:
+            logger.warning(
+                f"불명 주문 마지막 체크포인트까지도 주문 수량 미달 — 확인된 증가분만 기록 "
+                f"[{symbol}] 주문 {ordered_qty:.0f}주 중 {qty_diff:.0f}주만 확인(나머지 {shortfall:.0f}주 수동 확인 필요)"
+            )
         try:
             await send_telegram_fn(
                 f"✅ <b>체결 확인(지연) [{name}]</b>\n"
                 f"{'매수' if side == 'buy' else '매도'} {qty_diff:.0f}주 @ {price:,.0f}원 "
                 f"(응답 불명 후 백그라운드 재확인으로 확정)"
+                + (
+                    f"\n⚠️ 주문 {ordered_qty:.0f}주 중 {qty_diff:.0f}주만 확인됨 — "
+                    f"나머지 {shortfall:.0f}주는 수동 확인 필요"
+                    if shortfall > 0 else ""
+                )
             )
         except Exception as e:
             logger.warning(f"불명 주문 지연 체결 알림 실패(무시) [{symbol}]: {e}")
@@ -190,12 +202,20 @@ async def _poll_one(
         return  # 조회 실패 — 체크포인트를 넘기지 않고 다음 주기에 같은 체크포인트로 재시도
 
     diff = post_qty - pre_qty
-    if (diff > 0) if is_buy else (diff < 0):
+    matched = (diff > 0) if is_buy else (diff < 0)
+    is_last_checkpoint = checkpoint_idx >= len(UNCERTAIN_ORDER_CHECKPOINTS_SEC) - 1
+
+    # 보유 증가분이 관찰돼도 주문 수량에 못 미치면(부분 반영) 바로 확정하지 않고
+    # 주문 수량을 채우거나 마지막 체크포인트에 도달할 때까지 계속 추적한다 — 중간에
+    # 사라지는 증가분 없이 매 체크포인트마다 pre_qty 대비 "누적" 차이를 다시 재는 것이므로
+    # 추가 체결분은 자동으로 반영된다([AT] fix/uncertain-order-partial-finalize, 10/16
+    # 002030 BUY가 실제로는 3주 체결됐는데 1주 증가 시점에 바로 확정·키 삭제돼 나머지
+    # 2주가 영영 기록되지 않은 사고 수정).
+    if matched and (abs(diff) >= qty or is_last_checkpoint):
         await _finalize_confirmed(redis, pool, key, ctx, abs(diff), send_telegram_fn, log_journal_fn)
         return
 
-    checkpoint_idx += 1
-    if checkpoint_idx >= len(UNCERTAIN_ORDER_CHECKPOINTS_SEC):
+    if not matched and is_last_checkpoint:
         name = ctx.get("name") or symbol
         try:
             await send_telegram_fn(
@@ -212,6 +232,8 @@ async def _poll_one(
             pass
         return
 
+    # 주문 수량 미달 & 체크포인트가 남음 — 다음 체크포인트까지 계속 추적한다(즉시 종료 금지).
+    checkpoint_idx += 1
     ctx["checkpoint_idx"] = checkpoint_idx
     try:
         await redis.setex(key, UNCERTAIN_ORDER_KEY_TTL_SEC, json.dumps(ctx))

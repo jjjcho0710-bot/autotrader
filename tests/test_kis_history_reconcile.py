@@ -344,6 +344,36 @@ class TestBuildReconcilePlan(unittest.TestCase):
         self.assertEqual(upd["new_pnl"], round(5000.0 * 103 / 100, 2))
         self.assertEqual(plan["manual_review"], [])
 
+    def test_qty_mismatch_update_recomputes_price_consistent_with_amount(self):
+        """[AT] fix/reconcile-price-consistency 회귀: amount는 KIS 체결 가중평균으로
+        다시 계산되는데 price(단가)는 그대로 둬 price*quantity != amount가 되는 불일치가
+        있었다(002030 BUY 보정 시나리오 — 부분체결가 217,500원으로 기록된 DB 행을 KIS
+        실제 체결(1주@217,500 + 2주@205,000)로 보정하면 가중평균 단가는 209,166.67원이어야
+        한다). price도 amount/quantity로 재계산돼야 한다."""
+        reconcile_result = {
+            "missing_in_db": [], "extra_in_db": [],
+            "qty_mismatch": [{
+                "symbol": "002030", "side": "BUY", "date": "20261016",
+                "kis_qty": 3, "db_qty": 1,
+                "kis_executions": [
+                    {"qty": 1, "avg_price": 217500.0, "odno": "1"},
+                    {"qty": 2, "avg_price": 205000.0, "odno": "1"},
+                ],
+                "db_rows": [{"id": 77, "qty": 1, "price": 217500.0, "amount": 217500.0, "pnl": None}],
+            }],
+        }
+        plan = kr.build_reconcile_plan(reconcile_result, date(2026, 9, 28), date(2026, 10, 18))
+        self.assertEqual(len(plan["updates"]), 1)
+        upd = plan["updates"][0]
+        expected_amount = 1 * 217500.0 + 2 * 205000.0
+        self.assertEqual(upd["new_amount"], round(expected_amount, 2))
+        self.assertEqual(upd["old_price"], 217500.0)
+        self.assertEqual(upd["new_price"], round(expected_amount / 3, 2))
+        # 핵심 불변식 — 보정 후에도 price*quantity ≈ amount여야 한다(단가를 2자리에서
+        # 반올림하는 데서 오는 오차는 몇 원 이내로 무시 가능한 수준이어야 한다).
+        self.assertAlmostEqual(
+            upd["new_price"] * upd["new_quantity"], upd["new_amount"], delta=0.1)
+
     def test_qty_mismatch_with_multiple_db_rows_needs_manual_review(self):
         """DB 행이 2개 이상이면 자동 UPDATE하지 않고 manual_review로만 보고한다."""
         reconcile_result = {
@@ -587,6 +617,19 @@ class TestBuildFixPlan(unittest.TestCase):
         result = kr.build_fix_plan([], {317: 5}, candidates, self.window_start, self.window_end)
         self.assertEqual(result["updates"][0]["new_pnl"], 250.0)
 
+    def test_fix_update_keeps_price_unchanged_and_consistent_with_amount(self):
+        """fix_update(수동 수량 보정)는 단가를 바꾸지 않고 그 단가로 금액만 재계산한다
+        ([AT] fix/reconcile-price-consistency 회귀 — update_trade가 이제 항상 new_price를
+        받으므로 build_fix_plan도 일관되게 채워야 한다)."""
+        candidates = dict(self.candidates)
+        candidates[317] = _candidate_row(317, "007810", "BUY", 10, price=1500.0, amount=15000.0)
+        result = kr.build_fix_plan([], {317: 5}, candidates, self.window_start, self.window_end)
+        upd = result["updates"][0]
+        self.assertEqual(upd["old_price"], 1500.0)
+        self.assertEqual(upd["new_price"], 1500.0)
+        self.assertEqual(upd["new_amount"], 7500.0)
+        self.assertAlmostEqual(upd["new_price"] * upd["new_quantity"], upd["new_amount"], places=2)
+
 class TestBuildFixPreview(unittest.TestCase):
     def test_delete_and_update_combination_matches_kis_after_fix(self):
         """007810 사례: fix_delete=326,330 & fix_update=317:8 적용 후 DB 합계가 KIS
@@ -733,6 +776,17 @@ class TestApplyReconcilePlan(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(db.updates), 1)
         self.assertEqual(len(db.audits), 2)
         self.assertEqual({a["action"] for a in db.audits}, {"INSERT", "UPDATE"})
+
+    async def test_update_audit_row_carries_old_price(self):
+        """[AT] fix/reconcile-price-consistency 회귀: UPDATE 감사 행에 old_price가
+        담겨야 복원 시 보정 전 단가를 알 수 있다."""
+        plan = _sample_plan()
+        plan["updates"][0]["old_price"] = 217500.0
+        plan["updates"][0]["new_price"] = 209166.67
+        db = _FakeReconcileDB()
+        await kr.apply_reconcile_plan(plan, db)
+        update_audit = next(a for a in db.audits if a["action"] == "UPDATE")
+        self.assertEqual(update_audit["old_price"], 217500.0)
 
     async def test_applying_same_plan_twice_skips_duplicate_insert(self):
         """같은 보정 계획을 두 번 적용해도 중복 INSERT가 생기지 않아야 한다."""

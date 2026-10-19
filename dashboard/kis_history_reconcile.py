@@ -336,10 +336,17 @@ def build_reconcile_plan(reconcile_result: dict, window_start: date, window_end:
             sum((ex.get("avg_price", 0) or 0) * ex["qty"] for ex in item.get("kis_executions") or []), 2)
         old_pnl = row.get("pnl")
         new_pnl = round(old_pnl * (new_qty / old_qty), 2) if (old_pnl is not None and old_qty) else old_pnl
+        old_price = row.get("price")
+        # amount는 KIS 체결 가중평균(여러 체결가가 섞여 있을 수 있음)으로 다시 계산하면서
+        # price(단가) 컬럼은 갱신하지 않아 price*quantity != amount가 되는 불일치가 있었다
+        # ([AT] fix/reconcile-price-consistency) — amount/new_qty로 가중평균 단가를 역산해
+        # 같이 갱신한다.
+        new_price = round(new_amount / new_qty, 2) if new_qty else old_price
         updates.append({
             "trade_history_id": row["id"], "symbol": item["symbol"], "side": item["side"],
             "date": item["date"], "old_quantity": old_qty, "new_quantity": new_qty,
             "old_amount": old_amount, "new_amount": new_amount,
+            "old_price": old_price, "new_price": new_price,
             "old_pnl": old_pnl, "new_pnl": new_pnl,
         })
 
@@ -416,8 +423,13 @@ def build_plan_summary_text(plan: dict, plan_hash: str) -> str:
         lines.append(f"  ➕ {ins['symbol']} {ins['side']} {ins['quantity']}주 @{ins['price']:.0f}원 "
                      f"({ins['date']} {ins['time_kst']})")
     for upd in updates[:10]:
-        lines.append(f"  ✏️ {upd['symbol']} {upd['side']} 수량 {upd['old_quantity']}→{upd['new_quantity']} "
-                     f"({upd['date']})")
+        old_price, new_price = upd.get("old_price"), upd.get("new_price")
+        price_part = (
+            f" 단가 {old_price:,.0f}→{new_price:,.0f}원"
+            if old_price is not None and new_price is not None and old_price != new_price else ""
+        )
+        lines.append(f"  ✏️ {upd['symbol']} {upd['side']} 수량 {upd['old_quantity']}→{upd['new_quantity']}"
+                     f"{price_part} ({upd['date']})")
     for mr in manual[:10]:
         lines.append(f"  🙋 {mr['symbol']} {mr['side']} ({mr['date']}) — {mr['reason']}")
         kis_executions = mr.get("kis_executions") or []
@@ -571,6 +583,11 @@ def build_fix_plan(delete_ids: List[int], update_map: Dict[int, float],
             "trade_history_id": i, "symbol": row["symbol"], "side": row["side"],
             "date": row["date"], "old_quantity": old_qty, "new_quantity": new_qty,
             "old_amount": old_amount, "new_amount": new_amount,
+            # fix_update는 수량만 운영자가 직접 지정하는 수동 보정이라 단가(price)는
+            # 그대로 둔 채 금액만 그 단가로 재계산한다 — price*quantity=amount 일관성 유지
+            # ([AT] fix/reconcile-price-consistency, update_trade()가 항상 new_price를
+            # 받도록 통일).
+            "old_price": row.get("price"), "new_price": row.get("price"),
             "old_pnl": old_pnl, "new_pnl": new_pnl,
         })
 
@@ -662,7 +679,8 @@ async def apply_reconcile_plan(plan: dict, db) -> dict:
                 side=upd["side"], trade_date=_yyyymmdd_to_date(upd["date"]),
                 old_quantity=upd["old_quantity"], new_quantity=upd["new_quantity"],
                 old_amount=upd["old_amount"], new_amount=upd["new_amount"],
-                old_pnl=upd["old_pnl"], new_pnl=upd["new_pnl"], note="KIS 체결 보정 UPDATE",
+                old_pnl=upd["old_pnl"], new_pnl=upd["new_pnl"], old_price=upd.get("old_price"),
+                note="KIS 체결 보정 UPDATE",
             )
             updated += 1
         for upd in plan.get("fix_updates") or []:
@@ -672,7 +690,7 @@ async def apply_reconcile_plan(plan: dict, db) -> dict:
                 side=upd["side"], trade_date=_yyyymmdd_to_date(upd["date"]),
                 old_quantity=upd["old_quantity"], new_quantity=upd["new_quantity"],
                 old_amount=upd["old_amount"], new_amount=upd["new_amount"],
-                old_pnl=upd["old_pnl"], new_pnl=upd["new_pnl"],
+                old_pnl=upd["old_pnl"], new_pnl=upd["new_pnl"], old_price=upd.get("old_price"),
                 note="지정 보정 UPDATE(fix_update)",
             )
             updated += 1

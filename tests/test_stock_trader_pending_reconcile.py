@@ -104,6 +104,7 @@ class _BaseTest(unittest.IsolatedAsyncioTestCase):
             patch.object(main.db, "insert_trade", AsyncMock()),
             patch("common.telegram.send_stock", AsyncMock()),
             patch("common.alert_throttle.should_send_symbol_alert", AsyncMock(return_value=True)),
+            patch.object(main, "register_partial_fill", AsyncMock()),
         ]
         for p in self._patches:
             p.start()
@@ -224,6 +225,54 @@ class TestReconcilePendingOrders(_BaseTest):
 
         self.assertNotIn("order_pending:0009000001", self.fake_redis.store)
         self.assertNotIn("order_pending_lock:005930:sell", self.fake_redis.store)
+        # 주문 수량(10) 전량이 확인됐으므로 추가 추적 등록은 필요 없다.
+        main.register_partial_fill.assert_not_awaited()
+
+    async def test_partial_delayed_sell_fill_registers_late_fill_tracking(self):
+        """[AT] fix/pending-reconcile-partial-finalize 회귀 재현: 10/16 002030 SELL —
+        주문 3주 중 2주만 확인된 상태로 pending 재확인이 "체결 있음"으로 바로 확정·정리해
+        버리면 나머지 1주를 영영 잡을 수 없었다. 이제는 register_partial_fill로 나머지를
+        등록해 뒤늦은 추가 체결을 late_fill_tracker가 잡도록 해야 한다."""
+        bot = main.StockTrader()
+        bot.trader = MagicMock()
+        bot.trader._get_filled_qty = AsyncMock(return_value=(2, 205500.0))
+
+        ctx = {
+            "symbol": "002030", "side": "sell", "qty": 3, "price": 210000,
+            "strategy": "MA크로스_손절", "avg_price": 216500.0,
+            "accepted_at": _time.time() - 60,
+        }
+        self.fake_redis.store["order_pending:0009009999"] = json.dumps(ctx)
+        self.fake_redis.store["order_pending_lock:002030:sell"] = "0009009999"
+
+        with patch("common.telegram.send_stock", new_callable=AsyncMock) as mock_send:
+            await bot._reconcile_one_pending_order("order_pending:0009009999")
+
+        main.db.insert_trade.assert_awaited_once()
+        _, insert_kwargs = main.db.insert_trade.await_args
+        self.assertEqual(insert_kwargs["quantity"], 2)  # 지금까지 확인된 2주는 그대로 기록
+        # pnl은 실제 사고 기록(-22,000원)과 동일하게 보존돼야 한다 — register_partial_fill
+        # 등록 추가가 기존 pnl 계산 경로에 영향을 주면 안 된다.
+        self.assertEqual(insert_kwargs["pnl"], int((205500.0 - 216500.0) * 2))
+        self.assertEqual(insert_kwargs["pnl"], -22000)
+
+        main.register_partial_fill.assert_awaited_once()
+        _, kwargs = main.register_partial_fill.await_args
+        self.assertEqual(kwargs["order_no"], "0009009999")
+        self.assertEqual(kwargs["symbol"], "002030")
+        self.assertEqual(kwargs["side"], "SELL")
+        self.assertEqual(kwargs["bot"], "stock_trader")
+        self.assertEqual(kwargs["requested_qty"], 3)
+        self.assertEqual(kwargs["recorded_qty"], 2)
+        self.assertEqual(kwargs["strategy"], "MA크로스_손절_지연체결확인")
+        self.assertEqual(kwargs["price"], 205500.0)
+        self.assertEqual(kwargs["cost_basis_avg_price"], 216500.0)
+
+        mock_send.assert_awaited_once()
+        self.assertIn("잔여 1주는 추가 체결 발생 시 자동으로 추적", mock_send.await_args.args[0])
+        # pending/lock 키는 정상적으로 정리된다(late_fill_tracker가 별도 키로 추적을 이어받음).
+        self.assertNotIn("order_pending:0009009999", self.fake_redis.store)
+        self.assertNotIn("order_pending_lock:002030:sell", self.fake_redis.store)
 
     async def test_confirms_delayed_buy_fill_records_avg_fill_price(self):
         """[AT] record-fill-price: 지연 매수 체결 확인도 체결평균가(avg_fill_price)를
@@ -251,6 +300,39 @@ class TestReconcilePendingOrders(_BaseTest):
         bot.trader._get_filled_qty.assert_awaited_once_with(
             "0009000004", "005930", side="02", with_price=True)
         mock_send.assert_awaited_once()
+        main.register_partial_fill.assert_not_awaited()
+
+    async def test_partial_delayed_buy_fill_registers_late_fill_tracking_without_cost_basis(self):
+        """BUY도 SELL과 동일하게 부분 확인 시 register_partial_fill을 등록해야 한다.
+        단, BUY는 매도 손익 계산 기준(cost_basis_avg_price)이 필요 없으므로 None으로
+        넘긴다."""
+        bot = main.StockTrader()
+        bot.trader = MagicMock()
+        bot.trader._get_filled_qty = AsyncMock(return_value=(1, 217500.0))
+
+        ctx = {
+            "symbol": "002030", "side": "buy", "qty": 3, "price": 210000,
+            "strategy": "MA크로스_매수", "avg_price": None,
+            "accepted_at": _time.time() - 60,
+        }
+        self.fake_redis.store["order_pending:0009008888"] = json.dumps(ctx)
+        self.fake_redis.store["order_pending_lock:002030:buy"] = "0009008888"
+
+        with patch("common.telegram.send_stock", new_callable=AsyncMock) as mock_send:
+            await bot._reconcile_one_pending_order("order_pending:0009008888")
+
+        main.db.insert_trade.assert_awaited_once()
+        _, insert_kwargs = main.db.insert_trade.await_args
+        self.assertEqual(insert_kwargs["side"], "BUY")
+        self.assertEqual(insert_kwargs["quantity"], 1)
+
+        main.register_partial_fill.assert_awaited_once()
+        _, kwargs = main.register_partial_fill.await_args
+        self.assertEqual(kwargs["side"], "BUY")
+        self.assertEqual(kwargs["requested_qty"], 3)
+        self.assertEqual(kwargs["recorded_qty"], 1)
+        self.assertIsNone(kwargs["cost_basis_avg_price"])
+        self.assertIn("잔여 2주는 추가 체결 발생 시 자동으로 추적", mock_send.await_args.args[0])
 
     async def test_still_unfilled_before_timeout_does_nothing(self):
         """10분 타임아웃 전이면 아직 불명 알림을 보내지 않고 pending을 그대로 유지한다."""

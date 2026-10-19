@@ -195,6 +195,82 @@ class TestPollUncertainOrders(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inserted[5], 10.0)
         self.assertEqual(inserted[8], (60000 - 70000.0) * 10)  # pnl
 
+    async def test_partial_increase_at_first_checkpoint_keeps_tracking_without_finalizing(self):
+        """[AT] fix/uncertain-order-partial-finalize 회귀: 보유 증가분(1주)이 주문
+        수량(3주)보다 적으면 첫 체크포인트에서 바로 확정하지 말고 다음 체크포인트로
+        넘어가야 한다(10/16 002030 BUY가 1주 증가 시점에 즉시 확정·키 삭제돼 나머지
+        2주가 영영 기록되지 않은 사고 재현 방지)."""
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(
+                _ctx(checkpoint_idx=0, elapsed=31, pre_qty=0.0, qty=3)),
+        })
+        pool = FakePool()
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005880", "qty": 1, "avg_price": 2135}]}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
+
+        self.assertEqual(len(pool._conn.inserted), 0)
+        self.assertEqual(sent, [])
+        ctx = json.loads(redis.store["uncertain_order_pending:O1"])
+        self.assertEqual(ctx["checkpoint_idx"], 1)  # 확정하지 않고 다음 체크포인트로 이동
+
+    async def test_additional_fill_at_next_checkpoint_finalizes_with_full_quantity(self):
+        """부분 반영(1주) 후 다음 체크포인트에서 주문 수량(3주)을 채우면 그제서야
+        전체 증가분(3주)으로 확정해 기록한다(추가 체결분이 정상 반영됨)."""
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(
+                _ctx(checkpoint_idx=1, elapsed=91, pre_qty=0.0, qty=3)),
+            "order_uncertain:005880:buy": "1",
+        })
+        pool = FakePool()
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005880", "qty": 3, "avg_price": 2135}]}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
+
+        self.assertEqual(len(pool._conn.inserted), 1)
+        inserted = pool._conn.inserted[0]
+        self.assertEqual(inserted[5], 3.0)  # quantity — 1주가 아니라 누적 전체(3주)로 기록
+        self.assertIn("체결 확인(지연)", sent[0])
+        self.assertNotIn("uncertain_order_pending:O1", redis.store)
+
+    async def test_last_checkpoint_still_partial_records_best_effort_and_warns_shortfall(self):
+        """마지막 체크포인트까지도 주문 수량(3주)에 못 미치면(1주만 확인) 유실하지 않고
+        지금까지 확인된 증가분(1주)만이라도 기록하며, 알림에 부족분(2주)을 명시한다."""
+        last_idx = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC) - 1
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(
+                _ctx(checkpoint_idx=last_idx, elapsed=181, pre_qty=0.0, qty=3)),
+        })
+        pool = FakePool()
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005880", "qty": 1, "avg_price": 2135}]}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
+
+        self.assertEqual(len(pool._conn.inserted), 1)
+        inserted = pool._conn.inserted[0]
+        self.assertEqual(inserted[5], 1.0)  # 확인된 증가분만 기록(유실 방지)
+        self.assertIn("체결 확인(지연)", sent[0])
+        self.assertIn("2주는 수동 확인 필요", sent[0])
+        self.assertNotIn("uncertain_order_pending:O1", redis.store)
+
     async def test_exhausts_all_checkpoints_sends_manual_check_alert_once(self):
         """마지막 체크포인트(+180초)까지도 변화 없으면 "미확인 — 수동 확인 필요"를
         1회만 보내고 추적을 종료한다(키 삭제)."""

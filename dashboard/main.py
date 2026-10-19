@@ -2671,9 +2671,13 @@ class _ReconcileDbAdapter:
         return row["id"]
 
     async def update_trade(self, upd: dict) -> None:
+        # amount는 KIS 체결 가중평균으로 다시 계산되는데 price(단가)는 그대로 둬 price*quantity
+        # != amount가 되는 불일치가 있었다([AT] fix/reconcile-price-consistency) — price도
+        # 함께 갱신한다(build_reconcile_plan/build_fix_plan 둘 다 new_price를 채워서 넘긴다).
         await self._conn.execute("""
-            UPDATE trade_history SET quantity=$1, amount=$2, pnl=$3 WHERE id=$4
-        """, upd["new_quantity"], upd["new_amount"], upd["new_pnl"], upd["trade_history_id"])
+            UPDATE trade_history SET quantity=$1, amount=$2, pnl=$3, price=$4 WHERE id=$5
+        """, upd["new_quantity"], upd["new_amount"], upd["new_pnl"], upd["new_price"],
+            upd["trade_history_id"])
 
     async def delete_trade(self, trade_history_id: int) -> None:
         """지정 보정(fix_delete)의 DELETE 실행([AT] feat/reconcile-manual) — 복원에

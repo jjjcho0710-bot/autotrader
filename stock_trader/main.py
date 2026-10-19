@@ -840,13 +840,28 @@ class StockTrader:
             pnl = None
             if side == "sell" and avg_price is not None:
                 pnl = int((fill_price - avg_price) * filled_qty)
+            fill_strategy = f"{strategy}_지연체결확인" if strategy else "지연체결확인"
             await db.insert_trade(
                 bot="stock_trader", asset_type="stock", symbol=symbol,
                 side="BUY" if side == "buy" else "SELL",
                 price=int(fill_price), quantity=filled_qty, amount=fill_price * filled_qty,
-                strategy=f"{strategy}_지연체결확인" if strategy else "지연체결확인",
+                strategy=fill_strategy,
                 pnl=pnl,
             )
+            shortfall = qty - filled_qty
+            if shortfall > 0:
+                # 이 재확인 자체가 주문 수량만큼 찼는지 비교하지 않고 "조회된 체결수량이
+                # 하나라도 있으면" 바로 확정·pending 해제를 했다 — 그 뒤로 더 들어오는
+                # 체결분을 잡을 방법이 전혀 없었다(10/16 002030 SELL KIS=3/DB=2 사고
+                # 원인, common/uncertain_order_tracker.py와 같은 유형의 버그였다).
+                # 공용 late_fill_tracker에 나머지를 등록해 뒤늦은 추가 체결을 잡는다
+                # ([AT] fix/pending-reconcile-partial-finalize).
+                await register_partial_fill(
+                    cache.client, order_no=order_no, symbol=symbol,
+                    side="BUY" if side == "buy" else "SELL", bot="stock_trader",
+                    requested_qty=qty, recorded_qty=filled_qty, strategy=fill_strategy,
+                    price=fill_price, cost_basis_avg_price=avg_price if side == "sell" else None,
+                )
             if side == "buy":
                 # 매수 체결 확정 종목을 watchlist에 활성화([AT] fix/holdings-daily-collect)
                 # — 실패해도 매수 기록·주문 흐름은 막지 않는다(경고 로그만).
@@ -864,6 +879,8 @@ class StockTrader:
                     f"✅ <b>지연 체결 확인 [{symbol}]</b>\n"
                     f"{'매수' if side == 'buy' else '매도'} {filled_qty}주 @ {int(fill_price):,}원 "
                     f"(주문 {qty}주, 접수 후 {elapsed_sec}초 뒤 확인)"
+                    + (f"\n⚠️ 잔여 {shortfall}주는 추가 체결 발생 시 자동으로 추적·기록합니다."
+                       if shortfall > 0 else "")
                 )
             except Exception:
                 pass

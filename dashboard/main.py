@@ -1479,6 +1479,29 @@ def _strip_internal_ids(text: str) -> str:
     return text
 
 
+async def _get_active_stop_loss_display() -> str:
+    """알림·AI 프롬프트 문구용 손절선 표시값("-5%" 형태). strategy_config(bot='stock_trader')
+    활성 전략의 stop_loss를 그대로 쓰고, 조회 실패/활성 전략 없음이면 참고용 폴백
+    (position_sizing.DEFAULT_STOP_LOSS_PCT)을 쓴다([AT] fix/stoploss-text-from-config)."""
+    from common import position_sizing
+    stop_loss = -position_sizing.DEFAULT_STOP_LOSS_PCT
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT params FROM strategy_config
+                WHERE bot='stock_trader' AND is_active=TRUE LIMIT 1
+            """)
+            if row and row.get("params"):
+                params = row["params"]
+                if isinstance(params, str):
+                    params = json.loads(params)
+                if isinstance(params, dict) and "stop_loss" in params:
+                    stop_loss = float(params["stop_loss"])
+    except Exception as e:
+        logger.warning(f"손절선 표시값 조회 실패(폴백 사용): {e}")
+    return f"{stop_loss:+.0f}%"
+
+
 async def _jarvis_daily_plan_current_state() -> str:
     """'오늘의 작전' 프롬프트에 주입할 [현재 상태] 블록 — 보유 종목수/한도/현금/종목당 매수 상한.
     조회에 실패한 항목은 '확인 불가'로 표시한다(지어내지 않음). 10/2 실측 문제(보유 10종목이
@@ -4733,11 +4756,12 @@ async def get_portfolio_context(trades_since: Optional[datetime] = None) -> str:
                 ctx_parts.append(f"(⚠️ 실시간 잔고 조회 지연 — {stock_pos.get('error', '이전 스냅샷 표시 중')})")
             if positions:
                 ctx_parts.append(f"보유종목 {len(positions)}개:")
+                _stop_loss_display = await _get_active_stop_loss_display()
                 for p in positions:
                     rate = p['pnl_rate']
                     status = ""
                     if rate <= -7:
-                        status = " ⚠️손절선(-7%) 도달·초과 — 시스템이 승인 없이 자동 매도 처리 중(다음 사이클 내 체결)"
+                        status = f" ⚠️손절선({_stop_loss_display}) 도달·초과 — 시스템이 승인 없이 자동 매도 처리 중(다음 사이클 내 체결)"
                     elif rate <= -5:
                         status = " (손절선 근접)"
                     elif 1 <= rate < 5:
@@ -5511,12 +5535,13 @@ async def _jarvis_chat_impl(body: dict):
             has_snapshot=bool(_resolved), baseline=_baseline, past_asked=_past_asked,
             news_asked=_snap.asks_news(user_msg))
 
+        _stop_loss_display = await _get_active_stop_loss_display()
         full_msg = (f"{user_msg}\n\n---\n현재 데이터:\n{portfolio_ctx}{stock_ctx}\n{memory_block}\n"
                     "[시스템 주의] 너는 이 대화에서 직접 주문을 실행할 수 없다. "
                     "매매는 사용자가 '종목명(또는 코드) N주 매수/매도' 형식으로 지시하면 시스템이 직접 체결하고 결과를 표시한다. "
                     "네가 '매수 완료/체결'이라고 단정하지 마라. 감시 추가·설정 변경 등 실제로 수행하지 않은 행동을 "
                     "'했다'고 말하지 마라 — 할 수 있으면 [[ACTION]]으로 요청하고, 없으면 '못 한다'고 말하라. "
-                    "손절선(-7%) 도달 시 시스템이 승인 없이 즉시 자동 매도하며, 익절은 구간별로 자동 처리된다 "
+                    f"손절선({_stop_loss_display}) 도달 시 시스템이 승인 없이 즉시 자동 매도하며, 익절은 구간별로 자동 처리된다 "
                     "(+1~5%는 진입 신호 유지 여부로 보유/전량매도, +5% 이상은 차트·거래량·추세를 분석해 "
                     "HOLD/HALF/ALL 중 자동 판단·실행) — 위 [주식 계좌] 상태를 근거로 정확히 답하라.\n"
                     "[사실 기반 답변 필수] 오늘 매수/매도한 종목을 묻는 질문에는 반드시 위에 제공된 [주식 계좌]·"

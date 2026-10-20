@@ -76,7 +76,8 @@ class StockTrader:
     # ── 리스크 기반 포지션 사이징 (PM 승인, 2026-09-30) ──────────────
     # ML 정확도(42~64%)가 확신도 기반 사이징의 근거가 되기엔 약해 "종목당 최대 손실 고정"
     # 방식으로 재설계: 기본 매수금액 = 자산 × RISK_PER_TRADE_PCT ÷ |손절률|.
-    # 손절률은 strategy_config.stop_loss 를 쓰고, 값이 없을 때만 이 참고값(현재 운영값 -7%)을 쓴다.
+    # 손절률은 strategy_config.stop_loss 를 쓰고, 값이 없을 때만 이 참고용 폴백값(-7%, 실제
+    # 활성 전략의 stop_loss와 다를 수 있음)을 쓴다.
     # 실제 계산 로직은 common/position_sizing.py로 이관(order_handler.py와 공용, 중복 구현 금지).
     DEFAULT_STOP_LOSS_PCT = position_sizing.DEFAULT_STOP_LOSS_PCT
     VOLATILITY_BANDS = position_sizing.VOLATILITY_BANDS
@@ -123,6 +124,17 @@ class StockTrader:
 
     def get_all_active_strategies(self):
         return [(name, s["params"]) for name, s in self.strategies.items() if s["is_active"]]
+
+    def _active_stop_loss_display(self) -> str:
+        """알림·AI 프롬프트 문구용 손절선 표시값("-5%" 형태). strategy_config 활성 전략의
+        stop_loss를 그대로 쓰고, 활성 전략이 없을 때만 참고용 폴백(DEFAULT_STOP_LOSS_PCT)을
+        쓴다(_six_hour_report가 쓰는 폴백과 동일한 규칙 — [AT] fix/stoploss-text-from-config)."""
+        stop_loss = -self.DEFAULT_STOP_LOSS_PCT
+        active = self.get_all_active_strategies()
+        if active:
+            _, first_params = active[0]
+            stop_loss = float(first_params.get("stop_loss", stop_loss))
+        return f"{stop_loss:+.0f}%"
 
     async def _warn_if_position_sizing_exceeds_equity(self):
         """리스크 기반 사이징(PM 승인, 2026-09-30) 정합성 점검: max_positions × 기본매수금액이
@@ -604,7 +616,7 @@ class StockTrader:
                                     else:
                                         new_state = "STOP_LOSS"
                                         msg = (
-                                            f"⚠️ <b>{nm}({symbol}) 손절선(-7%) 도달 {pnl_rate:+.1f}%</b>\n"
+                                            f"⚠️ <b>{nm}({symbol}) 손절선({self._active_stop_loss_display()}) 도달 {pnl_rate:+.1f}%</b>\n"
                                             f"손절선 이탈 감지 — 다음 매매 사이클(최대 60초 이내)에서 손절 매도를 판정합니다."
                                         )
                                     from common.alert_throttle import should_send_symbol_alert
@@ -637,7 +649,7 @@ class StockTrader:
                                             extra = f"\n(직전 알림 대비 {prev_pnl - pnl_rate:.1f}%p 추가 하락)"
                                         msg = (
                                             f"⚡ <b>{nm}({symbol}) 급락 {pnl_rate:+.1f}%</b>\n"
-                                            f"-7% 도달 시 즉시 자동 손절 집행 예정(현재 손절선 근접 감시 중)\n"
+                                            f"{self._active_stop_loss_display()} 도달 시 즉시 자동 손절 집행 예정(현재 손절선 근접 감시 중)\n"
                                             f"즉시 매도를 원하시면 '{nm} 전량 매도' 지시해주세요."
                                             f"{extra}"
                                         )
@@ -1058,7 +1070,7 @@ class StockTrader:
             pnl = (cur_price - avg_price) * qty
             pnl_rate = (cur_price - avg_price) / avg_price * 100
 
-            # 손절 -7% 도달 → 즉시 자동 매도 (주인 지시: 알아서 처리)
+            # 손절선(strategy_config.stop_loss) 도달 → 즉시 자동 매도 (주인 지시: 알아서 처리)
             if default_strategy.check_stop_loss(avg_price, cur_price):
                 nm = pos.get("name", symbol)
                 suppress_key = f"sell_fail_suppress:{symbol}"

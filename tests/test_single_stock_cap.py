@@ -174,19 +174,22 @@ class TestExecuteSingleStockCap(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         execution_guard.reset_buy_lock()
 
-    async def test_blocks_automatic_buy_over_cap(self):
+    async def test_reduces_automatic_buy_over_cap(self):
+        """[fix/sizing-exceeds-single-stock-cap] 상한 초과 시 차단하지 않고 수량을 줄여 주문한다.
+        7만원 x 30주 = 21% -> 총자산 1천만원의 20% = 200만원 -> 28주."""
         pool = EgFakePool()
         redis = EgFakeRedis()
-        journaled = []
+        ordered = []
 
         async def kis_order(symbol, price, qty, is_buy):
-            raise AssertionError("종목당 비중 상한이 차단해야 하는데 주문이 실행됐다")
+            ordered.append(qty)
+            return {"success": True}
 
         async def send_telegram(text):
             pass
 
         async def log_journal(*args, **kwargs):
-            journaled.append(args)
+            pass
 
         async def code_to_name(symbol):
             return "삼성전자"
@@ -196,20 +199,15 @@ class TestExecuteSingleStockCap(unittest.IsolatedAsyncioTestCase):
             kis_order_fn=kis_order, send_telegram_fn=send_telegram,
             log_journal_fn=log_journal, save_trade_memory_fn=None,
             code_to_name_fn=code_to_name,
-            get_positions_fn=_positions_fn(10_000_000),  # 210만원 = 21% > 20%
+            get_positions_fn=_positions_fn(10_000_000),
         )
-        self.assertFalse(result["executed"])
-        self.assertTrue(result["skipped"])
-        self.assertEqual(result["blocked"], "single_stock_cap")
-        self.assertIn("single_stock_cap", result["reason"])
-
-        self.assertEqual(len(journaled), 1)
-        jarvis_decision, jarvis_reason = journaled[0][6], journaled[0][7]
-        self.assertEqual(jarvis_decision, "SKIP")
-        self.assertIn("single_stock_cap", jarvis_reason)
-
-        # stark_decisions(decision_logger.log_decision)에도 SKIP으로 기록됐는지
+        self.assertTrue(result["executed"])
+        self.assertEqual(ordered, [28])
+        # 줄였다는 사실이 stark_decisions에 SIZE_REDUCED로 남는다(원래/줄인 수량 포함)
         self.assertEqual(len(pool._conn.decisions), 1)
+        logged = pool._conn.decisions[0]
+        self.assertIn("SIZE_REDUCED", logged)
+        self.assertTrue(any(isinstance(a, str) and "30주 -> 28주" in a for a in logged))
 
     async def test_passes_automatic_buy_within_cap(self):
         pool = EgFakePool()
@@ -521,3 +519,98 @@ class TestHandleProposalResponseSingleStockCap(unittest.IsolatedAsyncioTestCase)
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── 4) 10/29 실제 차단 7건 재현 + 수량 축소 ([AT] fix/sizing-exceeds-single-stock-cap) ──
+# 총자산 9,182,742원(balance_snapshot 10/29), 보유 0 기준. 한도 20% = 1,836,548원.
+class TestSizingReducedToCapReal1029(unittest.IsolatedAsyncioTestCase):
+    EQUITY = 9_182_742
+
+    async def _run(self, symbol, name, price, qty, holdings=None):
+        execution_guard.reset_buy_lock()
+        # 보유 종목은 물타기 정책 통과를 위해 최초 매수 이력 1건(현재가와 동일)을 둔다.
+        pool = EgFakePool(buy_history={s: [{"price": price}] for s in (holdings or {})})
+        redis = EgFakeRedis()
+        ordered, journaled = [], []
+
+        async def kis_order(sym, p, q, is_buy):
+            ordered.append(q)
+            return {"success": True}
+
+        async def send_telegram(text):
+            pass
+
+        async def log_journal(*args, **kwargs):
+            journaled.append(args)
+
+        async def code_to_name(sym):
+            return name
+
+        result = await execution_guard.execute(
+            make_signal(symbol=symbol, name=name, price=price, qty=qty), make_decision(),
+            pool=pool, redis=redis, kis_order_fn=kis_order, send_telegram_fn=send_telegram,
+            log_journal_fn=log_journal, save_trade_memory_fn=None, code_to_name_fn=code_to_name,
+            get_positions_fn=_positions_fn(self.EQUITY, holdings=holdings),
+        )
+        return result, ordered, pool, journaled
+
+    async def test_namuga_187_shares_reduced_to_99(self):
+        # 18,400 x 187 = 3,440,800 (37.5%) -> 1,836,548 / 18,400 = 99주
+        result, ordered, pool, journaled = await self._run("190510", "나무가", 18400, 187)
+        self.assertTrue(result["executed"])
+        self.assertEqual(ordered, [99])
+        self.assertLessEqual(99 * 18400 / self.EQUITY * 100, config.SINGLE_STOCK_MAX_PCT)
+        self.assertIn("187주 -> 99주", " ".join(str(a) for a in pool._conn.decisions[0]))
+
+    async def test_sk_hynix_2_shares_reduced_to_1(self):
+        # 1,543,000 x 2 = 3,086,000 (33.6%) -> 1,836,548 / 1,543,000 = 1주
+        result, ordered, pool, journaled = await self._run("000660", "SK하이닉스", 1543000, 2)
+        self.assertTrue(result["executed"])
+        self.assertEqual(ordered, [1])
+
+    async def test_hyundai_12_shares_reduced_to_6(self):
+        # 300,500 x 12 = 3,606,000 (39.3%) -> 1,836,548 / 300,500 = 6주
+        result, ordered, pool, journaled = await self._run("005380", "현대차", 300500, 12)
+        self.assertTrue(result["executed"])
+        self.assertEqual(ordered, [6])
+
+    async def test_below_one_share_after_reduction_is_blocked(self):
+        # 1주(1,549,000)는 들어가지만 이미 1,500,000원 보유 중이면 여유 336,548원 -> 0주 -> 차단
+        result, ordered, pool, journaled = await self._run(
+            "000660", "SK하이닉스", 1549000, 2, holdings={"000660": (1, 1_500_000)})
+        self.assertFalse(result["executed"])
+        self.assertEqual(result["blocked"], "size_below_one_share")
+        self.assertEqual(ordered, [])
+        self.assertEqual(len(journaled), 1)
+        self.assertEqual(journaled[0][6], "SKIP")
+
+    async def test_existing_holding_is_counted_when_reducing(self):
+        # 나무가 보유 50주(18,400 = 920,000원) -> 여유 916,548원 -> 49주
+        result, ordered, pool, journaled = await self._run(
+            "190510", "나무가", 18400, 187, holdings={"190510": (50, 18400)})
+        self.assertTrue(result["executed"])
+        self.assertEqual(ordered, [49])
+
+    async def test_within_cap_keeps_original_qty_and_no_reduction_log(self):
+        result, ordered, pool, journaled = await self._run("190510", "나무가", 18400, 90)
+        self.assertTrue(result["executed"])
+        self.assertEqual(ordered, [90])
+        self.assertEqual(len(pool._conn.decisions), 0)
+
+    async def test_limit_value_unchanged(self):
+        self.assertEqual(config.SINGLE_STOCK_MAX_PCT, 20.0)
+
+
+class TestMaxQtyWithinCap(unittest.TestCase):
+    def test_basic(self):
+        from common.position_sizing import max_qty_within_cap
+        self.assertEqual(max_qty_within_cap(0, 18400, 9_182_742, 20), 99)
+
+    def test_no_room_returns_zero(self):
+        from common.position_sizing import max_qty_within_cap
+        self.assertEqual(max_qty_within_cap(2_000_000, 1000, 9_182_742, 20), 0)
+
+    def test_invalid_inputs_return_none(self):
+        from common.position_sizing import max_qty_within_cap
+        self.assertIsNone(max_qty_within_cap(0, 0, 100, 20))
+        self.assertIsNone(max_qty_within_cap(0, 100, 0, 20))

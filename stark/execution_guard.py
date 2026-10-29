@@ -25,7 +25,7 @@ from common.config import config
 from common.fill_recording import partial_fill_note, resolve_fill_price, resolve_filled_quantity
 from common.late_fill_tracker import register_partial_fill
 from common.market_calendar import is_trading_day
-from common.position_sizing import compute_projected_weight_pct
+from common.position_sizing import compute_projected_weight_pct, max_qty_within_cap
 
 logger = logging.getLogger("stark.execution_guard")
 
@@ -586,6 +586,53 @@ async def check_single_stock_cap(
     return None
 
 
+async def resolve_single_stock_cap_qty(
+    symbol: str, price: float, qty: float, *, get_positions_fn, max_pct: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """종목당 비중 상한 초과 시 차단 대신 수량을 상한 안으로 줄인다([AT]
+    fix/sizing-exceeds-single-stock-cap, PM 지시). 한도(SINGLE_STOCK_MAX_PCT)와 기존 보유
+    평가금액을 포함해 계산한다.
+
+    반환: 조정이 필요 없거나(상한 이내) 총자산 조회 실패/stale로 미적용이면 None
+    (check_single_stock_cap과 동일한 fail-open). 조정이 필요하면
+    {"qty": 줄인 수량, "original_qty": 원래 수량, "projected_pct": 원래 수량 기준 예상 비중,
+     "limit": 한도, "current_value": 기존 보유 평가금액, "equity": 총자산}.
+    줄인 수량이 1 미만이면 qty=0 — 호출부가 size_below_one_share로 차단해야 한다."""
+    if get_positions_fn is None:
+        return None
+    limit = max_pct if max_pct is not None else config.SINGLE_STOCK_MAX_PCT
+    try:
+        pos_res = await get_positions_fn()
+    except Exception as e:
+        logger.warning(f"종목당 비중 상한 확인 실패(미적용, 기존 동작 유지) [{symbol}]: {e}")
+        return None
+    if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
+        logger.warning(f"종목당 비중 상한: 총자산 조회 실패/stale (미적용, 기존 동작 유지) [{symbol}]")
+        return None
+    equity = float((pos_res.get("account") or {}).get("total_eval", 0) or 0)
+    pos_row = next(
+        (p for p in (pos_res.get("data") or [])
+         if isinstance(p, dict) and p.get("symbol") == symbol), None,
+    )
+    current_value = 0.0
+    if pos_row:
+        current_value = float(pos_row.get("qty", 0) or 0) * float(pos_row.get("cur_price", 0) or 0)
+    projected_pct = compute_projected_weight_pct(current_value, float(price) * float(qty), equity)
+    if projected_pct is None:
+        logger.warning(f"종목당 비중 상한: 총자산 0 이하 (미적용, 기존 동작 유지) [{symbol}]")
+        return None
+    if projected_pct <= limit:
+        return None
+    allowed = max_qty_within_cap(current_value, float(price), equity, limit)
+    if allowed is None:
+        return None
+    return {
+        "qty": min(int(allowed), int(qty)), "original_qty": qty,
+        "projected_pct": projected_pct, "limit": limit,
+        "current_value": current_value, "equity": equity,
+    }
+
+
 # 주문 응답이 불명(uncertain)일 때 재확인 대기로 같은 종목·방향 중복 주문을 막는 TTL(초)
 ORDER_UNCERTAIN_BLOCK_TTL = 180
 
@@ -1030,15 +1077,46 @@ async def execute(
                     "jarvis_reply": reply,
                 }
 
-        # (1a) 종목당 비중 상한 — 매수 후 예상 비중이 상한을 넘으면 AI 자동매수를 차단한다
-        # ([AT] feat/single-stock-cap, PM 지시). 총자산 조회 실패 시에는 차단하지 않고
-        # 경고만 남긴다(check_single_stock_cap()이 보장) — 새로 막지 말라는 PM 지시.
+        # (1a) 종목당 비중 상한 — 매수 후 예상 비중(기존 보유분 포함)이 상한을 넘으면 AI
+        # 자동매수를 차단하지 않고 수량을 상한 안으로 줄여 진행한다([AT]
+        # fix/sizing-exceeds-single-stock-cap, PM 지시). 줄인 결과가 1주 미만이면
+        # size_below_one_share로 차단한다. 한도 값은 변경하지 않는다. 총자산 조회 실패 시에는
+        # 조정하지 않고 경고만 남긴다(resolve_single_stock_cap_qty()가 보장, fail-open).
         if is_buy and bot == "stock_trader" and get_positions_fn is not None:
-            cap_blocked = await check_single_stock_cap(
+            cap_adj = await resolve_single_stock_cap_qty(
                 symbol, price, qty, get_positions_fn=get_positions_fn,
             )
-            if cap_blocked:
-                reason_text = cap_blocked["reason"]
+            if cap_adj and cap_adj["qty"] >= 1:
+                orig_qty, new_qty = cap_adj["original_qty"], cap_adj["qty"]
+                note = (
+                    f"size_reduced_to_cap: 종목당 비중 상한 {cap_adj['limit']:.1f}% 적용 "
+                    f"수량 {orig_qty}주 -> {new_qty}주 (원래 예상 비중 {cap_adj['projected_pct']:.1f}%, "
+                    f"기존 보유 {cap_adj['current_value']:,.0f}원)"
+                )
+                logger.info(f"📉 {note}: {symbol} ({name})")
+                from stark.decision_logger import log_decision
+                await log_decision(
+                    pool, symbol, "SIZE_REDUCED",
+                    name=name,
+                    confidence=decision.get("confidence", 0.0),
+                    reason=note,
+                    rationale="실행 레이어 안전장치: 종목당 비중 상한 초과분을 차단하지 않고 수량 축소",
+                    strategy=strategy,
+                    source="execution_guard",
+                    executed=False,
+                    order_success=None,
+                    price=float(price),
+                    quantity=float(new_qty),
+                )
+                qty = new_qty
+                signal["qty"] = new_qty
+                reason = f"{reason} | {note}" if reason else note
+            elif cap_adj:
+                reason_text = (
+                    f"size_below_one_share: 종목당 비중 상한 {cap_adj['limit']:.1f}% 안에서 "
+                    f"살 수 있는 수량이 1주 미만 (원래 {cap_adj['original_qty']}주, "
+                    f"예상 비중 {cap_adj['projected_pct']:.1f}%, 기존 보유 {cap_adj['current_value']:,.0f}원)"
+                )
                 logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
 
                 from stark.decision_logger import log_decision
@@ -1048,16 +1126,15 @@ async def execute(
                     confidence=decision.get("confidence", 0.0),
                     reason=reason_text,
                     rationale=(
-                        "실행 레이어 안전장치: 종목당 비중 상한(single_stock_cap) — "
-                        f"매수 후 예상 비중 {cap_blocked['projected_pct']:.1f}%가 상한을 "
-                        "초과해 매수 차단"
+                        "실행 레이어 안전장치: 사이징(size_below_one_share) — 종목당 비중 상한 "
+                        "안으로 수량을 줄이면 1주 미만이라 매수 차단"
                     ),
                     strategy=strategy,
                     source="execution_guard",
                     executed=False,
                     order_success=None,
                     price=float(price),
-                    quantity=float(qty),
+                    quantity=float(cap_adj["original_qty"]),
                 )
 
                 if log_journal_fn:
@@ -1068,7 +1145,7 @@ async def execute(
                     "success": True,
                     "executed": False,
                     "skipped": True,
-                    "blocked": "single_stock_cap",
+                    "blocked": "size_below_one_share",
                     "reason": reason_text,
                     "jarvis_reply": reply,
                 }

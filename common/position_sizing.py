@@ -79,3 +79,18 @@ def compute_projected_weight_pct(
     if equity is None or equity <= 0:
         return None
     return (max(current_value, 0.0) + max(buy_amount, 0.0)) / equity * 100
+
+
+def max_qty_within_cap(
+    current_value: float, price: float, equity: float, max_pct: float
+) -> Optional[int]:
+    """종목당 비중 상한(max_pct %) 안에서 추가로 살 수 있는 최대 수량(정수, 0 이상).
+
+    허용 금액 = 총자산 × max_pct% − 기존 보유 평가금액. 이 금액을 1주 가격으로 나눠 내림한다
+    ([AT] fix/sizing-exceeds-single-stock-cap). equity<=0 또는 price<=0이면 계산 불가로 None."""
+    if equity is None or equity <= 0 or price is None or price <= 0:
+        return None
+    room = equity * (max_pct / 100.0) - max(current_value, 0.0)
+    if room <= 0:
+        return 0
+    return int(room / price + 1e-9)

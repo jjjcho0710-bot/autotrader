@@ -15,7 +15,7 @@ build_health_report()는 DB/Redis/KIS 접근을 직접 하지 않고 호출부(d
 """
 import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from common.market_calendar import is_trading_day
@@ -37,6 +37,19 @@ CIRCUIT_BREAKER_THRESHOLD = 2
 
 # 토큰 재발급 경보 기준(한 줄 요약 ⚠️ 판정용).
 TOKEN_REISSUE_WARN_THRESHOLD = 3
+
+# d) 포지션: 조회 실패로 폴백 스냅샷을 쓴 경우, 스냅샷이 이 분 수를 넘게 오래됐을 때만 경고한다
+# ([AT] fix/health-report-accuracy — "stale + 0분 전" 자기모순 제거).
+POSITION_SNAPSHOT_WARN_MIN = 5.0
+
+# 같은 차단이 trade_journal과 stark_decisions에 각각 한 행씩 기록되므로(거의 같은 시각),
+# 두 행을 한 건으로 합치는 시간 허용치(초).
+GATE_DEDUP_WINDOW_SEC = 10.0
+
+# j) 지수: dashboard/main.py 스케줄러가 market_index_daily를 저장하는 시간창(15:41~16:30).
+# 이 창 안(또는 그 전)에 저장 기록이 없으면 "미실행"이 아니라 "수집 대기"로 표시한다.
+MARKET_INDEX_COLLECT_START = dtime(15, 41)
+MARKET_INDEX_COLLECT_END = dtime(16, 30)
 
 
 def _previous_trading_day(d: date, max_lookback: int = 10) -> Optional[date]:
@@ -99,31 +112,51 @@ async def _section_today_counts(pool: Any, today: date) -> Dict[str, Any]:
     }
 
 
+def _dedupe_gate_events(journal_ts: List[datetime], decision_ts: List[datetime],
+                        window_sec: float = GATE_DEDUP_WINDOW_SEC) -> int:
+    """trade_journal 행과 stark_decisions 행 중 같은 차단 한 건을 가리키는 쌍을 합쳐
+    실제 차단 건수를 센다. execution_guard는 차단 시 log_decision()과 매매일지를 거의 동시에
+    각각 기록하므로, 한 쪽 행마다 window_sec 안에 있는 다른 쪽 행과 1:1로 짝지어 한 건으로 본다."""
+    unmatched = sorted(decision_ts)
+    total = len(journal_ts)  # 일지 행은 모두 한 건으로 센다
+    for j in journal_ts:
+        hit = next((d for d in unmatched if abs((d - j).total_seconds()) <= window_sec), None)
+        if hit is not None:
+            unmatched.remove(hit)
+    return total + len(unmatched)  # 짝이 없는 판단 행만 추가
+
+
 async def _section_gate_blocks(pool: Any, today: date) -> Dict[str, Any]:
-    """c) 오늘 차단 기록 건수 — trade_journal(jarvis_reason/signal_reason) +
-    stark_decisions(reason/rationale)에서 게이트 이름을 포함하는 행 수를 합친다."""
+    """c) 오늘 차단 기록 건수 — trade_journal(jarvis_reason/signal_reason)과
+    stark_decisions(reason/rationale)에서 게이트 이름을 포함하는 행을 모은 뒤, 같은 차단이 두
+    테이블에 중복 기록된 것은 한 건으로 합친다([AT] fix/health-report-accuracy — 과거에는 두
+    테이블 건수를 단순 합산해 실제의 2배로 표시됐다: 10/29 single_stock_cap 7건 -> 14건)."""
     counts: Dict[str, int] = {}
     async with pool.acquire() as conn:
         for gate in GATE_REASONS:
             pattern = f"%{gate}%"
-            journal_n = await conn.fetchval("""
-                SELECT COUNT(*) FROM trade_journal
+            journal_rows = await conn.fetch("""
+                SELECT ts AS at FROM trade_journal
                 WHERE DATE(ts AT TIME ZONE 'Asia/Seoul') = $1
                   AND (jarvis_reason ILIKE $2 OR signal_reason ILIKE $2)
             """, today, pattern)
-            decisions_n = await conn.fetchval("""
-                SELECT COUNT(*) FROM stark_decisions
+            decision_rows = await conn.fetch("""
+                SELECT decided_at AS at FROM stark_decisions
                 WHERE DATE(decided_at AT TIME ZONE 'Asia/Seoul') = $1
                   AND (reason ILIKE $2 OR rationale ILIKE $2)
             """, today, pattern)
-            counts[gate] = int(journal_n or 0) + int(decisions_n or 0)
+            counts[gate] = _dedupe_gate_events(
+                [r["at"] for r in journal_rows], [r["at"] for r in decision_rows])
     return {"by_gate": counts, "total": sum(counts.values())}
 
 
 async def _section_positions(redis: Any, get_positions_fn: Callable[[], Awaitable[dict]],
                               now_kst: datetime) -> Dict[str, Any]:
-    """d) 포지션 조회 상태 — 현재 조회가 stale인지, 마지막 성공 스냅샷(positions:last_ok)이
-    얼마나 오래됐는지(분)."""
+    """d) 포지션 조회 상태.
+    - stale: 이번 조회가 실패해 폴백 스냅샷(positions:last_ok)을 받았다는 뜻("조회 실패").
+    - snapshot_age_min: 마지막 성공 스냅샷이 몇 분 전인지.
+    - warn: 조회 실패(폴백)이면서 스냅샷이 POSITION_SNAPSHOT_WARN_MIN분을 넘게 오래됐거나 시각을
+      알 수 없을 때만 True. 방금(0분 전) 성공한 스냅샷으로 폴백한 일시 실패는 경고하지 않는다."""
     pos_result = await get_positions_fn()
     stale = bool(isinstance(pos_result, dict) and pos_result.get("stale"))
 
@@ -135,7 +168,8 @@ async def _section_positions(redis: Any, get_positions_fn: Callable[[], Awaitabl
         if snap_at:
             snap_dt = datetime.fromisoformat(snap_at)
             snapshot_age_min = round((now_kst - snap_dt).total_seconds() / 60, 1)
-    return {"stale": stale, "snapshot_age_min": snapshot_age_min}
+    warn = stale and (snapshot_age_min is None or snapshot_age_min > POSITION_SNAPSHOT_WARN_MIN)
+    return {"stale": stale, "snapshot_age_min": snapshot_age_min, "warn": warn}
 
 
 async def _section_scan_timing(redis: Any, today: date) -> Dict[str, Any]:
@@ -257,13 +291,23 @@ def _fmt_index_rate(label: str, rate: Optional[float], fail_reason: Optional[str
     return f"{label} 데이터 없음{suffix}"
 
 
-def _market_index_fail_reason(collect_log: Optional[dict], label: str) -> Optional[str]:
+def _market_index_pending(now_kst: Optional[datetime]) -> bool:
+    """지수 수집이 아직 끝났을 수 없는 시각인가 — 마감 후 저장 시간창(15:41~16:30) 이전/안이면
+    True. now_kst를 모르면 False(기존 "미실행" 동작 유지)."""
+    if now_kst is None:
+        return False
+    return now_kst.time() <= MARKET_INDEX_COLLECT_END
+
+
+def _market_index_fail_reason(collect_log: Optional[dict], label: str,
+                              pending: bool = False) -> Optional[str]:
     """health:index_collect:YYYY-MM-DD(dashboard/main.py._collect_market_index_daily가
     저장, [AT] fix/market-index-collect)에서 지수(label="KOSPI"/"KOSDAQ")별 실패 사유를
     짧은 문자열로 뽑아낸다. 키 자체가 없으면("미실행") 스케줄러가 아직 돌지 않았다는
     뜻이고, 있지만 ok=False면 조회/저장이 실패했다는 뜻이다."""
     if collect_log is None:
-        return "미실행"
+        # 저장 시간창 안/이전이면 아직 안 돈 게 아니라 수집 대기 중일 수 있어 단정하지 않는다.
+        return "수집 대기" if pending else "미실행"
     entry = collect_log.get(label)
     if not entry or entry.get("ok"):
         return None
@@ -275,7 +319,8 @@ def _market_index_fail_reason(collect_log: Optional[dict], label: str) -> Option
     return err.get("reason", "원인 미상")
 
 
-async def _section_market_index(pool: Any, redis: Any, today: date) -> Dict[str, Any]:
+async def _section_market_index(pool: Any, redis: Any, today: date,
+                                 now_kst: Optional[datetime] = None) -> Dict[str, Any]:
     """j) 당일 코스피/코스닥 등락률 — market_index_daily(장마감 후 1회 저장, [AT]
     feat/entry-risk-shadow)를 읽기만 한다. 아직 저장 전이거나 실패했으면 해당 지수는
     None(표시는 "데이터 없음")이고, health:index_collect:YYYY-MM-DD([AT]
@@ -298,13 +343,14 @@ async def _section_market_index(pool: Any, redis: Any, today: date) -> Dict[str,
     except Exception:
         collect_log = None
 
+    pending = _market_index_pending(now_kst)
     kospi_rate = by_code.get("0001")
     kosdaq_rate = by_code.get("1001")
     return {
         "kospi_change_rate": kospi_rate,
         "kosdaq_change_rate": kosdaq_rate,
-        "kospi_fail_reason": _market_index_fail_reason(collect_log, "KOSPI") if kospi_rate is None else None,
-        "kosdaq_fail_reason": _market_index_fail_reason(collect_log, "KOSDAQ") if kosdaq_rate is None else None,
+        "kospi_fail_reason": _market_index_fail_reason(collect_log, "KOSPI", pending) if kospi_rate is None else None,
+        "kosdaq_fail_reason": _market_index_fail_reason(collect_log, "KOSDAQ", pending) if kosdaq_rate is None else None,
     }
 
 
@@ -320,6 +366,15 @@ def _fmt_section_line(prefix: str, data: Dict[str, Any], ok_text_fn) -> str:
     if "error" in data:
         return f"{prefix} {data['error']}"
     return f"{prefix} {ok_text_fn(data)}"
+
+
+def _fmt_positions(d: Dict[str, Any]) -> str:
+    """d) 줄 문구 — "조회 실패(폴백 사용)"과 "스냅샷 N분 전"을 분리해 표시한다."""
+    age = d.get("snapshot_age_min")
+    age_text = f"스냅샷 {age:.0f}분 전" if age is not None else "스냅샷 기록 없음"
+    if d.get("stale"):
+        return f"조회 실패(폴백 사용), {age_text}" + ("" if d.get("warn") else " — 경고 기준 이내")
+    return f"정상, {age_text}"
 
 
 async def build_health_report(
@@ -357,7 +412,7 @@ async def build_health_report(
     sections["entry_risk_shadow"] = await _run_section(
         "entry_risk_shadow", _section_entry_risk_shadow(pool, today))
     sections["market_index"] = await _run_section(
-        "market_index", _section_market_index(pool, redis, today))
+        "market_index", _section_market_index(pool, redis, today, now_kst))
 
     issues: List[str] = []
 
@@ -366,8 +421,11 @@ async def build_health_report(
         issues.append(f"정산 불일치 {rec['total_mismatch']}건")
 
     pos = sections["positions"]
-    if "error" not in pos and pos.get("stale"):
-        issues.append("포지션 조회 stale")
+    if "error" not in pos and pos.get("warn"):
+        age = pos.get("snapshot_age_min")
+        issues.append(
+            f"포지션 조회 실패(폴백 스냅샷 {age:.0f}분 전)" if age is not None
+            else "포지션 조회 실패(폴백 스냅샷 시각 불명)")
 
     pnl_null = sections["pnl_null"]
     if "error" not in pnl_null and pnl_null.get("pnl_null_count", 0) > 0:
@@ -413,11 +471,7 @@ async def build_health_report(
         )))
     lines.append(_fmt_section_line(
         "d) 포지션 조회:", pos,
-        lambda d: (
-            f"{'stale' if d['stale'] else '정상'}"
-            + (f" (최근 스냅샷 {d['snapshot_age_min']:.0f}분 전)"
-               if d.get("snapshot_age_min") is not None else " (스냅샷 기록 없음)")
-        )))
+        lambda d: _fmt_positions(d)))
     st = sections["scan_timing"]
     sd = sections["scan_detail"]
 

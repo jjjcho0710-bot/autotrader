@@ -61,6 +61,44 @@ async def _resolve_stock_name(symbol: str) -> str:
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
 
 
+_STOP_LOSS_WARN_LAST: dict = {}  # raw 값 -> 마지막 경고 시각(1시간 스로틀)
+
+
+def _sl_ratio(params: dict, key_missing_default_pct: float, name: str) -> float:
+    """build_strategy용 손절 비율(음수). 키가 없으면 전략별 기존 기본값, 있으면 안전 범위 검증 후
+    비정상이면 DEFAULT_STOP_LOSS_PCT 폴백(경고)."""
+    raw = params.get("stop_loss")
+    if raw is None:
+        return float(key_missing_default_pct) / 100
+    return -_resolve_stop_loss_pct(raw, f"손절선 {name}") / 100
+
+
+def _resolve_stop_loss_pct(raw, where: str = ""):
+    """strategy_config.stop_loss를 사이징·손절에 쓸 양수 퍼센트로 해석한다([AT]
+    fix/strategy-config-guard). 안전 범위(2~15%) 밖이거나 숫자가 아니면 DEFAULT_STOP_LOSS_PCT로
+    폴백하고 로그 + 텔레그램 경고(같은 값은 1시간에 1회)를 남긴다. raw=None(키 없음)은 기본값."""
+    pct, ok = position_sizing.resolve_stop_loss_pct(raw)
+    if not ok:
+        logger.warning(f"⚠️ stop_loss 설정값 비정상({raw!r}, {where}) — 안전 범위 "
+                       f"{position_sizing.STOP_LOSS_MIN_PCT:g}~{position_sizing.STOP_LOSS_MAX_PCT:g}% 밖이라 "
+                       f"기본 {pct:g}%로 폴백")
+        now = _time.time()
+        key = repr(raw)
+        if now - _STOP_LOSS_WARN_LAST.get(key, 0) > 3600:
+            _STOP_LOSS_WARN_LAST[key] = now
+            try:
+                loop = asyncio.get_running_loop()
+                from common.telegram import notify_error
+                loop.create_task(notify_error(
+                    "stock_trader",
+                    f"strategy_config stop_loss={raw!r}는 안전 범위({position_sizing.STOP_LOSS_MIN_PCT:g}~"
+                    f"{position_sizing.STOP_LOSS_MAX_PCT:g}%) 밖입니다. 사이징·손절에 기본 {pct:g}%를 "
+                    f"대신 사용합니다. 설정 확인이 필요합니다. ({where})"))
+            except Exception:
+                pass
+    return pct
+
+
 class StockTrader:
     # 차등 익절 정책 구간 (PM 승인, 2026-09-29): 손절 -7% 대비 익절 구간이 좁아
     # 손익비가 불리했던 문제 개선. +10% 이상은 2단계(PM 승인, 착수 승인 2026-09-29)로
@@ -149,7 +187,7 @@ class StockTrader:
             if active:
                 _, first_params = active[0]
                 max_positions = int(first_params.get("max_positions", max_positions))
-                stop_loss_pct = abs(float(first_params.get("stop_loss", stop_loss_pct)))
+                stop_loss_pct = _resolve_stop_loss_pct(first_params.get("stop_loss"), "시작 점검")
 
             base_amount = self._compute_base_amount(equity, stop_loss_pct, config.RISK_PER_TRADE_PCT)
             projected = max_positions * base_amount
@@ -173,7 +211,7 @@ class StockTrader:
             return MACrossStrategy(MACrossConfig(
                 short_period  = int(params.get("short", 5)),
                 long_period   = int(params.get("long", 20)),
-                stop_loss     = float(params.get("stop_loss", -2)) / 100,
+                stop_loss     = _sl_ratio(params, -2, name),
                 take_profit   = float(params.get("take_profit", 5)) / 100,
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
@@ -183,7 +221,7 @@ class StockTrader:
                 period        = int(params.get("period", 14)),
                 entry         = float(params.get("entry", 30)),
                 exit          = float(params.get("exit", 60)),
-                stop_loss     = float(params.get("stop_loss", -3)) / 100,
+                stop_loss     = _sl_ratio(params, -3, name),
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
             ))
@@ -191,7 +229,7 @@ class StockTrader:
             return BollingerStrategy(BollingerConfig(
                 period        = int(params.get("period", 20)),
                 std_dev       = float(params.get("std", 2.0)),
-                stop_loss     = float(params.get("stop_loss", -3)) / 100,
+                stop_loss     = _sl_ratio(params, -3, name),
                 buy_amount    = int(params.get("buy_amount", 500000)),
                 max_positions = int(params.get("max_positions", 5)),
             ))
@@ -1692,7 +1730,7 @@ class StockTrader:
             # 리스크 기반 매수 금액 = 기본(자산×위험비율÷손절률) × 변동성배율.
             # 확신도 배율(EXECUTE=1.0/EXECUTE_SMALL=0.5)과 예수금 최종 캡은 AI 판단 이후
             # dashboard/main.py(jarvis_signal)에서 적용한다 — 판단 시점이 다르기 때문.
-            stop_loss_pct = abs(float(s_params.get("stop_loss", self.DEFAULT_STOP_LOSS_PCT)))
+            stop_loss_pct = _resolve_stop_loss_pct(s_params.get("stop_loss"), f"사이징 {s_name}")
             base_amount = self._compute_base_amount(equity, stop_loss_pct, config.RISK_PER_TRADE_PCT)
             atr_pct = self._compute_atr_pct(rows, cur_price)
             vol_mult = self._volatility_multiplier(atr_pct)
@@ -2021,7 +2059,7 @@ class StockTrader:
                 stop_loss = -self.DEFAULT_STOP_LOSS_PCT
                 if active:
                     _, first_params = active[0]
-                    stop_loss = float(first_params.get("stop_loss", stop_loss))
+                    stop_loss = -_resolve_stop_loss_pct(first_params.get("stop_loss"), "6시간 리포트")
 
                 report = self._format_six_hour_report(
                     window_start, window_end, trade_dicts, pos_list, cum_rate, stop_loss)

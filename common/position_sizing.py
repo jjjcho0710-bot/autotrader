@@ -17,6 +17,11 @@ order_handler.py)가 compute_projected_weight_pct() 하나를 공용으로 쓴�
 from typing import Optional
 
 DEFAULT_STOP_LOSS_PCT = 7.0
+# strategy_config.stop_loss 안전 범위(퍼센트 크기 기준, 저장 관례는 -15 ~ -2) — [AT]
+# fix/strategy-config-guard. 10/26 stop_loss가 -0.5로 저장돼 사이징 기본금액이 총자산의 150%가 된
+# 사고 재발 방지: 범위 밖 값은 저장을 거부하고, 이미 저장된 값은 사용 시 DEFAULT_STOP_LOSS_PCT로 폴백한다.
+STOP_LOSS_MIN_PCT = 2.0
+STOP_LOSS_MAX_PCT = 15.0
 # ATR(20일, stock_daily_ohlcv)을 현재가 대비 %로 환산한 변동성 구간별 배율 — (상한%, 배율) 오름차순.
 VOLATILITY_BANDS = ((2.0, 1.00), (4.0, 0.75), (6.0, 0.50))
 VOLATILITY_MULT_HIGH = 0.30        # 6% 초과
@@ -94,3 +99,18 @@ def max_qty_within_cap(
     if room <= 0:
         return 0
     return int(room / price + 1e-9)
+
+
+def resolve_stop_loss_pct(raw, default: float = DEFAULT_STOP_LOSS_PCT):
+    """strategy_config.stop_loss를 사이징·손절에 쓸 값(양수 퍼센트 크기)으로 해석한다.
+    반환: (pct, ok). 숫자가 아니거나 STOP_LOSS_MIN_PCT~STOP_LOSS_MAX_PCT(크기 기준) 밖이면
+    (default, False) — 호출부는 ok=False일 때 경고를 남겨야 한다. raw=None(키 없음)은 (default, True)."""
+    if raw is None:
+        return float(default), True
+    try:
+        pct = abs(float(raw))
+    except (TypeError, ValueError):
+        return float(default), False
+    if pct != pct or not (STOP_LOSS_MIN_PCT <= pct <= STOP_LOSS_MAX_PCT):  # NaN 포함
+        return float(default), False
+    return pct, True

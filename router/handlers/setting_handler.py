@@ -12,7 +12,18 @@ import logging
 import re
 from typing import Any, Optional, Tuple
 
+from common import strategy_audit
+from common.position_sizing import STOP_LOSS_MAX_PCT, STOP_LOSS_MIN_PCT
+
 logger = logging.getLogger("router.handlers.setting")
+
+
+# 손절 안전 범위(퍼센트, 저장 관례 -15 ~ -2) — [AT] fix/strategy-config-guard
+STOP_LOSS_RANGE_ERROR = f"손절 허용범위 -{STOP_LOSS_MIN_PCT:g}~-{STOP_LOSS_MAX_PCT:g}%"
+
+
+def stop_loss_in_range(v: float) -> bool:
+    return -STOP_LOSS_MAX_PCT <= v <= -STOP_LOSS_MIN_PCT
 
 
 MAX_POSITIONS_MIN = 1
@@ -50,7 +61,7 @@ def validate_setting(k: str, v) -> Tuple[bool, Any]:
         return False, f"{k} 값이 숫자가 아님"
     if k == "stop_loss":
         v = -abs(v)
-        return ((-15 <= v <= -0.5), v if -15 <= v <= -0.5 else "손절 허용범위 -0.5~-15%")
+        return (stop_loss_in_range(v), v if stop_loss_in_range(v) else STOP_LOSS_RANGE_ERROR)
     if k == "take_profit":
         v = abs(v)
         return ((0.5 <= v <= 20), v if 0.5 <= v <= 20 else "익절 허용범위 0.5~20%")
@@ -64,14 +75,27 @@ def validate_setting(k: str, v) -> Tuple[bool, Any]:
     return False, f"알 수 없는 설정 {k}"
 
 
-async def apply_strategy_settings(pool: Any, redis: Any, changes: dict) -> list:
-    """전략 설정 변경 공용 적용기 (검증된 changes만 받음). 반환: 적용 전략명"""
+async def apply_strategy_settings(pool: Any, redis: Any, changes: dict, *,
+                                  path: str = "미상", actor: str = "미상",
+                                  audit_out: Optional[list] = None) -> list:
+    """전략 설정 변경 공용 적용기 (검증된 changes만 받음). 반환: 적용 전략명.
+    stop_loss는 여기서도 안전 범위를 다시 검증한다(방어적 이중 검사). 전략마다 before/after를
+    감사 기록(common.strategy_audit)에 남기고, audit_out 리스트가 주어지면 항목을 담아 호출부가
+    텔레그램 알림에 쓸 수 있게 한다([AT] fix/strategy-config-guard)."""
+    if "stop_loss" in changes:
+        try:
+            sl = -abs(float(changes["stop_loss"]))
+        except (TypeError, ValueError):
+            raise ValueError(f"stop_loss 값이 숫자가 아님: {changes['stop_loss']!r}")
+        if not stop_loss_in_range(sl):
+            raise ValueError(f"stop_loss {sl} 안전 범위 밖 ({STOP_LOSS_RANGE_ERROR})")
     applied = []
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, name, is_active, params FROM strategy_config WHERE bot='stock_trader'")
         for r in rows:
             params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
+            before = dict(params)
             for k, v in changes.items():
                 params[k] = v
             await conn.execute(
@@ -84,6 +108,12 @@ async def apply_strategy_settings(pool: Any, redis: Any, changes: dict) -> list:
             except Exception:
                 pass
             applied.append(r["name"])
+            entry = strategy_audit.build_entry(
+                path=path, actor=actor, bot="stock_trader", name=r["name"],
+                before=before, after=dict(params))
+            await strategy_audit.record(redis, entry)
+            if audit_out is not None:
+                audit_out.append(entry)
     return applied
 
 
@@ -103,8 +133,9 @@ async def handle(user_msg: str, pool: Any, redis: Any, send_telegram_fn) -> Opti
     changes = {}
     if m_sl:
         v = -abs(float(m_sl.group(1)))
-        if not (-15 <= v <= -0.5):
-            return f"⚠️ 손절 {v}%는 허용 범위(-0.5% ~ -15%)를 벗어나 적용하지 않았습니다."
+        if not stop_loss_in_range(v):
+            return (f"⚠️ 손절 {v}%는 허용 범위(-{STOP_LOSS_MIN_PCT:g}% ~ -{STOP_LOSS_MAX_PCT:g}%)를 "
+                    f"벗어나 적용하지 않았습니다.")
         changes["stop_loss"] = v
     if m_tp:
         v = abs(float(m_tp.group(1)))
@@ -117,13 +148,21 @@ async def handle(user_msg: str, pool: Any, redis: Any, send_telegram_fn) -> Opti
             return f"⚠️ 매수금액 {v:,.0f}원은 허용 범위(5만~500만원)를 벗어나 적용하지 않았습니다."
         changes["buy_amount"] = int(v)
 
-    applied = await apply_strategy_settings(pool, redis, changes)
+    audit = []
+    applied = await apply_strategy_settings(
+        pool, redis, changes, path="채팅 설정 명령(setting_handler.handle)",
+        actor="채팅 지시(텔레그램/웹 채팅 사용자 메시지)", audit_out=audit)
 
     desc = " · ".join(
         [f"손절 {changes['stop_loss']}%" if "stop_loss" in changes else "",
          f"익절 {changes['take_profit']}%" if "take_profit" in changes else "",
          f"매수금액 {changes['buy_amount']:,}원" if "buy_amount" in changes else ""])
     desc = " · ".join([d for d in desc.split(" · ") if d])
-    await send_telegram_fn(f"⚙️ 전략 설정 변경 (채팅 지시)\n{desc}\n적용 전략: {', '.join(applied)}", broadcast=True)
+    first = audit[0]["changes"] if audit else {}
+    before_after = (" / before→after: " + ", ".join(f"{k} {bv}→{av}" for k, (bv, av) in first.items())
+                    if first else "")
+    await send_telegram_fn(
+        f"⚙️ 전략 설정 변경 (채팅 지시)\n{desc}\n적용 전략: {', '.join(applied)}{before_after}\n"
+        f"경로: 채팅 설정 명령", broadcast=True)
     return (f"⚙️ 설정 변경 완료 — {desc}\n"
             f"적용: {', '.join(applied)} (봇이 1분 내 자동 반영, 배포 없음)")

@@ -245,9 +245,9 @@ class TestPollUncertainOrders(unittest.IsolatedAsyncioTestCase):
         self.assertIn("체결 확인(지연)", sent[0])
         self.assertNotIn("uncertain_order_pending:O1", redis.store)
 
-    async def test_last_checkpoint_still_partial_records_best_effort_and_warns_shortfall(self):
-        """마지막 체크포인트까지도 주문 수량(3주)에 못 미치면(1주만 확인) 유실하지 않고
-        지금까지 확인된 증가분(1주)만이라도 기록하며, 알림에 부족분(2주)을 명시한다."""
+    async def test_last_early_checkpoint_partial_keeps_tracking_before_close(self):
+        """[fix/uncertain-order-extended-tracking] 180초 체크포인트에서 부분 반영(1/3주)이어도
+        마감 전이면 확정·키 삭제 없이 계속 추적한다(차단 키 유지, 안내 알림 1회)."""
         last_idx = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC) - 1
         redis = FakeRedis({
             "uncertain_order_pending:O1": json.dumps(
@@ -262,23 +262,51 @@ class TestPollUncertainOrders(unittest.IsolatedAsyncioTestCase):
         async def send_telegram(text):
             sent.append(text)
 
-        await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
+        with patch.object(uot, "_is_after_close", return_value=False):
+            await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
+
+        self.assertEqual(len(pool._conn.inserted), 0)
+        self.assertIn("uncertain_order_pending:O1", redis.store)
+        self.assertIn("order_uncertain:005880:buy", redis.store)  # 차단 키 유지
+        self.assertEqual(len(sent), 1)
+        self.assertIn("계속 추적", sent[0])
+        ctx = json.loads(redis.store["uncertain_order_pending:O1"])
+        self.assertEqual(ctx["checkpoint_idx"], len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC))
+
+    async def test_final_check_after_close_partial_records_best_effort_and_warns_shortfall(self):
+        """마감 후 최종 확인에서도 주문 수량(3주)에 못 미치면(1주) 확인된 증가분만 기록하고
+        부족분(2주)을 알린 뒤 추적·차단 키를 종료한다."""
+        n = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC)
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(
+                _ctx(checkpoint_idx=n, elapsed=20000, pre_qty=0.0, qty=3)),
+            "order_uncertain:005880:buy": "1",
+        })
+        pool = FakePool()
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005880", "qty": 1, "avg_price": 2135}]}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        with patch.object(uot, "_is_after_close", return_value=True):
+            await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
 
         self.assertEqual(len(pool._conn.inserted), 1)
-        inserted = pool._conn.inserted[0]
-        self.assertEqual(inserted[5], 1.0)  # 확인된 증가분만 기록(유실 방지)
+        self.assertEqual(pool._conn.inserted[0][5], 1.0)
         self.assertIn("체결 확인(지연)", sent[0])
         self.assertIn("2주는 수동 확인 필요", sent[0])
         self.assertNotIn("uncertain_order_pending:O1", redis.store)
+        self.assertNotIn("order_uncertain:005880:buy", redis.store)
 
-    async def test_exhausts_all_checkpoints_sends_manual_check_alert_once(self):
-        """마지막 체크포인트(+180초)까지도 변화 없으면 "미확인 — 수동 확인 필요"를
-        1회만 보내고 추적을 종료한다(키 삭제)."""
+    async def test_no_fill_before_close_keeps_block_key_and_does_not_end(self):
+        """180초가 지나도 체결 없음 + 마감 전이면 종료하지 않는다(과거: 키 삭제·수동확인 알림)."""
         last_idx = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC) - 1
         redis = FakeRedis({
             "uncertain_order_pending:O1": json.dumps(_ctx(checkpoint_idx=last_idx, elapsed=181)),
         })
-        pool = FakePool()
         sent = []
 
         async def get_positions():
@@ -287,11 +315,167 @@ class TestPollUncertainOrders(unittest.IsolatedAsyncioTestCase):
         async def send_telegram(text):
             sent.append(text)
 
-        await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
+        with patch.object(uot, "_is_after_close", return_value=False):
+            await uot.poll_uncertain_orders_once(redis, FakePool(), get_positions, None, send_telegram, AsyncMock())
+
+        self.assertIn("uncertain_order_pending:O1", redis.store)
+        self.assertIn("order_uncertain:005880:buy", redis.store)
+        self.assertFalse(any("수동 확인 필요" in m for m in sent))
+
+    async def test_exhausts_all_checkpoints_sends_manual_check_alert_once(self):
+        """마감 후 최종 확인에서도 변화 없으면 "미확인 — 수동 확인 필요"를 1회만 보내고
+        추적 키와 차단 키를 함께 종료(삭제)한다."""
+        n = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC)
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(_ctx(checkpoint_idx=n, elapsed=20000)),
+            "order_uncertain:005880:buy": "1",
+        })
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": []}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        with patch.object(uot, "_is_after_close", return_value=True):
+            await uot.poll_uncertain_orders_once(redis, FakePool(), get_positions, None, send_telegram, AsyncMock())
 
         self.assertEqual(len(sent), 1)
         self.assertIn("미확인 — 수동 확인 필요", sent[0])
         self.assertNotIn("uncertain_order_pending:O1", redis.store)
+        self.assertNotIn("order_uncertain:005880:buy", redis.store)
+
+    async def test_fill_after_180s_before_close_is_now_captured(self):
+        """핵심 회귀: 180초 이후(마감 전)에 늦게 체결돼도 놓치지 않고 기록한다."""
+        n = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC)
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(_ctx(
+                checkpoint_idx=n, elapsed=600, extra={"last_check_at": __import__("time").time() - 200})),
+            "order_uncertain:005880:buy": "1",
+        })
+        pool = FakePool()
+        sent = []
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005880", "qty": 497, "avg_price": 2135}]}
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        with patch.object(uot, "_is_after_close", return_value=False):
+            await uot.poll_uncertain_orders_once(redis, pool, get_positions, None, send_telegram, AsyncMock())
+
+        self.assertEqual(len(pool._conn.inserted), 1)
+        self.assertEqual(pool._conn.inserted[0][5], 497.0)
+        self.assertNotIn("order_uncertain:005880:buy", redis.store)
+        self.assertNotIn("uncertain_order_pending:O1", redis.store)
+
+    async def test_extended_interval_150s_skips_early_poll(self):
+        """연장 추적은 150초 간격 — 마지막 확인 후 150초가 안 지났으면 조회하지 않는다."""
+        import time as _t
+        n = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC)
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(_ctx(
+                checkpoint_idx=n, elapsed=600, extra={"last_check_at": _t.time() - 100})),
+        })
+        calls = []
+
+        async def get_positions():
+            calls.append(1)
+            return {"success": True, "data": []}
+
+        with patch.object(uot, "_is_after_close", return_value=False):
+            await uot.poll_uncertain_orders_once(redis, FakePool(), get_positions, None, AsyncMock(), AsyncMock())
+        self.assertEqual(calls, [])
+        self.assertIn("order_uncertain:005880:buy", redis.store)  # 조회 안 해도 차단 키는 갱신 유지
+
+        ctx = json.loads(redis.store["uncertain_order_pending:O1"])
+        ctx["last_check_at"] = _t.time() - 151
+        redis.store["uncertain_order_pending:O1"] = json.dumps(ctx)
+        with patch.object(uot, "_is_after_close", return_value=False):
+            await uot.poll_uncertain_orders_once(redis, FakePool(), get_positions, None, AsyncMock(), AsyncMock())
+        self.assertEqual(len(calls), 1)
+
+    async def test_order_no_fill_qty_used_with_fill_price(self):
+        """order_no가 있으면 inquire-daily-ccld 체결수량/평균가를 우선 사용한다(보유수량 조회 불필요)."""
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(_ctx(
+                checkpoint_idx=0, elapsed=31, qty=10, extra={"order_no": "O1"})),
+            "order_uncertain:005880:buy": "1",
+        })
+        pool = FakePool()
+        positions_calls = []
+
+        async def get_positions():
+            positions_calls.append(1)
+            return {"success": True, "data": []}
+
+        async def get_filled(order_no, symbol, is_buy):
+            self.assertEqual(order_no, "O1")
+            return 10, 2140.0
+
+        await uot.poll_uncertain_orders_once(
+            redis, pool, get_positions, None, AsyncMock(), AsyncMock(), get_filled)
+
+        self.assertEqual(positions_calls, [])
+        self.assertEqual(len(pool._conn.inserted), 1)
+        self.assertEqual(pool._conn.inserted[0][4], 2140.0)  # price = 체결평균가
+        self.assertEqual(pool._conn.inserted[0][5], 10.0)
+
+    async def test_order_no_zero_falls_back_to_position_change(self):
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(_ctx(
+                checkpoint_idx=0, elapsed=31, qty=10, extra={"order_no": "O1"})),
+        })
+        pool = FakePool()
+
+        async def get_positions():
+            return {"success": True, "data": [{"symbol": "005880", "qty": 10, "avg_price": 2135}]}
+
+        async def get_filled(order_no, symbol, is_buy):
+            return 0, None
+
+        await uot.poll_uncertain_orders_once(
+            redis, pool, get_positions, None, AsyncMock(), AsyncMock(), get_filled)
+        self.assertEqual(len(pool._conn.inserted), 1)
+
+    async def test_final_check_query_failure_retries_then_alerts(self):
+        """최종 확인 조회가 계속 실패하면 N회 재시도 후 수동 확인 알림으로 종료한다."""
+        n = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC)
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(_ctx(checkpoint_idx=n, elapsed=20000)),
+            "order_uncertain:005880:buy": "1",
+        })
+        sent = []
+
+        async def get_positions():
+            raise ConnectionError("down")
+
+        async def send_telegram(text):
+            sent.append(text)
+
+        with patch.object(uot, "_is_after_close", return_value=True):
+            for _ in range(uot.UNCERTAIN_ORDER_FINAL_MAX_ATTEMPTS):
+                await uot.poll_uncertain_orders_once(redis, FakePool(), get_positions, None, send_telegram, AsyncMock())
+                if len(sent) == 0:
+                    self.assertIn("uncertain_order_pending:O1", redis.store)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("수동 확인 필요", sent[0])
+        self.assertNotIn("uncertain_order_pending:O1", redis.store)
+        self.assertNotIn("order_uncertain:005880:buy", redis.store)
+
+    async def test_poll_refreshes_block_key_with_short_ttl_until_end(self):
+        """추적 중에는 폴링마다 차단 키를 갱신한다(키가 180초 TTL로 만료돼도 추적이 살아있으면 복구)."""
+        n = len(uot.UNCERTAIN_ORDER_CHECKPOINTS_SEC)
+        import time as _t
+        redis = FakeRedis({
+            "uncertain_order_pending:O1": json.dumps(_ctx(
+                checkpoint_idx=n, elapsed=900, extra={"last_check_at": _t.time()})),
+        })
+        with patch.object(uot, "_is_after_close", return_value=False):
+            await uot.poll_uncertain_orders_once(redis, FakePool(), AsyncMock(), None, AsyncMock(), AsyncMock())
+        self.assertIn("order_uncertain:005880:buy", redis.store)
 
     async def test_already_recorded_skips_duplicate_insert_but_clears_block(self):
         """같은 종목·방향·날짜·수량의 trade_history 행이 이미 있으면(정산 보정 등이 먼저

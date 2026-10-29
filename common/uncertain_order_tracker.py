@@ -11,20 +11,60 @@
 차단 키 해제를 한다. 끝까지 확인 안 되면 "미확인 — 수동 확인 필요" 알림을 1회 보낸다.
 
 KIS API 호출(토큰 발급 등)은 전혀 하지 않는다 — stark/execution_guard.reconcile_uncertain_order와
-동일하게 dashboard가 주입하는 get_positions_fn/invalidate_cache_fn으로 보유수량만 비교한다."""
+동일하게 dashboard가 주입하는 get_positions_fn/invalidate_cache_fn(보유수량 비교)과
+get_filled_qty_fn(order_no 기반 체결수량 조회, inquire-daily-ccld)만 쓴다.
+
+[AT] fix/uncertain-order-extended-tracking (PM 승인): 180초 체크포인트에서 추적을 끝내고
+order_uncertain 차단 키를 지우던 구멍(180초 이후 체결을 놓치고 같은 종목 재주문 가능)을 없앤다.
+  - 초기 체크포인트(30/90/180초) 이후에도 150초 간격으로 장 마감(15:30)까지 계속 추적한다.
+  - 마감 후(15:30 + 60초) 1회 최종 확인을 하고, 그때 결과(체결 확정 또는 미확인 알림)로 추적을 종료한다.
+  - order_uncertain 차단 키는 추적이 끝날 때까지 유지한다(폴링마다 TTL 갱신, 종료 시 삭제).
+  - order_no가 있으면 inquire-daily-ccld 체결수량을 우선 쓰고, 없거나 0이면 보유수량 변화로 판정한다."""
 import asyncio
 import json
 import logging
 import time as _time
-from typing import Any, Optional
+from datetime import datetime, time as dtime, timedelta, timezone
+from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger("common.uncertain_order_tracker")
 
 UNCERTAIN_ORDER_KEY_PREFIX = "uncertain_order_pending:"
 # stark/execution_guard.py의 ORDER_UNCERTAIN_BLOCK_TTL(180초) 안에서 세 번 재확인한다.
+# 초기 빠른 체크포인트. 마지막(180초) 이후에는 종료하지 않고 연장 추적 단계로 넘어간다.
 UNCERTAIN_ORDER_CHECKPOINTS_SEC = (30, 90, 180)
 UNCERTAIN_ORDER_POLL_INTERVAL_SEC = 15
-UNCERTAIN_ORDER_KEY_TTL_SEC = 1800  # 마지막 체크포인트(180초)보다 충분히 길게(재시작 대비)
+UNCERTAIN_ORDER_EXTENDED_INTERVAL_SEC = 150  # 연장 추적 간격
+UNCERTAIN_ORDER_KEY_TTL_SEC = 12 * 3600  # 장 마감까지 + 재시작 대비(체크포인트마다 갱신)
+UNCERTAIN_ORDER_MARKET_CLOSE = dtime(15, 30)
+UNCERTAIN_ORDER_FINAL_DELAY_SEC = 60  # 마감 후 최종 확인은 15:30 + 60초 이후
+UNCERTAIN_ORDER_FINAL_MAX_ATTEMPTS = 5  # 최종 확인 조회가 계속 실패하면 수동 확인 알림 후 종료
+# order_uncertain 차단 키 TTL — 폴링(15초)마다 갱신하므로 짧게 둔다. 추적기가 죽으면 이 시간 뒤 풀린다.
+UNCERTAIN_BLOCK_REFRESH_TTL_SEC = 300
+
+KST = timezone(timedelta(hours=9))
+
+
+def _now_kst() -> datetime:
+    return datetime.now(KST)
+
+
+def _is_after_close(registered_at: float) -> bool:
+    """등록일(KST) 기준 마감(15:30) + 최종확인 지연(60초)이 지났는지."""
+    reg_date = datetime.fromtimestamp(registered_at, KST).date()
+    deadline = datetime.combine(reg_date, UNCERTAIN_ORDER_MARKET_CLOSE, tzinfo=KST) + timedelta(
+        seconds=UNCERTAIN_ORDER_FINAL_DELAY_SEC)
+    return _now_kst() >= deadline
+
+
+async def _refresh_block_key(redis: Any, symbol: str, side: str) -> None:
+    """같은 종목·방향 중복 주문 차단 키를 추적이 끝날 때까지 유지한다."""
+    if redis is None:
+        return
+    try:
+        await redis.setex(f"order_uncertain:{symbol}:{side}", UNCERTAIN_BLOCK_REFRESH_TTL_SEC, "1")
+    except Exception as e:
+        logger.warning(f"order_uncertain 차단 키 갱신 실패 [{symbol}:{side}]: {e}")
 
 
 async def register_uncertain_order(
@@ -52,6 +92,13 @@ async def register_uncertain_order(
         await redis.setex(key, UNCERTAIN_ORDER_KEY_TTL_SEC, json.dumps(ctx))
     except Exception as e:
         logger.warning(f"불명 주문 후속 재확인 등록 실패 [{symbol}]: {e}")
+        return
+    # 차단 키는 reconcile_uncertain_order가 180초 TTL로 이미 걸어 두었고, 추적 폴링(15초)이
+    # 매번 갱신해 추적이 끝날 때까지 유지한다(_poll_one). 여기서 TTL을 덮어쓰지 않는다.
+    logger.info(
+        f"불명 주문 연장 추적 등록 [{symbol}] {side} {qty}주 order_no={order_no} "
+        f"(초기 {UNCERTAIN_ORDER_CHECKPOINTS_SEC}초 → {UNCERTAIN_ORDER_EXTENDED_INTERVAL_SEC}초 간격, "
+        f"{UNCERTAIN_ORDER_MARKET_CLOSE.strftime('%H:%M')}까지 + 마감 후 최종 확인)")
 
 
 async def _get_held_qty(symbol: str, get_positions_fn, invalidate_cache_fn, redis: Any) -> Optional[float]:
@@ -108,12 +155,14 @@ async def _already_recorded(pool: Any, *, bot: str, symbol: str, side: str, qty:
 
 async def _finalize_confirmed(
     redis: Any, pool: Any, key: str, ctx: dict, qty_diff: float, send_telegram_fn, log_journal_fn,
+    fill_price: Optional[float] = None,
 ) -> None:
     symbol = ctx["symbol"]
     name = ctx.get("name") or symbol
     side = ctx["side"]
     bot = ctx["bot"]
-    price = ctx["price"]
+    # order_no 기반 체결평균가가 있으면 신호가 대신 쓴다.
+    price = fill_price if (fill_price and fill_price > 0) else ctx["price"]
     strategy = ctx.get("strategy") or ""
     reason = ctx.get("reason") or ""
     reply = ctx.get("reply") or ""
@@ -176,8 +225,49 @@ async def _finalize_confirmed(
             pass
 
 
+async def _observe_fill(
+    ctx: dict, get_positions_fn, invalidate_cache_fn, redis: Any,
+    get_filled_qty_fn: Optional[Callable[[str, str, bool], Awaitable[tuple]]],
+) -> tuple:
+    """이 주문으로 체결된 수량을 관찰한다. 반환: (체결수량 또는 None, 체결평균가 또는 None).
+    체결수량 None = 판정 불가(호출부는 같은 체크포인트로 재시도), 0 = 체결 없음.
+    1순위 order_no 기반 체결조회(다른 거래·매도에 오염되지 않음). 없거나 0이면 보유수량 변화
+    (기존 방식)로 보완한다."""
+    symbol, side = ctx["symbol"], ctx["side"]
+    is_buy = side == "buy"
+    order_no = ctx.get("order_no")
+
+    ccld_qty = None
+    if get_filled_qty_fn is not None and order_no:
+        try:
+            fq, avg = await get_filled_qty_fn(order_no, symbol, is_buy)
+            if fq is not None:
+                ccld_qty = float(fq)
+                if ccld_qty > 0:
+                    return ccld_qty, (float(avg) if avg else None)
+        except Exception as e:
+            logger.warning(f"불명 주문 order_no 체결조회 실패(보유수량으로 보완) [{symbol}] {order_no}: {e}")
+
+    post_qty = await _get_held_qty(symbol, get_positions_fn, invalidate_cache_fn, redis)
+    if post_qty is None:
+        return (0.0, None) if ccld_qty == 0 else (None, None)
+    diff = post_qty - ctx["pre_qty"]
+    matched = (diff > 0) if is_buy else (diff < 0)
+    return (abs(diff) if matched else 0.0), None
+
+
+async def _end_tracking(redis: Any, key: str, symbol: str, side: str) -> None:
+    """추적 종료 — 이 시점에만 차단 키와 추적 키를 지운다."""
+    for k in (f"order_uncertain:{symbol}:{side}", key):
+        try:
+            await redis.delete(k)
+        except Exception:
+            pass
+
+
 async def _poll_one(
     redis: Any, pool: Any, key: str, get_positions_fn, invalidate_cache_fn, send_telegram_fn, log_journal_fn,
+    get_filled_qty_fn=None,
 ) -> None:
     raw = await redis.get(key)
     if not raw:
@@ -185,56 +275,98 @@ async def _poll_one(
     ctx = json.loads(raw if isinstance(raw, str) else raw.decode())
     symbol = ctx["symbol"]
     side = ctx["side"]
-    pre_qty = ctx["pre_qty"]
     qty = ctx["qty"]
+    name = ctx.get("name") or symbol
     registered_at = ctx["registered_at"]
     checkpoint_idx = ctx.get("checkpoint_idx", 0)
-    if checkpoint_idx >= len(UNCERTAIN_ORDER_CHECKPOINTS_SEC):
-        return  # 안전망 — 정상 경로로는 마지막 체크포인트에서 키를 지우므로 도달하지 않는다
-
-    elapsed = _time.time() - registered_at
-    if elapsed < UNCERTAIN_ORDER_CHECKPOINTS_SEC[checkpoint_idx]:
-        return  # 아직 다음 체크포인트 시각이 안 됐다
-
+    n_early = len(UNCERTAIN_ORDER_CHECKPOINTS_SEC)
     is_buy = side == "buy"
-    post_qty = await _get_held_qty(symbol, get_positions_fn, invalidate_cache_fn, redis)
-    if post_qty is None:
-        return  # 조회 실패 — 체크포인트를 넘기지 않고 다음 주기에 같은 체크포인트로 재시도
 
-    diff = post_qty - pre_qty
-    matched = (diff > 0) if is_buy else (diff < 0)
-    is_last_checkpoint = checkpoint_idx >= len(UNCERTAIN_ORDER_CHECKPOINTS_SEC) - 1
+    # 추적 중에는 차단 키를 계속 유지한다(15초 폴링마다 갱신).
+    await _refresh_block_key(redis, symbol, side)
 
-    # 보유 증가분이 관찰돼도 주문 수량에 못 미치면(부분 반영) 바로 확정하지 않고
-    # 주문 수량을 채우거나 마지막 체크포인트에 도달할 때까지 계속 추적한다 — 중간에
-    # 사라지는 증가분 없이 매 체크포인트마다 pre_qty 대비 "누적" 차이를 다시 재는 것이므로
-    # 추가 체결분은 자동으로 반영된다([AT] fix/uncertain-order-partial-finalize, 10/16
-    # 002030 BUY가 실제로는 3주 체결됐는데 1주 증가 시점에 바로 확정·키 삭제돼 나머지
-    # 2주가 영영 기록되지 않은 사고 수정).
-    if matched and (abs(diff) >= qty or is_last_checkpoint):
-        await _finalize_confirmed(redis, pool, key, ctx, abs(diff), send_telegram_fn, log_journal_fn)
-        return
+    now_ts = _time.time()
+    closed = _is_after_close(registered_at)
+    final = False
+    if checkpoint_idx < n_early:
+        if now_ts - registered_at < UNCERTAIN_ORDER_CHECKPOINTS_SEC[checkpoint_idx]:
+            return  # 아직 다음 체크포인트 시각이 안 됐다
+    elif closed:
+        final = True  # 마감 후 1회 최종 확인
+    else:
+        last = ctx.get("last_check_at") or registered_at
+        if now_ts - last < UNCERTAIN_ORDER_EXTENDED_INTERVAL_SEC:
+            return
 
-    if not matched and is_last_checkpoint:
-        name = ctx.get("name") or symbol
+    filled, avg_price = await _observe_fill(
+        ctx, get_positions_fn, invalidate_cache_fn, redis, get_filled_qty_fn)
+
+    if filled is None:
+        if not final:
+            return  # 조회 실패 — 체크포인트를 넘기지 않고 다음 주기에 재시도(fail-safe)
+        attempts = int(ctx.get("final_attempts", 0)) + 1
+        if attempts < UNCERTAIN_ORDER_FINAL_MAX_ATTEMPTS:
+            ctx["final_attempts"] = attempts
+            try:
+                await redis.setex(key, UNCERTAIN_ORDER_KEY_TTL_SEC, json.dumps(ctx))
+            except Exception:
+                pass
+            logger.warning(f"불명 주문 최종 확인 조회 실패 — 재시도 {attempts}/{UNCERTAIN_ORDER_FINAL_MAX_ATTEMPTS} [{symbol}]")
+            return
         try:
             await send_telegram_fn(
                 f"⚠️ <b>{name} 주문 결과 미확인 — 수동 확인 필요</b>\n"
-                f"{'매수' if is_buy else '매도'} {qty:.0f}주 주문이 응답 불명 후 "
-                f"{UNCERTAIN_ORDER_CHECKPOINTS_SEC[-1]}초가 지나도 체결 확인이 되지 않았습니다. "
+                f"{'매수' if is_buy else '매도'} {qty:.0f}주 주문이 응답 불명 후 마감 확인에서 "
+                f"잔고/체결 조회가 계속 실패했습니다. 자동 재주문은 하지 않으니 직접 확인해 주세요."
+            )
+        except Exception as e:
+            logger.warning(f"불명 주문 수동확인 알림 실패(무시) [{symbol}]: {e}")
+        await _end_tracking(redis, key, symbol, side)
+        return
+
+    matched = filled > 0
+
+    # 주문 수량을 채웠으면 확정. 부분 반영이면 주문 수량을 채우거나 마감 후 최종 확인에
+    # 도달할 때까지 계속 추적한다(누적 값을 매번 다시 재므로 추가 체결분이 자동 반영된다,
+    # [AT] fix/uncertain-order-partial-finalize).
+    if matched and (filled >= qty or final):
+        logger.info(f"불명 주문 체결 확정 [{symbol}] {side} {filled:.0f}/{qty:.0f}주 (final={final})")
+        await _finalize_confirmed(redis, pool, key, ctx, filled, send_telegram_fn, log_journal_fn,
+                                   fill_price=avg_price)
+        return
+
+    if final:
+        try:
+            await send_telegram_fn(
+                f"⚠️ <b>{name} 주문 결과 미확인 — 수동 확인 필요</b>\n"
+                f"{'매수' if is_buy else '매도'} {qty:.0f}주 주문이 응답 불명 후 장 마감"
+                f"({UNCERTAIN_ORDER_MARKET_CLOSE.strftime('%H:%M')}) 뒤 최종 확인에서도 체결이 확인되지 않았습니다. "
                 f"자동 재주문은 하지 않으니 직접 확인해 주세요."
             )
         except Exception as e:
             logger.warning(f"불명 주문 수동확인 알림 실패(무시) [{symbol}]: {e}")
-        try:
-            await redis.delete(key)
-        except Exception:
-            pass
+        await _end_tracking(redis, key, symbol, side)
         return
 
-    # 주문 수량 미달 & 체크포인트가 남음 — 다음 체크포인트까지 계속 추적한다(즉시 종료 금지).
-    checkpoint_idx += 1
-    ctx["checkpoint_idx"] = checkpoint_idx
+    # 주문 수량 미달 & 마감 전 — 계속 추적한다(차단 키 유지, 종료 금지).
+    if checkpoint_idx < n_early:
+        checkpoint_idx += 1
+        ctx["checkpoint_idx"] = checkpoint_idx
+    ctx["last_check_at"] = now_ts
+    ctx["observed_qty"] = filled
+    if checkpoint_idx == n_early and not ctx.get("interim_notified") and not closed:
+        ctx["interim_notified"] = True
+        try:
+            await send_telegram_fn(
+                f"⏳ <b>{name} 주문 체결 미확인 — 계속 추적 중</b>\n"
+                f"{'매수' if is_buy else '매도'} {qty:.0f}주 주문이 {UNCERTAIN_ORDER_CHECKPOINTS_SEC[-1]}초 안에 "
+                f"확인되지 않아 {UNCERTAIN_ORDER_EXTENDED_INTERVAL_SEC}초 간격으로 "
+                f"{UNCERTAIN_ORDER_MARKET_CLOSE.strftime('%H:%M')}까지 계속 확인합니다. "
+                f"같은 종목 {'매수' if is_buy else '매도'}는 추적이 끝날 때까지 보류됩니다."
+            )
+        except Exception as e:
+            logger.warning(f"불명 주문 연장추적 안내 알림 실패(무시) [{symbol}]: {e}")
+    logger.info(f"불명 주문 연장 추적 계속 [{symbol}] {side} 확인 {filled:.0f}/{qty:.0f}주 idx={checkpoint_idx}")
     try:
         await redis.setex(key, UNCERTAIN_ORDER_KEY_TTL_SEC, json.dumps(ctx))
     except Exception:
@@ -243,6 +375,7 @@ async def _poll_one(
 
 async def poll_uncertain_orders_once(
     redis: Any, pool: Any, get_positions_fn, invalidate_cache_fn, send_telegram_fn, log_journal_fn,
+    get_filled_qty_fn=None,
 ) -> None:
     if redis is None:
         return
@@ -253,18 +386,21 @@ async def poll_uncertain_orders_once(
         return
     for key in keys:
         try:
-            await _poll_one(redis, pool, key, get_positions_fn, invalidate_cache_fn, send_telegram_fn, log_journal_fn)
+            await _poll_one(redis, pool, key, get_positions_fn, invalidate_cache_fn,
+                            send_telegram_fn, log_journal_fn, get_filled_qty_fn)
         except Exception as e:
             logger.warning(f"불명 주문 추적 처리 오류 [{key}]: {e}")
 
 
 async def uncertain_order_tracker_loop(
     redis: Any, pool: Any, get_positions_fn, invalidate_cache_fn, send_telegram_fn, log_journal_fn,
+    get_filled_qty_fn=None,
 ) -> None:
     while True:
         await asyncio.sleep(UNCERTAIN_ORDER_POLL_INTERVAL_SEC)
         try:
             await poll_uncertain_orders_once(
-                redis, pool, get_positions_fn, invalidate_cache_fn, send_telegram_fn, log_journal_fn)
+                redis, pool, get_positions_fn, invalidate_cache_fn, send_telegram_fn, log_journal_fn,
+                get_filled_qty_fn)
         except Exception as e:
             logger.warning(f"불명 주문 추적 루프 오류: {e}")

@@ -51,7 +51,9 @@ class FakeConn:
                  entry_risk_rows=None, market_index_rows=None):
         self.stop_loss_sell = stop_loss_sell
         self.buy_count = buy_count
-        self.gate_counts = gate_counts or {}  # {gate_name: (journal_n, decisions_n)}
+        # {gate_name: (journal_n, decisions_n[, paired_n])} — paired_n개의 판단 행은 일지 행과
+        # 같은 시각(같은 차단의 이중 기록)으로 만든다. 나머지는 서로 겹치지 않는 시각.
+        self.gate_counts = gate_counts or {}
         self.stop_loss_rows = stop_loss_rows or []
         self.pnl_null_count = pnl_null_count
         self.raise_on_today_counts = raise_on_today_counts
@@ -70,16 +72,6 @@ class FakeConn:
         return None
 
     async def fetchval(self, query, *args):
-        if "trade_journal" in query:
-            if self.raise_on_gate:
-                raise RuntimeError("DB down")
-            gate = args[1].strip("%")
-            return self.gate_counts.get(gate, (0, 0))[0]
-        if "stark_decisions" in query:
-            if self.raise_on_gate:
-                raise RuntimeError("DB down")
-            gate = args[1].strip("%")
-            return self.gate_counts.get(gate, (0, 0))[1]
         if "pnl IS NULL" in query:
             if self.raise_on_pnl_null:
                 raise RuntimeError("DB down")
@@ -87,6 +79,20 @@ class FakeConn:
         return None
 
     async def fetch(self, query, *args):
+        if "ILIKE" in query and ("trade_journal" in query or "stark_decisions" in query):
+            if self.raise_on_gate:
+                raise RuntimeError("DB down")
+            gate = args[1].strip("%")
+            counts = self.gate_counts.get(gate, (0, 0, 0))
+            j_n, d_n = counts[0], counts[1]
+            paired = counts[2] if len(counts) > 2 else 0
+            base = datetime(2026, 10, 13, 10, 0, tzinfo=KST)
+            j_ts = [base + timedelta(hours=i) for i in range(j_n)]
+            if "trade_journal" in query:
+                return [{"at": t} for t in j_ts]
+            d_ts = [j_ts[i] + timedelta(seconds=1) if i < paired
+                    else base + timedelta(hours=i, minutes=30) for i in range(d_n)]
+            return [{"at": t} for t in d_ts]
         if "strategy LIKE" in query and "ORDER BY ts" in query:
             if self.raise_on_stop_loss_pnl:
                 raise RuntimeError("DB down")
@@ -188,7 +194,7 @@ class TestSectionStopLossPnl(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSectionGateBlocks(unittest.IsolatedAsyncioTestCase):
-    async def test_sums_journal_and_decisions_counts(self):
+    async def test_unpaired_rows_are_both_counted(self):
         pool = FakePool(FakeConn(gate_counts={
             "momentum_gate": (2, 1), "single_stock_cap": (0, 0), "size_below_one_share": (1, 0),
         }))
@@ -197,6 +203,25 @@ class TestSectionGateBlocks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["by_gate"]["single_stock_cap"], 0)
         self.assertEqual(result["by_gate"]["size_below_one_share"], 1)
         self.assertEqual(result["total"], 4)
+
+    async def test_same_block_in_both_tables_counts_once(self):
+        """[fix/health-report-accuracy] 10/29 single_stock_cap: 일지 7행 + 판단 7행(동시각) = 7건."""
+        pool = FakePool(FakeConn(gate_counts={"single_stock_cap": (7, 7, 7)}))
+        result = await hr._section_gate_blocks(pool, date(2026, 10, 13))
+        self.assertEqual(result["by_gate"]["single_stock_cap"], 7)
+        self.assertEqual(result["total"], 7)
+
+    async def test_partial_pairing(self):
+        # 일지 3 + 판단 3 중 2쌍이 겹침 -> 3 + (3-2) = 4
+        pool = FakePool(FakeConn(gate_counts={"momentum_gate": (3, 3, 2)}))
+        result = await hr._section_gate_blocks(pool, date(2026, 10, 13))
+        self.assertEqual(result["by_gate"]["momentum_gate"], 4)
+
+    def test_dedupe_far_apart_rows_are_separate(self):
+        t = datetime(2026, 10, 13, 10, 0, tzinfo=KST)
+        self.assertEqual(hr._dedupe_gate_events([t], [t + timedelta(minutes=5)]), 2)
+        self.assertEqual(hr._dedupe_gate_events([t], [t + timedelta(seconds=2)]), 1)
+        self.assertEqual(hr._dedupe_gate_events([], [t]), 1)
 
 
 class TestSectionPositions(unittest.IsolatedAsyncioTestCase):
@@ -213,6 +238,39 @@ class TestSectionPositions(unittest.IsolatedAsyncioTestCase):
         result = await hr._section_positions(redis, stale_positions, now)
         self.assertTrue(result["stale"])
         self.assertAlmostEqual(result["snapshot_age_min"], 42.0, delta=0.1)
+        self.assertTrue(result["warn"])  # 폴백 스냅샷이 5분 넘게 오래됨
+
+    async def test_stale_fallback_with_fresh_snapshot_does_not_warn(self):
+        """[fix/health-report-accuracy] 조회 실패(폴백)여도 스냅샷이 0분 전이면 경고하지 않는다."""
+        now = datetime(2026, 10, 13, 10, 0, tzinfo=KST)
+        redis = FakeRedis({"positions:last_ok": '{"snapshot_at": "%s"}' % now.isoformat()})
+
+        async def stale_positions():
+            return {"success": True, "data": [], "stale": True}
+
+        result = await hr._section_positions(redis, stale_positions, now)
+        self.assertTrue(result["stale"])
+        self.assertFalse(result["warn"])
+
+    async def test_stale_fallback_over_5_min_warns_and_5_min_boundary_does_not(self):
+        now = datetime(2026, 10, 13, 10, 0, tzinfo=KST)
+
+        async def stale_positions():
+            return {"success": True, "data": [], "stale": True}
+
+        for minutes, expected in ((5, False), (6, True)):
+            snap = (now - timedelta(minutes=minutes)).isoformat()
+            redis = FakeRedis({"positions:last_ok": '{"snapshot_at": "%s"}' % snap})
+            r = await hr._section_positions(redis, stale_positions, now)
+            self.assertEqual(r["warn"], expected, minutes)
+
+    async def test_not_stale_never_warns(self):
+        now = datetime(2026, 10, 13, 10, 0, tzinfo=KST)
+        snap = (now - timedelta(minutes=120)).isoformat()
+        redis = FakeRedis({"positions:last_ok": '{"snapshot_at": "%s"}' % snap})
+        r = await hr._section_positions(redis, _ok_positions, now)
+        self.assertFalse(r["stale"])
+        self.assertFalse(r["warn"])
 
     async def test_no_snapshot_recorded_yet(self):
         redis = FakeRedis({})
@@ -291,6 +349,40 @@ class TestSectionMarketIndex(unittest.IsolatedAsyncioTestCase):
         result = await hr._section_market_index(pool, redis, today)
         self.assertIsNone(result["kospi_fail_reason"])
         self.assertEqual(result["kosdaq_fail_reason"], "원인 미상")
+
+
+class TestMarketIndexPending(unittest.IsolatedAsyncioTestCase):
+    """[fix/health-report-accuracy] 수집 시간창 안/이전이면 "미실행" 단정 대신 "수집 대기"."""
+
+    async def test_before_collect_window_end_shows_waiting(self):
+        for hh, mm in ((9, 40), (15, 45), (16, 30)):
+            r = await hr._section_market_index(
+                FakePool(FakeConn()), FakeRedis({}), date(2026, 10, 13),
+                datetime(2026, 10, 13, hh, mm, tzinfo=KST))
+            self.assertEqual(r["kospi_fail_reason"], "수집 대기", (hh, mm))
+            self.assertEqual(r["kosdaq_fail_reason"], "수집 대기", (hh, mm))
+
+    async def test_after_collect_window_without_log_is_not_executed(self):
+        r = await hr._section_market_index(
+            FakePool(FakeConn()), FakeRedis({}), date(2026, 10, 13),
+            datetime(2026, 10, 13, 16, 31, tzinfo=KST))
+        self.assertEqual(r["kospi_fail_reason"], "미실행")
+
+    async def test_failure_log_still_shown_even_during_window(self):
+        today = date(2026, 10, 13)
+        log = json.dumps({"KOSPI": {"ok": False, "error": {"reason": "토큰 실패"}},
+                          "KOSDAQ": {"ok": False, "error": {"reason": "토큰 실패"}}})
+        r = await hr._section_market_index(
+            FakePool(FakeConn()), FakeRedis({f"health:index_collect:{today.isoformat()}": log}),
+            today, datetime(2026, 10, 13, 15, 50, tzinfo=KST))
+        self.assertEqual(r["kospi_fail_reason"], "토큰 실패")
+
+    async def test_stored_value_wins_over_pending(self):
+        r = await hr._section_market_index(
+            FakePool(FakeConn(market_index_rows=[{"index_code": "0001", "change_rate": -1.0}])),
+            FakeRedis({}), date(2026, 10, 13), datetime(2026, 10, 13, 15, 50, tzinfo=KST))
+        self.assertAlmostEqual(r["kospi_change_rate"], -1.0)
+        self.assertIsNone(r["kospi_fail_reason"])
 
 
 class TestFmtIndexRate(unittest.TestCase):
@@ -407,7 +499,7 @@ class TestBuildHealthReportSummary(unittest.IsolatedAsyncioTestCase):
         # j)는 health:index_collect 키가 없으면(fix/market-index-collect) "미실행"으로 표시된다.
         self.assertIn("i) 오늘 매수 관찰(저가주/급등): low_price 0건, surge_5d 0건", report["text"])
         self.assertIn(
-            "j) 당일 지수: KOSPI 데이터 없음 (미실행), KOSDAQ 데이터 없음 (미실행)", report["text"])
+            "j) 당일 지수: KOSPI 데이터 없음 (수집 대기), KOSDAQ 데이터 없음 (수집 대기)", report["text"])
 
     async def test_circuit_breaker_triggers_warn(self):
         kwargs = self._base_kwargs()
@@ -437,8 +529,20 @@ class TestBuildHealthReportSummary(unittest.IsolatedAsyncioTestCase):
         kwargs = self._base_kwargs()
         kwargs["get_positions_fn"] = stale_positions
         report = await hr.build_health_report(**kwargs)
-        self.assertEqual(report["status"], "warn")
-        self.assertTrue(any("stale" in i for i in report["issues"]))
+        self.assertEqual(report["status"], "warn")  # 스냅샷 기록 없음 = 시각 불명 -> 경고
+        self.assertTrue(any("포지션 조회 실패" in i for i in report["issues"]))
+        self.assertIn("d) 포지션 조회: 조회 실패(폴백 사용), 스냅샷 기록 없음", report["text"])
+
+    async def test_stale_with_fresh_snapshot_is_ok_and_label_separated(self):
+        """stale + 스냅샷 0분 전: 경고 없이 "조회 실패(폴백 사용), 스냅샷 0분 전"으로 구분 표시."""
+        async def stale_positions():
+            return {"success": True, "data": [], "stale": True}
+        kwargs = self._base_kwargs()
+        kwargs["get_positions_fn"] = stale_positions
+        kwargs["redis"] = FakeRedis({"positions:last_ok": '{"snapshot_at": "%s"}' % kwargs["now_kst"].isoformat()})
+        report = await hr.build_health_report(**kwargs)
+        self.assertFalse(any("포지션" in i for i in report["issues"]))
+        self.assertIn("d) 포지션 조회: 조회 실패(폴백 사용), 스냅샷 0분 전", report["text"])
 
     async def test_token_reissue_three_or_more_triggers_warn(self):
         kwargs = self._base_kwargs()

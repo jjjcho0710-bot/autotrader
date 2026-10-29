@@ -22,6 +22,7 @@ import asyncpg
 import redis.asyncio as aioredis
 
 from common.config import config, compute_total_pnl
+from common import strategy_audit
 from common.late_fill_tracker import late_fill_tracker_loop
 from common.uncertain_order_tracker import uncertain_order_tracker_loop
 from common.migrations import run_migrations
@@ -2561,26 +2562,64 @@ async def check_buy_feasibility(code: str, price: int = 0):
 
 
 @app.api_route("/api/strategy/fix_units", methods=["GET", "POST"])
-async def fix_strategy_units():
-    """단위변환 버그로 오염된 stock_trader 설정을 정상값(-7%)으로 일괄 정정 (일회성)"""
+async def fix_strategy_units(request: Request):
+    """단위변환 버그로 오염된 stock_trader 설정을 일괄 정정 (일회성, 위험 — 보호됨).
+
+    [AT] fix/strategy-config-guard: 예전에는 GET 한 번으로 인증 없이 활성 여부와 무관하게 모든
+    stock_trader 전략의 stop_loss를 -7로 덮어쓰고 take_profit을 삭제했다. 지금은
+      - GET은 항상 405 거부(링크 클릭·크롤러·프리패치로 실행 불가)
+      - POST + 환경변수 STRATEGY_FIX_UNITS_TOKEN이 설정돼 있고 헤더 X-Confirm-Token이 일치할
+        때만 실행(환경변수 미설정 = 사실상 비활성화)
+      - 정정값은 body의 stop_loss(안전 범위 -15 ~ -2, 기본 -5), take_profit은 삭제하지 않는다
+      - before/after를 감사 기록하고 텔레그램으로 알린다."""
     try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, content = await _fix_strategy_units_raw(
+        request.method, request.headers.get("X-Confirm-Token", ""), body)
+    return JSONResponse(status_code=status, content=content)
+
+
+async def _fix_strategy_units_raw(method: str, given_token: str, body: dict) -> tuple:
+    """fix_units 본체 (테스트 가능하도록 라우트에서 분리). 반환: (HTTP 상태, 응답 dict)."""
+    import hmac
+    if method != "POST":
+        return 405, {"success": False,
+                     "error": "GET 금지: POST + X-Confirm-Token 필요 (fix_units는 보호됨)"}
+    expected = os.getenv("STRATEGY_FIX_UNITS_TOKEN", "")
+    if not expected:
+        return 403, {"success": False,
+                     "error": "fix_units 비활성화됨 (STRATEGY_FIX_UNITS_TOKEN 미설정)"}
+    if not hmac.compare_digest(expected.encode(), (given_token or "").encode()):
+        return 403, {"success": False, "error": "확인 토큰 불일치"}
+    try:
+        ok, target = setting_handler.validate_setting("stop_loss", (body or {}).get("stop_loss", -5))
+        if not ok:
+            return 400, {"success": False, "error": target}
+        entries = []
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, name, params FROM strategy_config WHERE bot='stock_trader'")
-            fixed = []
             for r in rows:
                 params = r["params"] if isinstance(r["params"], dict) else json.loads(r["params"] or "{}")
                 before = dict(params)
-                params["stop_loss"] = -7
-                # take_profit은 AI(HOLD/HALF/ALL) 판단 방식이라 실제로 코드에서 읽어 쓰지 않음 — 혼란 방지로 제거
-                params.pop("take_profit", None)
+                params["stop_loss"] = target
                 await conn.execute(
                     "UPDATE strategy_config SET params=$1, updated_at=NOW() WHERE id=$2",
                     json.dumps(params), r["id"])
-                fixed.append({"name": r["name"], "before": before, "after": params})
-        return {"success": True, "fixed": fixed}
+                entry = strategy_audit.build_entry(
+                    path="fix_units(POST /api/strategy/fix_units)", actor="확인 토큰 보유자의 수동 호출",
+                    bot="stock_trader", name=r["name"], before=before, after=dict(params))
+                await strategy_audit.record(redis_client, entry)
+                entries.append(entry)
+        _alert = strategy_audit.build_alert_text(entries)
+        if _alert:
+            await _send_telegram(_alert, dest="personal")
+        return 200, {"success": True, "fixed": [
+            {"name": e["name"], "before": e["before"], "after": e["after"]} for e in entries]}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return 500, {"success": False, "error": str(e)}
 
 
 @app.get("/api/strategy/current")
@@ -5562,7 +5601,7 @@ async def _jarvis_chat_impl(body: dict):
                     "구체적 숫자가 포함된 전략 설정 변경(예: '손절 -5%로', '매수금액 100만원으로')이 담겨 있거나, "
                     "특정 종목에 관심을 표하며 지켜봐달라는 취지(예: '지켜봐줘', '관심있게 봐줘', '눈여겨봐줘', "
                     "'좋은 기회 오면 알려줘')가 담겨 있으면, 자연스러운 답변 후 마지막 줄에 딱 한 줄로:\n"
-                    '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -7}, "watch_add": "종목명 또는 코드(감시 추가 요청 시)", "watch_interest": "종목명 또는 코드(관심 표명 시 — 더 자주 확인)"}\n'
+                    '[[ACTION]]{"directive": "저장할 지시 요약(있으면)", "settings": {"stop_loss": -5}, "watch_add": "종목명 또는 코드(감시 추가 요청 시)", "watch_interest": "종목명 또는 코드(관심 표명 시 — 더 자주 확인)"}\n'
                     "형식으로 출력하라. settings는 사용자가 구체적 숫자를 말했을 때만 포함하고, "
                     "'공격적으로', '적극적으로', '보수적으로' 같은 정성적 표현은 숫자로 억지 변환하지 말고 "
                     "directive(지시 문구)로만 저장하라. watch_add와 watch_interest는 문맥으로 스스로 판단하라 — "
@@ -5654,10 +5693,17 @@ async def _jarvis_chat_impl(body: dict):
                     else:
                         notes.append(f"⚠️ {k} 변경 거부: {nv}")
                 if valid:
-                    applied = await setting_handler.apply_strategy_settings(db_pool, redis_client, valid)
+                    _audit = []
+                    applied = await setting_handler.apply_strategy_settings(
+                        db_pool, redis_client, valid,
+                        path="대화 [[ACTION]] 설정(jarvis_chat)",
+                        actor=f"AI 대화 인식(세션 {session_id})", audit_out=_audit)
                     desc = ", ".join(f"{k}={v}" for k, v in valid.items())
                     notes.append(f"⚙️ 설정 적용됨 [{desc}] → {', '.join(applied)}")
-                    await _send_telegram(f"⚙️ 전략 설정 변경 (대화 인식)\n{desc}", dest="personal")
+                    _alert = strategy_audit.build_alert_text(_audit)
+                    await _send_telegram(
+                        f"⚙️ 전략 설정 변경 (대화 인식)\n{desc}" + (f"\n{_alert}" if _alert else ""),
+                        dest="personal")
                 if notes:
                     reply = reply + "\n\n" + "\n".join(notes)
         except Exception as ae:
@@ -6482,7 +6528,23 @@ async def _update_strategy_raw(body: dict):
                 return {"success": False, "error": v}
             params["max_positions"] = v
 
+        # stop_loss 안전 범위 검증 ([AT] fix/strategy-config-guard): stock_trader는 -15 ~ -2(%)만 저장
+        if bot == "stock_trader" and isinstance(params, dict) and "stop_loss" in params:
+            ok, v = setting_handler.validate_setting("stop_loss", params["stop_loss"])
+            if not ok:
+                return {"success": False, "error": v}
+            params["stop_loss"] = v
+
+        before_params = None
         async with db_pool.acquire() as conn:
+            try:
+                _row = await conn.fetchrow(
+                    "SELECT params FROM strategy_config WHERE bot=$1 AND name=$2", bot, name)
+                if _row and _row["params"] is not None:
+                    before_params = (_row["params"] if isinstance(_row["params"], dict)
+                                     else json.loads(_row["params"]))
+            except Exception:
+                before_params = None
             await conn.execute("""
                 UPDATE strategy_config
                 SET is_active=$1, params=$2, updated_at=NOW()
@@ -6498,7 +6560,21 @@ async def _update_strategy_raw(body: dict):
         # 한도가 어긋나지 않도록 stock_trader 전 전략에 같은 값을 맞춘다 (redis 알림 포함)
         if sync_max_positions:
             await setting_handler.apply_strategy_settings(
-                db_pool, redis_client, {"max_positions": params["max_positions"]})
+                db_pool, redis_client, {"max_positions": params["max_positions"]},
+                path="대시보드 설정 화면 API(max_positions 동기화)", actor="웹 대시보드 요청")
+
+        # 감사 기록 + 텔레그램 알림 ([AT] fix/strategy-config-guard)
+        try:
+            _entry = strategy_audit.build_entry(
+                path="대시보드 설정 화면 API(POST /api/strategies/update)",
+                actor="웹 대시보드 요청(인증 없음, 호출자 미상)", bot=bot, name=name,
+                before=before_params, after=params if isinstance(params, dict) else {})
+            await strategy_audit.record(redis_client, _entry)
+            _alert = strategy_audit.build_alert_text([_entry])
+            if _alert:
+                await _send_telegram(_alert, dest="personal")
+        except Exception as _ae:
+            logger.warning(f"전략 설정 감사/알림 실패(무시): {_ae}")
 
         # 저장 이후에 캐시를 비워야 화면이 방금 저장한 값을 바로 다시 읽는다
         await _invalidate_strategy_cache()
@@ -6530,6 +6606,11 @@ async def create_strategy_table():
 @app.post("/api/strategies/add")
 async def add_strategy(body: dict):
     """새 전략 추가"""
+    return await _add_strategy_raw(body)
+
+
+async def _add_strategy_raw(body: dict):
+    """새 전략 추가 본체 (테스트 가능하도록 라우트에서 분리)"""
     try:
         import json
         bot     = body.get("bot")
@@ -6539,6 +6620,12 @@ async def add_strategy(body: dict):
 
         if not name:
             return {"success": False, "message": "전략명을 입력해주세요"}
+
+        if bot == "stock_trader" and isinstance(params, dict) and "stop_loss" in params:
+            ok, v = setting_handler.validate_setting("stop_loss", params["stop_loss"])
+            if not ok:
+                return {"success": False, "message": v}
+            params["stop_loss"] = v
 
         async with db_pool.acquire() as conn:
             exists = await conn.fetchrow(
@@ -6551,6 +6638,17 @@ async def add_strategy(body: dict):
                 INSERT INTO strategy_config (bot, name, is_active, params)
                 VALUES ($1, $2, $3, $4)
             """, bot, name, active, json.dumps(params))
+
+        try:
+            _entry = strategy_audit.build_entry(
+                path="전략 추가 API(POST /api/strategies/add)", actor="웹 대시보드 요청(호출자 미상)",
+                bot=bot, name=name, before=None, after=params if isinstance(params, dict) else {})
+            await strategy_audit.record(redis_client, _entry)
+            await _send_telegram(
+                f"🛠 <b>전략 추가</b>\n경로: {_entry['path']}\n{bot}/{name}: {json.dumps(params, ensure_ascii=False)}",
+                dest="personal")
+        except Exception as _ae:
+            logger.warning(f"전략 추가 감사/알림 실패(무시): {_ae}")
 
         return {"success": True, "message": f"{name} 전략 추가 완료"}
     except Exception as e:

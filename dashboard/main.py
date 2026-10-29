@@ -284,6 +284,7 @@ async def startup():
     asyncio.create_task(uncertain_order_tracker_loop(
         redis_client, db_pool, get_stock_positions, invalidate_stock_positions_cache,
         lambda msg: _send_telegram(msg, dest="personal"), _log_journal,
+        _late_fill_get_filled_qty,  # order_no 기반 체결수량 조회([AT] fix/uncertain-order-extended-tracking)
     ))
 
 

@@ -23,6 +23,7 @@ import redis.asyncio as aioredis
 
 from common.config import config, compute_total_pnl
 from common import strategy_audit
+from common import api_auth
 from common.late_fill_tracker import late_fill_tracker_loop
 from common.uncertain_order_tracker import uncertain_order_tracker_loop
 from common.migrations import run_migrations
@@ -110,12 +111,16 @@ async def push_event(event_type: str, data: dict):
         except:
             sse_clients.remove(q)
 
+# 변경성 API 관리자 토큰 + 텔레그램 webhook secret ([AT] feat/api-auth-phase1).
+# DASHBOARD_ADMIN_TOKEN / TELEGRAM_WEBHOOK_SECRET 이 설정된 경우에만 동작한다(미설정 = 기존 동작).
+# 나중에 추가한 미들웨어가 바깥쪽이므로 CORS 뒤에 추가해 가장 먼저 검사한다(OPTIONS preflight는 통과).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(api_auth.AdminAuthMiddleware)
 
 # DB / Redis 연결
 db_pool: Optional[asyncpg.Pool] = None
@@ -249,6 +254,7 @@ async def _code_to_name(code: str) -> str:
 @app.on_event("startup")
 async def startup():
     global db_pool, redis_client, universe
+    api_auth.log_startup_warnings(logger)
     db_pool = await asyncpg.create_pool(
         host=config.DB_HOST, port=config.DB_PORT,
         database=config.DB_NAME, user=config.DB_USER,
@@ -2675,12 +2681,12 @@ async def reconcile_trades_with_kis():
 
         return {"success": True, "today_trade_count": len(today_trades),
                 "real_position_count": len(real_symbols), "findings": findings,
-                "note": "findings의 각 id를 확인 후 /api/jarvis/reconcile_trades/delete?id=N 으로 개별 삭제 가능"}
+                "note": "findings의 각 id를 확인 후 POST /api/jarvis/reconcile_trades/delete?id=N (X-Admin-Token 필요 시) 으로 개별 삭제 가능"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 
-@app.api_route("/api/jarvis/reconcile_trades/delete", methods=["GET", "POST"])
+@app.post("/api/jarvis/reconcile_trades/delete")
 async def reconcile_trades_delete(id: int):
     """reconcile_trades에서 확인된 오염 레코드를 id 지정 삭제 (되돌릴 수 없음, 신중히 사용)"""
     try:

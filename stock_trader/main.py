@@ -52,13 +52,20 @@ async def _resolve_stock_name(symbol: str) -> str:
         import aiohttp as http
         async with http.ClientSession() as session:
             resp = await session.get(f"{DASHBOARD_URL}/api/stock/name",
-                                      params={"code": symbol}, timeout=http.ClientTimeout(total=5))
+                                      params={"code": symbol}, headers=_dashboard_headers(), timeout=http.ClientTimeout(total=5))
             data = await resp.json()
             return data.get("name") or symbol
     except Exception:
         return symbol
 
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dashboard-production-65e3.up.railway.app")
+
+
+def _dashboard_headers() -> dict:
+    """stock_trader → dashboard 내부 호출 공통 헤더([AT] feat/api-auth-phase1). DASHBOARD_ADMIN_TOKEN
+    이 설정돼 있으면 X-Admin-Token 을 붙이고, 없으면 빈 dict(기존 동작)."""
+    from common.api_auth import admin_headers
+    return admin_headers()
 
 
 _STOP_LOSS_WARN_LAST: dict = {}  # raw 값 -> 마지막 경고 시각(1시간 스로틀)
@@ -584,6 +591,7 @@ class StockTrader:
                 await session.post(
                     f"{DASHBOARD_URL}/api/jarvis/memory",
                     json={"content": memory, "type": "ml_training"},
+                    headers=_dashboard_headers(),
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
         except Exception as e:
@@ -980,6 +988,7 @@ class StockTrader:
             async with http.ClientSession() as session:
                 resp = await session.post(
                     f"{DASHBOARD_URL}/api/jarvis/signal",
+                    headers=_dashboard_headers(),
                     json={
                         "bot": "stock_trader",
                         "action": "sell",
@@ -1379,6 +1388,7 @@ class StockTrader:
                             async with http.ClientSession() as session:
                                 resp = await session.post(
                                     f"{DASHBOARD_URL}/api/jarvis/exit_decision",
+                                    headers=_dashboard_headers(),
                                     json={"symbol": symbol, "name": pos.get("name", symbol),
                                           "qty": qty, "avg_price": avg_price,
                                           "cur_price": cur_price, "pnl_rate": pnl_rate},
@@ -1817,6 +1827,7 @@ class StockTrader:
                 async with http.ClientSession() as session:
                     resp = await session.post(
                         f"{DASHBOARD_URL}/api/jarvis/signal",
+                    headers=_dashboard_headers(),
                         json={
                             "bot": "stock_trader",
                             "action": "buy",

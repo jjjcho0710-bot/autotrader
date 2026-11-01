@@ -127,7 +127,7 @@ class _FakeHttpSession:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, json=None, timeout=None):
+    async def post(self, url, json=None, timeout=None, headers=None):
         self._calls.append(json)
         symbol = json.get("symbol")
         data = self._responses.get(symbol, {"executed": False, "jarvis_reply": "SKIP"})

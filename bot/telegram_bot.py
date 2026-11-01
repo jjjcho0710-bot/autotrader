@@ -179,6 +179,17 @@ async def _handle_callback_query(cq: dict, ctx: BotContext) -> dict:
     return {"ok": True}
 
 
+def _set_webhook_payload(webhook_url: str) -> dict:
+    """setWebhook 요청 본문. TELEGRAM_WEBHOOK_SECRET 이 설정돼 있으면 secret_token 을 함께 보낸다
+    ([AT] feat/api-auth-phase1) — 이후 텔레그램이 모든 업데이트에 X-Telegram-Bot-Api-Secret-Token
+    헤더를 붙이고, 대시보드가 이를 검증한다."""
+    payload = {"url": webhook_url, "drop_pending_updates": True}
+    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+    if secret:
+        payload["secret_token"] = secret
+    return payload
+
+
 async def register_webhook(base_url: str, config: Any) -> dict:
     """STARK 봇 webhook URL 등록. base_url은 스킴 포함 전체 URL(끝 슬래시 무관)."""
     import aiohttp as http
@@ -190,7 +201,7 @@ async def register_webhook(base_url: str, config: Any) -> dict:
         async with http.ClientSession() as session:
             res = await session.post(
                 f"https://api.telegram.org/bot{token}/setWebhook",
-                json={"url": webhook_url, "drop_pending_updates": True})
+                json=_set_webhook_payload(webhook_url))
             data = await res.json()
         logger.info(f"텔레그램 webhook 등록: {webhook_url} → {data}")
         return {"success": data.get("ok"), "webhook_url": webhook_url, "result": data}

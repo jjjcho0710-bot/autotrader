@@ -10,6 +10,7 @@ COPY learning/ ./learning/
 COPY router/ ./router/
 COPY bot/ ./bot/
 COPY stock_trader/ ./stock_trader/
+COPY data_collector/ ./data_collector/
 COPY migrations/ ./migrations/
 COPY dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

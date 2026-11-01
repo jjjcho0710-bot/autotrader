@@ -3114,6 +3114,17 @@ async def _morning_routine():
         await dart.collect_and_alert(symbols, telegram_func=_send_telegram)
     except Exception as e:
         logger.warning(f"공시 확인 실패: {e}")
+        # 예외 블록이 삼키던 실패(예: 컨테이너에 data_collector 미포함 ImportError)를 하루 1회
+        # 텔레그램으로 올린다([AT] fix/dockerfile-data-collector). 알림 실패는 루틴을 막지 않는다.
+        try:
+            _today = datetime.now(KST).date()
+            if await _daily_gate("dart_check_fail_alert", _today):
+                await _send_telegram(
+                    f"⚠️ <b>공시 확인 실패</b>\n{type(e).__name__}: {str(e)[:150]}\n"
+                    f"(08:30 루틴의 DART 공시 확인 단계. 같은 날 반복 실패는 알리지 않습니다)",
+                    dest="personal")
+        except Exception as _ae:
+            logger.warning(f"공시 확인 실패 알림 전송 실패(무시): {_ae}")
 
 
 async def _closing_routine():

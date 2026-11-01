@@ -140,7 +140,8 @@ class TestBuyScanStaleCashIndicator(unittest.IsolatedAsyncioTestCase):
             p.stop()
 
     async def test_stale_balance_marks_jarvis_reason_and_log(self):
-        bot = _make_bot({"cash": 1_000_000, "total": 0, "stale": True})
+        # total은 양수(알려진 값)이고 cash만 지연된 경우 — 표시 기능 유지
+        bot = _make_bot({"cash": 1_000_000, "total": 5_000_000, "stale": True})
 
         with self.assertLogs("stock-trader", level="INFO") as cm:
             await bot._run_cycle()
@@ -148,6 +149,17 @@ class TestBuyScanStaleCashIndicator(unittest.IsolatedAsyncioTestCase):
         log_output = "\n".join(cm.output)
         self.assertIn("Jarvis 판단 요청", log_output)
         self.assertIn("⚠️(마지막 확인: 지연됨)", log_output)
+
+    async def test_unknown_total_holds_buys_without_seed_fallback(self):
+        """[fix/balance-fields] total=0이면 INITIAL_SEED_KRW로 추정해 사이징하지 않고 매수를 보류한다."""
+        bot = _make_bot({"cash": 1_000_000, "total": 0, "stale": True})
+
+        with self.assertLogs("stock-trader", level="INFO") as cm:
+            await bot._run_cycle()
+
+        log_output = "\n".join(cm.output)
+        self.assertIn("신규 매수 보류", log_output)
+        self.assertNotIn("Jarvis 판단 요청", log_output)
 
     async def test_fresh_balance_has_no_stale_marker(self):
         bot = _make_bot({"cash": 1_000_000, "total": 5_000_000})

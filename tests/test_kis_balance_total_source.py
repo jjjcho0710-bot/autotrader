@@ -92,11 +92,11 @@ def _psbl_order_response(rt_cd="0"):
             "output": dict(REAL_PSBL_ORDER_OUTPUT)}
 
 
-def _inquire_balance_response(total_eval="12000000", cash="3000000"):
+def _inquire_balance_response(total_eval="12000000", cash="3000000", stock_eval="0"):
     return {
         "rt_cd": "0",
         "output1": [],
-        "output2": [{"tot_evlu_amt": total_eval, "dnca_tot_amt": cash}],
+        "output2": [{"tot_evlu_amt": total_eval, "dnca_tot_amt": cash, "scts_evlu_amt": stock_eval}],
     }
 
 
@@ -341,7 +341,8 @@ class TestDailySnapshotRecordsWithRealResponseShape(unittest.IsolatedAsyncioTest
         kis_trader = _make_trader()
         session = _UrlRoutedSession(
             psbl_order_resp=_psbl_order_response(),
-            inquire_balance_resp=_inquire_balance_response(total_eval="11000000", cash="2500000"),
+            inquire_balance_resp=_inquire_balance_response(
+                total_eval="11000000", cash="2500000", stock_eval="8400000"),
         )
         kis_trader._new_session = lambda: session
 
@@ -363,7 +364,8 @@ class TestDailySnapshotRecordsWithRealResponseShape(unittest.IsolatedAsyncioTest
         self.assertEqual(total, 11_000_000)
         # cash는 항상 inquire-psbl-order(ord_psbl_cash)에서 온다 — 그대로 유지(item 1)
         self.assertEqual(cash, 1_000_000)
-        self.assertEqual(eval_krw, 11_000_000 - 1_000_000)
+        # eval_krw = inquire-balance scts_evlu_amt (total-cash 아님) ([AT] fix/balance-fields)
+        self.assertEqual(eval_krw, 8_400_000)
 
 
 if __name__ == "__main__":

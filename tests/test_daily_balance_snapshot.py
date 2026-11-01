@@ -244,13 +244,25 @@ class TestDailyBalanceSnapshotNormalRecord(unittest.TestCase):
     def test_records_when_in_window_with_activity_and_fresh_balance(self):
         now = datetime(2026, 9, 29, 15, 40, tzinfo=KST)  # 화요일, 창 안
         sleeps, inserts, activity, trader = _run_daily_balance_snapshot_once(
-            now, has_activity=True, balance={"cash": 300_000, "total": 1_000_000},
+            now, has_activity=True, balance={"cash": 300_000, "total": 1_000_000, "stock_eval": 650_000},
         )
 
-        self.assertEqual(inserts, [("stock_trader", 1_000_000, 300_000, 700_000)])
+        # eval_krw는 total-cash(700,000)가 아니라 KIS 주식평가금액(stock_eval) ([AT] fix/balance-fields)
+        self.assertEqual(inserts, [("stock_trader", 1_000_000, 300_000, 650_000)])
         self.assertEqual(len(activity), 1)
         self.assertEqual(len(sleeps), 1)  # 성공 후 다음날 창까지 대기
         self.assertEqual(trader._balance_snapshot_handled_for, now.date())
+
+
+class TestDailyBalanceSnapshotStockEvalMissing(unittest.TestCase):
+    def test_skips_when_stock_eval_unknown(self):
+        """stock_eval을 알 수 없으면 total-cash로 추정해 기록하지 않고 재시도한다."""
+        now = datetime(2026, 9, 29, 15, 40, tzinfo=KST)
+        sleeps, inserts, _, _ = _run_daily_balance_snapshot_once(
+            now, has_activity=True, balance={"cash": 300_000, "total": 1_000_000},
+        )
+        self.assertEqual(inserts, [])
+        self.assertEqual(sleeps, [60])
 
 
 class TestDailyBalanceSnapshotStaleOrZero(unittest.TestCase):

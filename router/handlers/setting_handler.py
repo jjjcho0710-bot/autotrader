@@ -124,6 +124,14 @@ async def handle(user_msg: str, pool: Any, redis: Any, send_telegram_fn) -> Opti
     # 패턴: 손절 -7% / 익절 3% / 매수금액 100만원(또는 1000000원) + 변경/바꿔/설정/해줘
     if not re.search(r"(변경|바꿔|바꾸|설정|해줘|올려|내려|조정)", msg):
         return None
+    # 손절 입력에 숫자가 둘 이상이면(예: "손절 -7%에서 -5%로") 어느 쪽이 목표인지 알 수 없어 저장하지 않고
+    # 되묻는다([AT] fix/balance-fields). "손절" 이후 익절/매수금액 앞까지의 구간만 센다.
+    _sl_seg = re.search(r"손절[을를]?(.*?)(?=익절|매수\s*금액|$)", msg)
+    if _sl_seg and re.search(r"손절", msg):
+        _nums = re.findall(r"-?\d+(?:\.\d+)?\s*%", "손절" + _sl_seg.group(1))
+        if len(_nums) >= 2:
+            return (f"⚠️ 손절 값이 여러 개({', '.join(n.replace(' ', '') for n in _nums)})라 어느 값으로 "
+                    f"바꿀지 알 수 없어 저장하지 않았습니다. 하나만 지정해 다시 말씀해 주세요. 예: \"손절 -5%로 변경\"")
     m_sl = re.search(r"손절[을를]?\s*(-?\d+(?:\.\d+)?)\s*%", msg)
     m_tp = re.search(r"익절[을를]?\s*(\+?\d+(?:\.\d+)?)\s*%", msg)
     m_amt = re.search(r"매수\s*금액[을를]?\s*(\d+(?:\.\d+)?)\s*(만원|원)", msg)
@@ -158,11 +166,13 @@ async def handle(user_msg: str, pool: Any, redis: Any, send_telegram_fn) -> Opti
          f"익절 {changes['take_profit']}%" if "take_profit" in changes else "",
          f"매수금액 {changes['buy_amount']:,}원" if "buy_amount" in changes else ""])
     desc = " · ".join([d for d in desc.split(" · ") if d])
+    tp_note = "\n※ 익절은 참고용 설정이며 실제 청산에는 반영되지 않습니다(청산은 손익 구간별 로직으로 동작)." \
+        if "take_profit" in changes else ""
     first = audit[0]["changes"] if audit else {}
     before_after = (" / before→after: " + ", ".join(f"{k} {bv}→{av}" for k, (bv, av) in first.items())
                     if first else "")
     await send_telegram_fn(
         f"⚙️ 전략 설정 변경 (채팅 지시)\n{desc}\n적용 전략: {', '.join(applied)}{before_after}\n"
-        f"경로: 채팅 설정 명령", broadcast=True)
+        f"경로: 채팅 설정 명령{tp_note}", broadcast=True)
     return (f"⚙️ 설정 변경 완료 — {desc}\n"
-            f"적용: {', '.join(applied)} (봇이 1분 내 자동 반영, 배포 없음)")
+            f"적용: {', '.join(applied)} (봇이 1분 내 자동 반영, 배포 없음){tp_note}")

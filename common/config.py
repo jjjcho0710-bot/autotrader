@@ -91,6 +91,12 @@ class Config:
     # AI 자동매수는 차단, 수동 채팅매수·제안승인 매수는 경고 후 '강제매수' 키워드로만 통과.
     SINGLE_STOCK_MAX_PCT: float = float(os.getenv("SINGLE_STOCK_MAX_PCT", "20"))
 
+    # ── 보호 규칙 ([AT] feat/protective-rules, PM 승인) — 환경변수로 덮어쓴다 ──
+    # 일일 손실 한도: 당일 실현 pnl 합계 <= 총자산 x 이 값(%) 이면 신규 매수 차단('daily_loss_limit').
+    DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "-1.0"))
+    # 시장 게이트: KOSPI·KOSDAQ 등락률이 둘 다 이 값(%) 이하이면 신규 매수 차단('market_gate').
+    MARKET_GATE_PCT: float = float(os.getenv("MARKET_GATE_PCT", "-1.0"))
+
     def __post_init__(self):
         # 수집할 주식 종목 (환경변수로 override 가능)
         symbols_env = os.getenv("STOCK_SYMBOLS", "")

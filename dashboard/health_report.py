@@ -150,6 +150,42 @@ async def _section_gate_blocks(pool: Any, today: date) -> Dict[str, Any]:
     return {"by_gate": counts, "total": sum(counts.values())}
 
 
+def _recent_trading_days(today: date, n: int = 2) -> List[date]:
+    """today(거래일이면 포함)부터 거슬러 올라간 최근 n개 거래일. 달력에서 못 찾으면 있는 만큼만."""
+    days: List[date] = []
+    cur = today
+    for _ in range(14):
+        if is_trading_day(cur):
+            days.append(cur)
+            if len(days) >= n:
+                break
+        cur -= timedelta(days=1)
+    return days
+
+
+async def _section_no_trade(pool: Any, today: date) -> Dict[str, Any]:
+    """k) 무거래 경보 ([AT] feat/protective-rules) — 최근 2거래일에 AI가 EXECUTE/EXECUTE_SMALL로
+    승인한 판단이 1건 이상인데 stock_trader BUY 체결(trade_history)이 0건이면 warn."""
+    days = _recent_trading_days(today, 2)
+    if not days:
+        return {"error": "확인불가(최근 거래일을 달력에서 못 찾음)"}
+    start, end = min(days), max(days)
+    async with pool.acquire() as conn:
+        exec_n = await conn.fetchval("""
+            SELECT COUNT(*) FROM stark_decisions /* no_trade_exec */
+            WHERE decision IN ('EXECUTE','EXECUTE_SMALL')
+              AND DATE(decided_at AT TIME ZONE 'Asia/Seoul') BETWEEN $1 AND $2
+        """, start, end)
+        buy_n = await conn.fetchval("""
+            SELECT COUNT(*) FROM trade_history /* no_trade_buy */
+            WHERE bot='stock_trader' AND side='BUY'
+              AND DATE(ts AT TIME ZONE 'Asia/Seoul') BETWEEN $1 AND $2
+        """, start, end)
+    exec_n, buy_n = int(exec_n or 0), int(buy_n or 0)
+    return {"days": [d.isoformat() for d in sorted(days)], "exec_decisions": exec_n,
+            "buy_fills": buy_n, "warn": exec_n >= 1 and buy_n == 0}
+
+
 async def _section_positions(redis: Any, get_positions_fn: Callable[[], Awaitable[dict]],
                               now_kst: datetime) -> Dict[str, Any]:
     """d) 포지션 조회 상태.
@@ -413,6 +449,7 @@ async def build_health_report(
         "entry_risk_shadow", _section_entry_risk_shadow(pool, today))
     sections["market_index"] = await _run_section(
         "market_index", _section_market_index(pool, redis, today, now_kst))
+    sections["no_trade"] = await _run_section("no_trade", _section_no_trade(pool, today))
 
     issues: List[str] = []
 
@@ -442,6 +479,10 @@ async def build_health_report(
     reissue = sections["token_reissue"]
     if "error" not in reissue and reissue.get("reissue_count", 0) >= TOKEN_REISSUE_WARN_THRESHOLD:
         issues.append(f"토큰 재발급 {reissue['reissue_count']}회")
+
+    nt = sections["no_trade"]
+    if "error" not in nt and nt.get("warn"):
+        issues.append(f"무거래 의심(최근 2거래일 승인 판단 {nt['exec_decisions']}건, BUY 체결 0건)")
 
     status = "warn" if issues else "ok"
     headline = "✅ 이상 없음" if status == "ok" else f"⚠️ 점검 필요: {', '.join(issues)}"
@@ -512,6 +553,12 @@ async def build_health_report(
             f"{_fmt_index_rate('KOSPI', d['kospi_change_rate'], d.get('kospi_fail_reason'))}, "
             f"{_fmt_index_rate('KOSDAQ', d['kosdaq_change_rate'], d.get('kosdaq_fail_reason'))}"
         )
+    ))
+
+    lines.append(_fmt_section_line(
+        "k) 무거래 점검:", nt,
+        lambda d: (f"{d['days'][0]}~{d['days'][-1]} 승인 판단 {d['exec_decisions']}건 / BUY 체결 {d['buy_fills']}건"
+                   + (" ⚠️ 승인 판단은 있는데 체결 0건" if d.get("warn") else ""))
     ))
 
     return {"text": "\n".join(lines), "status": status, "issues": issues, "sections": sections}

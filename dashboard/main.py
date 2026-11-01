@@ -23,6 +23,7 @@ import redis.asyncio as aioredis
 
 from common.config import config, compute_total_pnl
 from common import strategy_audit
+from common import protective_rules
 from common.late_fill_tracker import late_fill_tracker_loop
 from common.uncertain_order_tracker import uncertain_order_tracker_loop
 from common.migrations import run_migrations
@@ -7449,7 +7450,17 @@ async def jarvis_signal(request: Request):
             analysis_prompt = context_collector.build_analysis_prompt(signal, ctx_data)
 
             # 2. 순수 AI 판단 (stark/decision_engine.py) — 실행은 하지 않고 stark_decisions에 기록만
-            decision = await decision_engine.decide(signal, analysis_prompt, ask_llm_fn=_ask_openwebui, pool=db_pool)
+            # BUY 결정 섀도 기록(KST 시각대, 지수 등락, 당일 실현 pnl) — 관찰 전용, 실패해도 무시
+            # ([AT] feat/protective-rules). execute()의 차단 기록에도 같은 값이 쓰인다.
+            _shadow = None
+            if action in ("buy", "BUY"):
+                try:
+                    _shadow = await protective_rules.build_shadow_features(db_pool, get_market_index)
+                except Exception as _se:
+                    logger.warning(f"섀도 기록 생성 실패(무시): {_se}")
+                signal["shadow_features"] = _shadow
+            decision = await decision_engine.decide(signal, analysis_prompt, ask_llm_fn=_ask_openwebui,
+                                                    pool=db_pool, features=_shadow)
             jarvis_reply = decision["reply"]
             is_small = decision["is_small"]
             should_execute = decision["should_execute"]
@@ -7583,6 +7594,7 @@ async def jarvis_signal(request: Request):
                         code_to_name_fn=_code_to_name,
                         get_positions_fn=get_stock_positions,
                         invalidate_cache_fn=invalidate_stock_positions_cache,
+                        get_market_index_fn=get_market_index,
                     )
             else:
                 # 4. 건너뜀 — 텔레그램 알림 없이 로그·채점 기록만 (완전자동화 후 SKIP은 액션 불필요)

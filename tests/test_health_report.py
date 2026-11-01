@@ -48,7 +48,9 @@ class FakeConn:
                  stop_loss_rows=None, pnl_null_count=0,
                  raise_on_today_counts=False, raise_on_gate=False,
                  raise_on_stop_loss_pnl=False, raise_on_pnl_null=False,
-                 entry_risk_rows=None, market_index_rows=None):
+                 entry_risk_rows=None, market_index_rows=None, no_trade_exec=0, no_trade_buy=0):
+        self.no_trade_exec = no_trade_exec
+        self.no_trade_buy = no_trade_buy
         self.stop_loss_sell = stop_loss_sell
         self.buy_count = buy_count
         # {gate_name: (journal_n, decisions_n[, paired_n])} — paired_n개의 판단 행은 일지 행과
@@ -72,6 +74,10 @@ class FakeConn:
         return None
 
     async def fetchval(self, query, *args):
+        if "no_trade_exec" in query:
+            return self.no_trade_exec
+        if "no_trade_buy" in query:
+            return self.no_trade_buy
         if "pnl IS NULL" in query:
             if self.raise_on_pnl_null:
                 raise RuntimeError("DB down")
@@ -383,6 +389,42 @@ class TestMarketIndexPending(unittest.IsolatedAsyncioTestCase):
             FakeRedis({}), date(2026, 10, 13), datetime(2026, 10, 13, 15, 50, tzinfo=KST))
         self.assertAlmostEqual(r["kospi_change_rate"], -1.0)
         self.assertIsNone(r["kospi_fail_reason"])
+
+
+class TestNoTradeAlert(unittest.IsolatedAsyncioTestCase):
+    """[feat/protective-rules] 최근 2거래일 승인 판단은 있는데 BUY 체결 0건이면 경고."""
+
+    async def test_warns_when_exec_decisions_but_no_buy_fills(self):
+        r = await hr._section_no_trade(FakePool(FakeConn(no_trade_exec=3, no_trade_buy=0)), date(2026, 10, 13))
+        self.assertTrue(r["warn"])
+        self.assertEqual(len(r["days"]), 2)
+
+    async def test_no_warn_when_buy_filled_or_no_exec(self):
+        for e, b in ((3, 1), (0, 0), (0, 2)):
+            r = await hr._section_no_trade(FakePool(FakeConn(no_trade_exec=e, no_trade_buy=b)), date(2026, 10, 13))
+            self.assertFalse(r["warn"], (e, b))
+
+    async def test_summary_issue_and_line(self):
+        report = await hr.build_health_report(
+            pool=FakePool(FakeConn(no_trade_exec=2, no_trade_buy=0)), redis=FakeRedis({}),
+            reconcile_dry_run_fn=_ok_reconcile, get_positions_fn=_ok_positions,
+            now_kst=datetime(2026, 10, 13, 9, 40, tzinfo=KST))
+        self.assertTrue(any("무거래 의심" in i for i in report["issues"]))
+        self.assertIn("k) 무거래 점검:", report["text"])
+        self.assertIn("⚠️ 승인 판단은 있는데 체결 0건", report["text"])
+
+    async def test_section_failure_is_isolated(self):
+        class Boom(FakeConn):
+            async def fetchval(self, query, *a):
+                if "no_trade" in query:
+                    raise RuntimeError("DB down")
+                return await super().fetchval(query, *a)
+        report = await hr.build_health_report(
+            pool=FakePool(Boom()), redis=FakeRedis({}),
+            reconcile_dry_run_fn=_ok_reconcile, get_positions_fn=_ok_positions,
+            now_kst=datetime(2026, 10, 13, 9, 40, tzinfo=KST))
+        self.assertIn("error", report["sections"]["no_trade"])
+        self.assertIn("k) 무거래 점검: 확인불가", report["text"])
 
 
 class TestFmtIndexRate(unittest.TestCase):

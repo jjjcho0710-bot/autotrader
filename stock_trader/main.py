@@ -1748,7 +1748,7 @@ class StockTrader:
                     logger.warning(f"절반확정/트레일링 처리 오류 [{symbol}]: {e}")
 
         # 마감 전 손실 정리(15:20 KST~, 하루 1회) — 보유 조회가 성공한 사이클에서만. 오류가 사이클을 막지 않게 격리.
-        if positions_ok:
+        if positions_ok and config.EOD_CUT_ENABLED:
             try:
                 await self._eod_loss_cut(datetime.now(KST))
             except Exception as e:

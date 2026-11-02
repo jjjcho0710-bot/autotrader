@@ -102,6 +102,8 @@ class Config:
     SURGE_1D_BLOCK_PCT: float = float(os.getenv("SURGE_1D_BLOCK_PCT", "7"))
     # 마감 전 손실 정리: EOD_CUT_TIME_HHMM(KST) 이후, 매수 후 1거래일 이내이고 평가손익 <= EOD_CUT_PCT(%)
     # 인 보유 종목을 전량 매도한다(전략 라벨 '마감전손실정리').
+    # EOD_CUT_ENABLED: 기본 false. false면 stock_trader가 _eod_loss_cut을 호출하지 않는다.
+    EOD_CUT_ENABLED: bool = os.getenv("EOD_CUT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
     EOD_CUT_PCT: float = float(os.getenv("EOD_CUT_PCT", "-3.0"))
     EOD_CUT_TIME_HHMM: str = os.getenv("EOD_CUT_TIME_HHMM", "15:20")
 

@@ -343,6 +343,21 @@ class TestEodLossCut(unittest.IsolatedAsyncioTestCase):
         src = (REPO_ROOT / "stock_trader" / "main.py").read_text(encoding="utf-8")
         self.assertIn("await self._eod_loss_cut(", src)
 
+    async def test_enabled_switch_default_false_skips_call(self):
+        """EOD_CUT_ENABLED 기본 false -> _run_cycle이 _eod_loss_cut을 호출하지 않고, true면 호출한다."""
+        self.assertFalse(config.EOD_CUT_ENABLED)
+        for enabled, expected in ((False, 0), (True, 1)):
+            bot = st.StockTrader.__new__(st.StockTrader)
+            bot.strategies = {}
+            bot._load_positions = AsyncMock(return_value=True)
+            bot.get_all_active_strategies = lambda: [("MA크로스", {"stop_loss": -7, "max_positions": 0})]
+            bot.build_strategy = lambda n, p: None
+            bot.positions = {}
+            bot._eod_loss_cut = AsyncMock()
+            with patch.object(config, "EOD_CUT_ENABLED", enabled):
+                await bot._run_cycle()
+            self.assertEqual(bot._eod_loss_cut.await_count, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

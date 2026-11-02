@@ -301,6 +301,11 @@ class TestCheckMomentumStaleAndFallback(unittest.IsolatedAsyncioTestCase):
 class TestExecuteMomentumGate(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         execution_guard.reset_buy_lock()
+        # 이 테스트는 모멘텀 게이트만 검증한다. 가짜 일봉(100 안팎)과 기본 신호가(70000)가 섞여
+        # 급등주 차단(surge_block, [AT] feat/protective-rules)이 먼저 걸리지 않도록 끈다.
+        _p = patch.object(execution_guard, "check_surge_block", AsyncMock(return_value=None))
+        _p.start()
+        self.addCleanup(_p.stop)
 
     async def test_blocks_automatic_buy_on_negative_momentum(self):
         pool = EgFakePool(daily_closes={"005930": [100, 100, 100, 100, 100, 97]})  # -3%

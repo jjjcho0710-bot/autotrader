@@ -4,14 +4,18 @@
   총자산/손익 조회 실패 시 fail-open(차단 안 함).
 - market_gate: KOSPI·KOSDAQ 등락률이 둘 다 <= MARKET_GATE_PCT(%) -> 신규 매수 차단.
   지수 조회 실패/한쪽 누락 시 fail-open.
+- surge_block: 5거래일 수익률 또는 당일 등락이 임계 이상이면 신규 매수 차단(순수 계산부만 여기, 조회는
+  stark/execution_guard.check_surge_block). 데이터 없으면 fail-open.
+- 마감 전 손실 정리 판정 보조(eod_*): 매수 후 1거래일 이내 + 평가손익 <= EOD_CUT_PCT.
 - build_shadow_features: 모든 BUY 결정에 stark_decisions.features_json 으로 남길 임시 관찰 값
   (KST 시각대, KOSPI·KOSDAQ 등락, 당일 실현 pnl). 조회 실패 항목은 None. 매매 판단에 쓰지 않는다.
 모든 조회는 예외를 삼키고 None/통과로 처리한다 — 보호 규칙의 오류가 매매를 막아서는 안 된다."""
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from common.config import config
+from common.market_calendar import is_trading_day
 
 logger = logging.getLogger("common.protective_rules")
 KST = timezone(timedelta(hours=9))
@@ -122,3 +126,78 @@ async def build_shadow_features(pool: Any, get_market_index_fn: Any,
     if pool is not None:
         feats["realized_pnl_today"] = await realized_pnl_today(pool)
     return feats
+
+
+# ── 급등주 진입 차단 (순수 계산) ─────────────────────────────────────
+def prior_closes(closes: List[float], latest_date: Optional[date], today: date) -> List[float]:
+    """일봉 종가(날짜 오름차순)에서 '오늘 이전에 완성된 봉'만 남긴다. 마지막 봉 날짜가 오늘(장 마감 후
+    수집분)이면 그 봉은 제외한다. latest_date를 모르면(None) 전부 완성된 봉으로 본다."""
+    if latest_date is not None and latest_date >= today and closes:
+        return list(closes[:-1])
+    return list(closes)
+
+
+def surge_pcts(base: List[float], price: float) -> Tuple[Optional[float], Optional[float]]:
+    """(5거래일 수익률%, 당일 등락%). base = 오늘 이전 완성 종가(오름차순), price = 현재가.
+    당일 등락 = 현재가 vs 직전 거래일 종가(base[-1]), 5일 수익률 = 현재가 vs 5거래일 전 종가(base[-5]).
+    계산 불가 항목은 None."""
+    try:
+        price = float(price)
+    except Exception:
+        return None, None
+    if price <= 0:
+        return None, None
+    pct1 = pct5 = None
+    if len(base) >= 1 and base[-1] > 0:
+        pct1 = (price - base[-1]) / base[-1] * 100
+    if len(base) >= 5 and base[-5] > 0:
+        pct5 = (price - base[-5]) / base[-5] * 100
+    return pct5, pct1
+
+
+def evaluate_surge(pct5: Optional[float], pct1: Optional[float],
+                   th5: Optional[float] = None, th1: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """임계 이상이면 차단 정보 dict, 아니면 None. 값이 None인 항목은 판단에서 제외(fail-open)."""
+    th5 = config.SURGE_5D_BLOCK_PCT if th5 is None else th5
+    th1 = config.SURGE_1D_BLOCK_PCT if th1 is None else th1
+    parts = []
+    if pct5 is not None and pct5 >= th5:
+        parts.append(f"5일 수익률 {pct5:+.1f}% (>= {th5:+.1f}%)")
+    if pct1 is not None and pct1 >= th1:
+        parts.append(f"당일 등락 {pct1:+.1f}% (>= {th1:+.1f}%)")
+    if not parts:
+        return None
+    return {"blocked": "surge_block", "pct5": pct5, "pct1": pct1,
+            "reason": "surge_block: " + ", ".join(parts) + " — 신규 매수 차단"}
+
+
+# ── 마감 전 손실 정리 (순수 판정) ────────────────────────────────────
+EOD_CUT_LABEL = "마감전손실정리"
+
+
+def eod_cut_time() -> time:
+    """config.EOD_CUT_TIME_HHMM(KST). 형식이 잘못되면 15:20."""
+    try:
+        hh, mm = str(config.EOD_CUT_TIME_HHMM).split(":")
+        return time(int(hh), int(mm))
+    except Exception:
+        return time(15, 20)
+
+
+def prev_trading_day(d: date) -> date:
+    x = d - timedelta(days=1)
+    for _ in range(15):
+        if is_trading_day(x):
+            return x
+        x -= timedelta(days=1)
+    return x
+
+
+def bought_within_one_trading_day(last_buy_ts: datetime, today: date) -> bool:
+    """마지막 매수일(KST)이 오늘 또는 직전 거래일이면 True."""
+    if last_buy_ts is None:
+        return False
+    if last_buy_ts.tzinfo is None:
+        last_buy_ts = last_buy_ts.replace(tzinfo=timezone.utc)
+    buy_date = last_buy_ts.astimezone(KST).date()
+    return prev_trading_day(today) <= buy_date <= today

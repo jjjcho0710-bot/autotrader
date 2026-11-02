@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # 차단(게이트) 사유 — trade_journal.jarvis_reason/signal_reason, stark_decisions.reason/
 # rationale에서 이 문자열을 포함하는 오늘자 행 건수를 센다(stark/execution_guard.py가
 # 차단 시 reason 문자열에 그대로 남기는 식별자와 동일).
-GATE_REASONS = ("momentum_gate", "single_stock_cap", "size_below_one_share")
+GATE_REASONS = ("momentum_gate", "single_stock_cap", "size_below_one_share",
+                "daily_loss_limit", "market_gate", "surge_block")
 
 # 손절 체결 손익률이 이 값 이하면 "슬리피지 큼"으로 표시한다(stock_trader의 기존
 # 손절 기준 -7%보다 더 나쁘게 체결됐다는 뜻).

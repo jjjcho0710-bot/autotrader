@@ -13,6 +13,7 @@ from datetime import datetime, time, timezone, timedelta
 from common.config import config, compute_total_pnl
 from common.database import db, cache
 from common import position_sizing
+from common import protective_rules
 from common.fill_recording import resolve_fill_price
 from common.late_fill_tracker import register_partial_fill
 from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
@@ -138,6 +139,7 @@ class StockTrader:
         self._safety_net_holiday_date = None  # 안전망이 휴장으로 판정한 날짜 — 그날은 사이클 전체 스킵
         self._calendar_stale_warned_date = None  # 달력 커버 범위 초과 경고, 하루 1회만 로그
         self._positions_fail_count = 0  # 보유 포지션 조회 연속 실패 횟수 ([AT] fix/positions-fetch-failure)
+        self._eod_cut_date = None  # 마감 전 손실 정리를 시도한 날짜(하루 1회) [AT] feat/protective-rules
 
     # ── DB에서 전략 설정 로드 ────────────────────────────
     async def load_strategies(self):
@@ -1102,6 +1104,97 @@ class StockTrader:
         cache_d[symbol] = (label, now)
         return label or fallback
 
+    # ── 마감 전 손실 정리 ([AT] feat/protective-rules, PM 승인) ──────────
+    async def _eod_loss_cut(self, now: datetime):
+        """EOD_CUT_TIME_HHMM(기본 15:20 KST) 이후 하루 1회: 매수 후 1거래일 이내이고 평가손익 <= EOD_CUT_PCT
+        (기본 -3.0%)인 보유 종목을 전량 시장가 매도한다(strategy='마감전손실정리').
+        기존 SELL 경로(KISTrader.sell -> insert_trade -> 부분체결 시 register_partial_fill, 미확정은 pending
+        재확인 루프)를 그대로 쓴다. 매도 실패는 텔레그램 알림만 하고 재시도하지 않는다.
+        마지막 매수 시각을 알 수 없으면(조회 실패/이력 없음) 그 종목은 건드리지 않는다."""
+        today = now.date()
+        if self._eod_cut_date == today or now.time().replace(tzinfo=None) < protective_rules.eod_cut_time():
+            return
+        done_key = f"eod_cut_done:{today.isoformat()}"
+        try:
+            if await cache.client.get(done_key):
+                self._eod_cut_date = today
+                return
+            await cache.client.setex(done_key, 36 * 3600, "1")
+        except Exception as e:
+            logger.warning(f"마감 전 손실 정리 완료 키 처리 실패(메모리 기준으로만 하루 1회 보장): {e}")
+        self._eod_cut_date = today
+        cut_pct = config.EOD_CUT_PCT
+        label = protective_rules.EOD_CUT_LABEL
+
+        for symbol, pos in list(self.positions.items()):
+            try:
+                cur_price, avg_price = pos["cur_price"], pos["avg_price"]
+                qty = pos.get("sellable_qty", pos.get("qty", 0))
+                if cur_price <= 0 or avg_price <= 0 or qty <= 0 or symbol in self._selling:
+                    continue
+                pnl_rate = (cur_price - avg_price) / avg_price * 100
+                if pnl_rate > cut_pct:
+                    continue
+                async with db.pool.acquire() as conn:
+                    last_buy = await conn.fetchval("""
+                        SELECT MAX(ts) FROM trade_history
+                        WHERE bot='stock_trader' AND symbol=$1 AND side='BUY'
+                    """, symbol)
+                if not protective_rules.bought_within_one_trading_day(last_buy, today):
+                    continue
+            except Exception as e:
+                logger.warning(f"마감 전 손실 정리 판정 오류(건너뜀) [{symbol}]: {e}")
+                continue
+
+            nm = pos.get("name", symbol)
+            self._selling.add(symbol)
+            try:
+                result = await self.trader.sell(symbol, cur_price, qty, strategy=label, avg_price=avg_price)
+                if result.get("success"):
+                    _fq = result.get("filled_qty", qty)
+                    _fill_price, _fb = resolve_fill_price(result.get("avg_fill_price"), cur_price)
+                    if _fb:
+                        logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                    _fpnl = int((_fill_price - avg_price) * _fq)
+                    remain = qty - _fq
+                    await db.insert_trade(
+                        bot="stock_trader", asset_type="stock", symbol=symbol, side="SELL",
+                        price=_fill_price, quantity=_fq, amount=_fill_price * _fq,
+                        strategy=label, pnl=_fpnl)
+                    if remain > 0 and result.get("order_no"):
+                        await register_partial_fill(
+                            cache.client, order_no=result["order_no"], symbol=symbol,
+                            side="SELL", bot="stock_trader", requested_qty=qty, recorded_qty=_fq,
+                            strategy=label, price=_fill_price, cost_basis_avg_price=avg_price)
+                    await self._invalidate_position_cache()
+                    if remain > 0:
+                        pos["qty"] = remain
+                        pos["sellable_qty"] = remain
+                        self.positions[symbol] = pos
+                    else:
+                        self.positions.pop(symbol, None)
+                    from common.telegram import send_stock
+                    await send_stock(
+                        f"🧹 <b>{nm}({symbol}) 마감 전 손실 정리 {pnl_rate:+.1f}%</b>\n"
+                        f"{_fq}주 @ {_fill_price:,.0f}원 (손익 {_fpnl:+,}원, 기준 {cut_pct:+.1f}% 이하·매수 후 1거래일 이내)"
+                        + (f"\n⚠️ 잔여 {remain}주는 추가 체결 발생 시 자동 추적·기록합니다(재주문 없음)." if remain > 0 else ""))
+                    logger.info(f"🧹 마감 전 손실 정리 체결 [{symbol}] {pnl_rate:+.1f}% ({_fq}/{qty}주)")
+                elif result.get("pending"):
+                    logger.info(f"⏳ 마감 전 손실 정리 매도 체결 확인 대기 [{symbol}] (pending)")
+                else:
+                    raise RuntimeError(str(result.get("error", "알 수 없음")))
+            except Exception as e:
+                logger.warning(f"마감 전 손실 정리 매도 실패 [{symbol}]: {e}")
+                try:
+                    from common.telegram import send_stock
+                    await send_stock(
+                        f"⚠️ <b>{nm}({symbol}) 마감 전 손실 정리 매도 실패</b> {pnl_rate:+.1f}%\n"
+                        f"사유: {e} — 자동 재시도 없음, 직접 확인해 주세요.")
+                except Exception:
+                    pass
+            finally:
+                self._selling.discard(symbol)
+
     async def _run_cycle(self):
         active_strategies = self.get_all_active_strategies()
         if not active_strategies:
@@ -1653,6 +1746,13 @@ class StockTrader:
                                 logger.warning(f"트레일링 스탑 매도 실패 [{symbol}]: {result.get('error')}")
                 except Exception as e:
                     logger.warning(f"절반확정/트레일링 처리 오류 [{symbol}]: {e}")
+
+        # 마감 전 손실 정리(15:20 KST~, 하루 1회) — 보유 조회가 성공한 사이클에서만. 오류가 사이클을 막지 않게 격리.
+        if positions_ok:
+            try:
+                await self._eod_loss_cut(datetime.now(KST))
+            except Exception as e:
+                logger.warning(f"마감 전 손실 정리 오류(무시): {e}")
 
         if not positions_ok:
             return

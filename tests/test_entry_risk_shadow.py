@@ -110,6 +110,13 @@ class TestCheckEntryRiskShadow(unittest.IsolatedAsyncioTestCase):
 
 # ── 2) execute() 통합 — log_journal_fn이 플래그를 그대로 받는지 ─────
 class TestExecuteEntryRiskShadowJournal(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # 진입위험 관찰만 검증한다 — 가짜 일봉 때문에 surge_block([AT] feat/protective-rules)이
+        # 먼저 걸리지 않도록 끈다.
+        _p = patch.object(execution_guard, "check_surge_block", AsyncMock(return_value=None))
+        _p.start()
+        self.addCleanup(_p.stop)
+
     async def _run_execute(self, pool, signal_overrides=None):
         redis = EgFakeRedis({"cache:positions:stock": "1", "cache:account:stock": "1"})
         journaled_kwargs = []

@@ -96,6 +96,14 @@ class Config:
     DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "-1.0"))
     # 시장 게이트: KOSPI·KOSDAQ 등락률이 둘 다 이 값(%) 이하이면 신규 매수 차단('market_gate').
     MARKET_GATE_PCT: float = float(os.getenv("MARKET_GATE_PCT", "-1.0"))
+    # 급등주 진입 차단: 5거래일 수익률 >= SURGE_5D_BLOCK_PCT(%) 또는 당일 등락 >= SURGE_1D_BLOCK_PCT(%)
+    # 이면 신규 매수 차단('surge_block'). 데이터가 없으면 차단하지 않는다(fail-open).
+    SURGE_5D_BLOCK_PCT: float = float(os.getenv("SURGE_5D_BLOCK_PCT", "10"))
+    SURGE_1D_BLOCK_PCT: float = float(os.getenv("SURGE_1D_BLOCK_PCT", "7"))
+    # 마감 전 손실 정리: EOD_CUT_TIME_HHMM(KST) 이후, 매수 후 1거래일 이내이고 평가손익 <= EOD_CUT_PCT(%)
+    # 인 보유 종목을 전량 매도한다(전략 라벨 '마감전손실정리').
+    EOD_CUT_PCT: float = float(os.getenv("EOD_CUT_PCT", "-3.0"))
+    EOD_CUT_TIME_HHMM: str = os.getenv("EOD_CUT_TIME_HHMM", "15:20")
 
     def __post_init__(self):
         # 수집할 주식 종목 (환경변수로 override 가능)

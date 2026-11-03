@@ -613,10 +613,9 @@ async def check_single_stock_cap(
 
     AI 자동매수 경로(execute())에서만 쓴다 — 총자산 조회 실패 시 차단하지 않고 경고
     로그만 남기고 기존 동작을 유지한다(check_momentum()과 동일한 fail-open 원칙, PM 지시:
-    AI 자동매수를 새로 막지 말 것). 수동 채팅매수·제안승인 매수는 반대로 조회 실패 시
-    경고만 붙이고 통과하되 상한 초과 시에는 차단(+'강제매수' 키워드로만 통과)하는 다른
-    정책을 쓰므로 router/handlers/order_handler.py에 별도로 구현돼 있다 — 공용 계산
-    로직(common.position_sizing.compute_projected_weight_pct)만 공유한다.
+    AI 자동매수를 새로 막지 말 것). 수동 채팅매수·제안승인 매수는 조회 실패 시 보류하는 다른
+    정책을 쓰므로 router/handlers/order_handler.py(_apply_manual_buy_cap)에 별도로 구현돼 있다 —
+    수량 축소 규칙(resolve_single_stock_cap_qty)과 계산 로직은 공유한다.
 
     반환: 통과(또는 조회 실패로 미적용) 시 None. 차단 시 {"blocked": "single_stock_cap",
     "reason": 사람이 읽을 문구, "projected_pct": float}."""

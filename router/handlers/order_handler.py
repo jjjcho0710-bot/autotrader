@@ -24,7 +24,6 @@ from common.position_sizing import (
     DEFAULT_STOP_LOSS_PCT,
     compute_atr_pct,
     compute_base_amount,
-    compute_projected_weight_pct,
     volatility_multiplier,
 )
 from stark.execution_guard import (
@@ -93,48 +92,6 @@ async def _momentum_warning_note(symbol: str, *, pool: Any, redis: Optional[Any]
         f"\n⚠️ 모멘텀 경고: 직전 {momentum['lookback_days']}거래일 수익률 "
         f"{momentum['pct']:.2f}% — 최근 하락 추세 종목입니다 (차단 아님, 참고용)"
     )
-
-
-async def _compute_single_stock_projected_pct(
-    *, get_positions_fn, symbol: str, price: float, qty: float,
-) -> dict:
-    """채팅 직접매수(handle_trade_command)·제안승인 매수(handle_proposal_response) 공용:
-    종목당 비중 상한 검사용 예상 비중(%) 계산 ([AT] feat/single-stock-cap). 유일한 계산
-    로직은 common.position_sizing.compute_projected_weight_pct()이고, 이 함수는 그
-    입력값(총자산·해당 종목 현재 평가금액)을 get_positions_fn으로 모아주는 래퍼다.
-
-    반환: {"pct": float|None, "fetch_failed": bool}. fetch_failed=True면 총자산을 못
-    구한 것이므로(조회 예외/실패/stale/0 이하) 호출부가 차단하지 않고 경고 문구를 답장에
-    붙여야 한다(PM 지시: 수동 매수는 총자산 조회 실패를 새로 차단하지 않는다). get_positions_fn이
-    성공했지만 account 필드 자체가 없는 경우(이 기능과 무관한 기존 테스트의 단순 더미
-    함수들 — 실제 운영 경로의 get_stock_positions_fn은 성공 시 항상 account를 포함한다)는
-    fetch_failed=False로 조용히 미적용한다."""
-    if get_positions_fn is None:
-        return {"pct": None, "fetch_failed": False}
-    try:
-        pos_res = await get_positions_fn()
-    except Exception as e:
-        logger.warning(f"종목당 비중 상한 확인 실패(경고만, 통과) [{symbol}]: {e}")
-        return {"pct": None, "fetch_failed": True}
-    if not isinstance(pos_res, dict) or not pos_res.get("success", False) or pos_res.get("stale", False):
-        logger.warning(f"종목당 비중 상한: 총자산 조회 실패/stale(경고만, 통과) [{symbol}]")
-        return {"pct": None, "fetch_failed": True}
-    account = pos_res.get("account")
-    if not account:
-        return {"pct": None, "fetch_failed": False}
-    equity = float(account.get("total_eval", 0) or 0)
-    pos_row = next(
-        (p for p in (pos_res.get("data") or [])
-         if isinstance(p, dict) and p.get("symbol") == symbol), None,
-    )
-    current_value = 0.0
-    if pos_row:
-        current_value = float(pos_row.get("qty", 0) or 0) * float(pos_row.get("cur_price", 0) or 0)
-    pct = compute_projected_weight_pct(current_value, float(price) * float(qty), equity)
-    if pct is None:
-        logger.warning(f"종목당 비중 상한: 총자산 0 이하(경고만, 통과) [{symbol}]")
-        return {"pct": None, "fetch_failed": True}
-    return {"pct": pct, "fetch_failed": False}
 
 
 async def _apply_manual_buy_cap(*, get_positions_fn, symbol: str, price: float, qty: int,

@@ -88,7 +88,8 @@ class Config:
 
     # ── 종목당 비중 상한 (PM 승인, [AT] feat/single-stock-cap) ──
     # 매수 후 예상 비중 = (해당 종목 현재 평가금액 + 이번 매수금액) ÷ 총자산. 초과 시
-    # AI 자동매수는 차단, 수동 채팅매수·제안승인 매수는 경고 후 '강제매수' 키워드로만 통과.
+    # AI 자동매수·수동 채팅매수·제안승인 매수 모두 초과분은 차단하지 않고 수량을 한도 안으로 축소한다
+    # (수동 매수는 총자산 조회 실패 시 보류, '강제매수' 우회 없음 — [AT] fix/manual-buy-cap).
     SINGLE_STOCK_MAX_PCT: float = float(os.getenv("SINGLE_STOCK_MAX_PCT", "20"))
 
     # ── 보호 규칙 ([AT] feat/protective-rules, PM 승인) — 환경변수로 덮어쓴다 ──

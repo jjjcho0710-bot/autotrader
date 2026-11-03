@@ -401,7 +401,7 @@ class TestExecutionGuardChannelSummary(unittest.IsolatedAsyncioTestCase):
         channel_sent = []
 
         async def get_positions():
-            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000, "qty": 10}]}
+            return {"success": True, "data": [{"symbol": "005930", "avg_price": 70000, "qty": 10}], "account": {"total_eval": 100_000_000}}
 
         async def kis_order(symbol, price, qty, is_buy):
             return {"success": True}
@@ -515,7 +515,7 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -556,7 +556,7 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -598,7 +598,7 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
             sent.append({"text": text, "dest": kw.get("dest")})
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         with patch("common.telegram.CHANNEL_SLIM", False):
             reply = await order_handler.handle_proposal_response(
@@ -628,7 +628,7 @@ class TestOrderHandlerChannelSummary(unittest.IsolatedAsyncioTestCase):
             sent.append({"text": text, "dest": kw.get("dest")})
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,

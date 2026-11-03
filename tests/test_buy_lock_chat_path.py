@@ -127,7 +127,7 @@ class TestConcurrentSignalAndChatBuy(unittest.IsolatedAsyncioTestCase):
 
         async def get_positions():
             await asyncio.sleep(0.005)
-            return {"success": True, "data": list(positions)}
+            return {"success": True, "data": list(positions), "account": {"total_eval": 100_000_000}}
 
         async def kis_order(symbol, price, qty, is_buy):
             await asyncio.sleep(0.005)
@@ -191,7 +191,7 @@ class TestConcurrentSignalAndChatBuy(unittest.IsolatedAsyncioTestCase):
 
         async def get_positions():
             await asyncio.sleep(0.005)
-            return {"success": True, "data": list(positions)}
+            return {"success": True, "data": list(positions), "account": {"total_eval": 100_000_000}}
 
         async def kis_order(symbol, price, qty, is_buy):
             await asyncio.sleep(0.005)
@@ -249,7 +249,7 @@ class TestConcurrentSignalAndChatBuy(unittest.IsolatedAsyncioTestCase):
         buy_done_at = {}
 
         async def get_positions():
-            return {"success": True, "data": list(positions)}
+            return {"success": True, "data": list(positions), "account": {"total_eval": 100_000_000}}
 
         async def kis_order(symbol, price, qty, is_buy):
             if is_buy:
@@ -319,7 +319,7 @@ class TestConcurrentSignalAndChatBuy(unittest.IsolatedAsyncioTestCase):
                 return {"success": True}
 
             async def get_positions():
-                return {"success": True, "data": []}
+                return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
             async def get_quote(symbol):
                 return {"stck_prpr": 70000}

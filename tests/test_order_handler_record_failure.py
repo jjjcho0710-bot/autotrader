@@ -124,7 +124,7 @@ class TestProposalApprovalDirectFillInsertFailure(unittest.IsolatedAsyncioTestCa
             sent.append(text)
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         with self.assertLogs("router.handlers.order", level="ERROR") as logs:
             reply = await order_handler.handle_proposal_response(
@@ -162,8 +162,8 @@ class TestProposalApprovalUncertainReconcileInsertFailure(unittest.IsolatedAsync
 
         async def get_positions():
             if state["qty"] > 0:
-                return {"success": True, "data": [{"symbol": "005930", "qty": state["qty"]}]}
-            return {"success": True, "data": []}
+                return {"success": True, "data": [{"symbol": "005930", "qty": state["qty"]}], "account": {"total_eval": 100_000_000}}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def fake_sleep(_sec):
             state["qty"] = 10.0  # 재확인 시점에 체결이 보유 잔고에 반영됨
@@ -191,7 +191,7 @@ class TestTradeCommandDirectFillInsertFailure(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -232,7 +232,7 @@ class TestTradeCommandDirectFillInsertFailure(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -273,8 +273,8 @@ class TestTradeCommandUncertainReconcileInsertFailure(unittest.IsolatedAsyncioTe
 
         async def get_stock_positions():
             if state["qty"] > 0:
-                return {"success": True, "data": [{"symbol": "005930", "qty": state["qty"]}]}
-            return {"success": True, "data": []}
+                return {"success": True, "data": [{"symbol": "005930", "qty": state["qty"]}], "account": {"total_eval": 100_000_000}}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -344,7 +344,7 @@ class TestNormalInsertSucceedsNoFailureAlert(unittest.IsolatedAsyncioTestCase):
             sent.append(text)
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,

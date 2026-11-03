@@ -247,7 +247,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             sent.append(text)
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
@@ -279,7 +279,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             pass
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
@@ -308,7 +308,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             pass
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
@@ -339,7 +339,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             pass
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
@@ -365,7 +365,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             pass
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=None,
@@ -411,7 +411,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             pass
 
         async def get_positions():
-            return {"success": True, "data": list(held)}
+            return {"success": True, "data": list(held), "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal, send_telegram_fn=None,
@@ -438,7 +438,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             logged.append(args)
 
         async def get_positions():
-            return {"success": True, "data": []}  # 주문 전후 변화 없음 → 판정 불가(unknown)
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}  # 주문 전후 변화 없음 → 판정 불가(unknown)
 
         with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
             reply = await order_handler.handle_proposal_response(
@@ -483,8 +483,8 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             # 주문 전 조회(한도 체크 포함, 여러 번 호출됨)는 보유 0, 주문 이후(reconcile의
             # 재확인 포함) 조회는 체결 확인용으로 보유가 늘어난 값을 돌려준다.
             if not state["ordered"]:
-                return {"success": True, "data": []}
-            return {"success": True, "data": [{"symbol": "005930", "qty": 1}]}
+                return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
+            return {"success": True, "data": [{"symbol": "005930", "qty": 1}], "account": {"total_eval": 100_000_000}}
 
         async def send_telegram(text, **kw):
             pass
@@ -521,7 +521,7 @@ class TestHandleProposalResponse(unittest.IsolatedAsyncioTestCase):
             logged.append(args)
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         with patch("stark.execution_guard.asyncio.sleep", new=AsyncMock()):
             reply = await order_handler.handle_proposal_response(
@@ -780,7 +780,7 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -889,7 +889,7 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}  # 주문 전후 보유 변화 없음 → 판정 불가
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}  # 주문 전후 보유 변화 없음 → 판정 불가
 
         async def kis_order(symbol, price, qty, is_buy):
             return {"success": True, "order_no": "T2", "fill_unconfirmed": True}
@@ -960,7 +960,7 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def kis_order(symbol, price, qty, is_buy):
             return {"success": True, "order_no": "T3"}
@@ -995,7 +995,7 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}  # 주문 전후 보유 변화 없음 → 판정 불가
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}  # 주문 전후 보유 변화 없음 → 판정 불가
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -1048,8 +1048,8 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             # 주문 전 조회(한도 체크 포함, 여러 번 호출됨)는 보유 0, 주문 이후(reconcile의
             # 재확인 포함) 조회는 체결 확인용으로 보유가 늘어난 값을 돌려준다.
             if not state["ordered"]:
-                return {"success": True, "data": []}
-            return {"success": True, "data": [{"symbol": "005930", "qty": 5}]}
+                return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
+            return {"success": True, "data": [{"symbol": "005930", "qty": 5}], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}
@@ -1096,7 +1096,7 @@ class TestHandleTradeCommand(unittest.IsolatedAsyncioTestCase):
             return "FAKE_TOKEN"
 
         async def get_stock_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def get_market_warning(symbol):
             return {"mrkt_warn_cls_code": "00", "vi_cls_code": "N"}

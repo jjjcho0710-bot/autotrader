@@ -497,7 +497,7 @@ class TestOrderHandlerWatchlistUpsert(unittest.IsolatedAsyncioTestCase):
             return {"success": True}
 
         async def positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def send_telegram(text, **kw):
             pass
@@ -527,7 +527,7 @@ class TestOrderHandlerWatchlistUpsert(unittest.IsolatedAsyncioTestCase):
             return {"success": True}
 
         async def positions():
-            return {"success": True, "data": [{"symbol": "005930", "qty": 5, "avg_price": 60000}]}
+            return {"success": True, "data": [{"symbol": "005930", "qty": 5, "avg_price": 60000}], "account": {"total_eval": 100_000_000}}
 
         async def send_telegram(text, **kw):
             pass
@@ -556,7 +556,7 @@ class TestOrderHandlerWatchlistUpsert(unittest.IsolatedAsyncioTestCase):
             return {"success": True}
 
         async def positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         async def send_telegram(text, **kw):
             pass
@@ -591,7 +591,7 @@ class TestOrderHandlerWatchlistUpsert(unittest.IsolatedAsyncioTestCase):
             pass
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,

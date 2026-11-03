@@ -10,8 +10,8 @@
   - AI 자동매수(stark.execution_guard.execute()): 차단(SKIP, stark_decisions/trade_journal
     기록). 총자산 조회 실패 시에는 차단하지 않고 기존 동작 유지(경고 로그만).
   - 수동 채팅 매수(order_handler.handle_trade_command)·제안 승인 매수
-    (handle_proposal_response): 차단 + "'강제매수' 포함해서 다시 지시" 안내. 명령에
-    '강제매수'가 있으면 경고 문구와 함께 통과. 총자산 조회 실패 시에는 경고만 붙이고 통과.
+    (handle_proposal_response): [fix/manual-buy-cap 이후] 차단이 아니라 수량을 한도 안으로 축소
+    ("한도 20% 적용 N주→M주"). '강제매수'로 우회 불가. 총자산 조회 실패 시에는 보류(주문 없음).
   - 매도·코인 경로는 영향받지 않는다.
 
 revert 확인(수동): stark/execution_guard.py execute()의 "(1a) 종목당 비중 상한" 블록과
@@ -363,22 +363,46 @@ class TestHandleTradeCommandSingleStockCap(unittest.IsolatedAsyncioTestCase):
         kwargs["log_journal_fn"] = log_journal
         return await order_handler.handle_trade_command(msg, **kwargs)
 
-    async def test_blocked_over_cap_with_guidance_message(self):
+    async def test_reduced_to_cap_with_note(self):
+        """[AT] fix/manual-buy-cap: 한도 초과는 차단이 아니라 수량 축소. 30주@7만=210만(21%) -> 28주(<=20%)."""
         pool = OhFakePool()
-        # 30주 @ 7만원 = 210만원, 총자산 1천만원 -> 21% > 20%(FakeConfig 기본값)
         reply = await self._run(
             "삼성전자 30주 매수", pool=pool, get_stock_positions_fn=_positions_fn(10_000_000))
-        self.assertIn("예상 비중", reply)
-        self.assertIn("강제매수", reply)
-        self.assertEqual(len(self.orders), 0)
+        self.assertIn("한도 20% 적용 30주→28주", reply)
+        self.assertEqual(self.orders, [("005930", 70000, 28, True)])
 
-    async def test_force_keyword_overrides_block_and_warns(self):
+    async def test_existing_holding_counted_when_reducing(self):
+        pool = OhFakePool(buy_history={"005930": [{"price": 70000}]})
+        # 보유 20주 x 7만 = 140만(14%) -> 여유 60만 -> 8주
+        reply = await self._run(
+            "삼성전자 30주 매수", pool=pool,
+            get_stock_positions_fn=_positions_fn(10_000_000, {"005930": (20, 70000)}))
+        self.assertIn("30주→8주", reply)
+        self.assertEqual(self.orders[0][2], 8)
+
+    async def test_force_keyword_cannot_bypass_cap(self):
         pool = OhFakePool()
         reply = await self._run(
             "삼성전자 30주 매수 강제매수", pool=pool, get_stock_positions_fn=_positions_fn(10_000_000))
-        self.assertIn("매수 완료", reply)
-        self.assertEqual(len(self.orders), 1)
-        self.assertIn("강제매수", reply)
+        self.assertEqual(self.orders[0][2], 28)          # 강제매수여도 한도 안으로 축소
+        self.assertIn("30주→28주", reply)
+        self.assertIn("강제매수'로는 한도를 넘길 수 없습니다", reply)
+
+    async def test_force_keyword_and_limit_ignore_keyword_both_capped(self):
+        pool = OhFakePool()
+        await self._run(
+            "삼성전자 30주 매수 강제매수 한도무시", pool=pool,
+            get_stock_positions_fn=_positions_fn(10_000_000))
+        self.assertEqual(self.orders[0][2], 28)
+
+    async def test_no_room_left_is_blocked_without_order(self):
+        pool = OhFakePool(buy_history={"005930": [{"price": 70000}]})
+        # 이미 25% 보유 -> 추가 여유 0 -> 0주
+        reply = await self._run(
+            "삼성전자 1주 매수 강제매수", pool=pool,
+            get_stock_positions_fn=_positions_fn(10_000_000, {"005930": (36, 70000)}))
+        self.assertIn("1주도 매수할 수 없", reply)
+        self.assertEqual(self.orders, [])
 
     async def test_within_cap_passes_without_warning(self):
         pool = OhFakePool()
@@ -388,13 +412,33 @@ class TestHandleTradeCommandSingleStockCap(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.orders), 1)
         self.assertNotIn("비중", reply)
 
-    async def test_total_asset_fetch_failure_warns_but_passes(self):
-        pool = OhFakePool()
-        reply = await self._run(
-            "삼성전자 30주 매수", pool=pool, get_stock_positions_fn=_zero_equity_positions_fn())
-        self.assertIn("매수 완료", reply)
-        self.assertEqual(len(self.orders), 1)
-        self.assertIn("확인 실패", reply)
+    async def test_total_asset_fetch_failure_holds_order(self):
+        """총자산 조회 실패는 fail-open이 아니라 보류 — 주문 0건. 총자산 0 이하는 비중 한도 단계에서
+        '보류'로, 조회 실패/stale/예외는 앞단 보유 종목수 가드(fail-closed)에서 먼저 막힌다."""
+        self.orders = []
+        reply = await self._run("삼성전자 1주 매수 강제매수", pool=OhFakePool(),
+                                get_stock_positions_fn=_zero_equity_positions_fn())
+        self.assertIn("보류", reply)
+        self.assertEqual(self.orders, [])
+        for fn in (_failed_positions_fn(), _failed_positions_fn(stale=True),
+                   _failed_positions_fn(raise_exc=True)):
+            self.orders = []
+            reply = await self._run("삼성전자 1주 매수 강제매수", pool=OhFakePool(), get_stock_positions_fn=fn)
+            self.assertNotIn("매수 완료", reply)
+            self.assertEqual(self.orders, [])
+
+    async def test_cap_helper_holds_on_any_equity_failure(self):
+        """비중 한도 헬퍼 자체는 모든 총자산 조회 실패 형태를 hold로 처리한다(앞단 가드와 독립)."""
+        for fn in (_zero_equity_positions_fn(), _failed_positions_fn(), _failed_positions_fn(stale=True),
+                   _failed_positions_fn(raise_exc=True), None):
+            cap = await order_handler._apply_manual_buy_cap(
+                get_positions_fn=fn, symbol="005930", price=70000, qty=1, max_pct=20.0)
+            self.assertEqual(cap["status"], "hold")
+
+    async def test_missing_positions_fn_holds_order(self):
+        reply = await self._run("삼성전자 1주 매수", pool=OhFakePool(), get_stock_positions_fn=None)
+        self.assertNotIn("매수 완료", reply)
+        self.assertEqual(self.orders, [])
 
     async def test_sell_is_unaffected(self):
         pool = OhFakePool()
@@ -431,31 +475,7 @@ class TestHandleProposalResponseSingleStockCap(unittest.IsolatedAsyncioTestCase)
                 {"symbol": "005930", "name": "삼성전자", "price": price, "qty": qty}),
         })
 
-    async def test_blocked_over_cap_keeps_proposal_for_retry(self):
-        pool = OhFakePool()
-        redis = self._redis()
-
-        async def kis_order(symbol, price, qty, is_buy):
-            raise AssertionError("상한 차단 중 주문이 나가면 안 된다")
-
-        async def log_journal(*args, **kwargs):
-            pass
-
-        async def send_telegram(text, **kw):
-            pass
-
-        reply = await order_handler.handle_proposal_response(
-            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
-            send_telegram_fn=send_telegram, get_positions_fn=_positions_fn(10_000_000), pool=pool,
-        )
-        self.assertIn("예상 비중", reply)
-        self.assertIn("강제매수", reply)
-        # 위치한도 차단과 달리 proposal을 지우지 않아 "강제매수"로 재승인할 수 있어야 한다
-        self.assertIn("proposal:005930", redis.store)
-
-    async def test_force_keyword_overrides_block_and_executes(self):
-        pool = OhFakePool()
-        redis = self._redis()
+    async def _approve(self, msg, redis, positions_fn, pool=None):
         orders = []
 
         async def kis_order(symbol, price, qty, is_buy):
@@ -469,12 +489,36 @@ class TestHandleProposalResponseSingleStockCap(unittest.IsolatedAsyncioTestCase)
             pass
 
         reply = await order_handler.handle_proposal_response(
-            "사자 강제매수", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
-            send_telegram_fn=send_telegram, get_positions_fn=_positions_fn(10_000_000), pool=pool,
+            msg, redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
+            send_telegram_fn=send_telegram, get_positions_fn=positions_fn, pool=pool or OhFakePool(),
         )
+        return reply, orders
+
+    async def test_reduced_to_cap_and_executes(self):
+        reply, orders = await self._approve("사자", self._redis(), _positions_fn(10_000_000))
         self.assertIn("매수 체결", reply)
-        self.assertIn("강제매수", reply)
-        self.assertEqual(len(orders), 1)
+        self.assertIn("한도 20% 적용 30주→28주", reply)
+        self.assertEqual(orders, [("005930", 70000, 28, True)])
+
+    async def test_force_keyword_cannot_bypass_cap(self):
+        reply, orders = await self._approve("사자 강제매수", self._redis(), _positions_fn(10_000_000))
+        self.assertEqual(orders[0][2], 28)
+        self.assertIn("강제매수'로는 한도를 넘길 수 없습니다", reply)
+
+    async def test_existing_holding_counted(self):
+        reply, orders = await self._approve(
+            "사자", self._redis(), _positions_fn(10_000_000, {"005930": (20, 70000)}),
+            pool=OhFakePool(buy_history={"005930": [{"price": 70000}]}))
+        self.assertEqual(orders[0][2], 8)
+
+    async def test_no_room_cancels_proposal_without_order(self):
+        redis = self._redis(qty=1)
+        reply, orders = await self._approve(
+            "사자 강제매수", redis, _positions_fn(10_000_000, {"005930": (36, 70000)}),
+            pool=OhFakePool(buy_history={"005930": [{"price": 70000}]}))
+        self.assertIn("1주도 매수할 수 없", reply)
+        self.assertEqual(orders, [])
+        self.assertNotIn("proposal:005930", redis.store)
 
     async def test_within_cap_passes_without_warning(self):
         pool = OhFakePool()
@@ -496,25 +540,13 @@ class TestHandleProposalResponseSingleStockCap(unittest.IsolatedAsyncioTestCase)
         self.assertIn("매수 체결", reply)
         self.assertNotIn("비중", reply)
 
-    async def test_total_asset_fetch_failure_warns_but_passes(self):
-        pool = OhFakePool()
-        redis = self._redis()
-
-        async def kis_order(symbol, price, qty, is_buy):
-            return {"success": True}
-
-        async def log_journal(*args, **kwargs):
-            pass
-
-        async def send_telegram(text, **kw):
-            pass
-
-        reply = await order_handler.handle_proposal_response(
-            "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
-            send_telegram_fn=send_telegram, get_positions_fn=_zero_equity_positions_fn(), pool=pool,
-        )
-        self.assertIn("매수 체결", reply)
-        self.assertIn("확인 실패", reply)
+    async def test_total_asset_fetch_failure_holds_and_keeps_proposal(self):
+        for fn in (_zero_equity_positions_fn(),):
+            redis = self._redis()
+            reply, orders = await self._approve("사자 강제매수", redis, fn)
+            self.assertIn("보류", reply)
+            self.assertEqual(orders, [])
+            self.assertIn("proposal:005930", redis.store)   # 잠시 후 다시 승인 가능
 
 
 if __name__ == "__main__":

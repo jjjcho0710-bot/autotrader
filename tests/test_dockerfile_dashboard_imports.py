@@ -13,8 +13,8 @@ DARTCollector`를 지연 import하지만 Dockerfile.dashboard는 data_collector/
 COPY하지 않는다(try/except로 감싸여 있어 크래시 대신 "공시 확인 실패" 경고만
 남기고 조용히 실패해왔다). 이번 fix/dashboard-image-stock-trader 작업은
 stock_trader 누락만 승인된 범위이므로 data_collector 수정은 포함하지 않았다.
-별도 PM 승인 전까지는 고치지 않을 것이므로, 회귀를 추적하되 이 PR을 막지
-않도록 KNOWN_UNFIXED_GAPS로 명시적으로 예외 처리한다.
+이 누락은 이후 fix/dockerfile-data-collector에서 COPY 추가로 해소됐고,
+KNOWN_UNFIXED_GAPS는 비어 있다.
 """
 import re
 import unittest
@@ -24,12 +24,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_DIR = REPO_ROOT / "dashboard"
 DOCKERFILE_DASHBOARD = REPO_ROOT / "Dockerfile.dashboard"
 
-# 확인됐지만 아직 PM 승인 전이라 고치지 않은 기존 COPY 누락.
-# data_collector: dashboard/main.py의 _morning_routine() 공시 확인 단계가
-# data_collector.collectors.dart_collector를 지연 import하지만 Dockerfile.dashboard가
-# data_collector/를 COPY하지 않아 매번 ImportError → try/except로 조용히 실패한다.
-# fix/dashboard-image-stock-trader PR 보고에서 별도 승인 필요 항목으로 보고됨.
-KNOWN_UNFIXED_GAPS = {"data_collector"}
+# data_collector 누락은 fix/dockerfile-data-collector에서 해소됐다(Dockerfile.dashboard에 COPY 추가).
+# 아직 고치지 못한 누락이 생기면 여기에 사유와 함께 명시한다.
+KNOWN_UNFIXED_GAPS = set()
 
 # 저장소 최상위의 "내부 패키지" 디렉터리만 대상으로 한다 (tests/docs/migrations 등 제외).
 INTERNAL_PACKAGES = {
@@ -83,6 +80,9 @@ class DockerfileDashboardImportsTest(unittest.TestCase):
             f"dashboard/*.py가 import하지만 Dockerfile.dashboard에 COPY되지 않은 "
             f"저장소 내부 패키지: {missing}",
         )
+
+    def test_data_collector_is_copied(self):
+        self.assertIn("data_collector", _copied_dirs(DOCKERFILE_DASHBOARD))
 
     def test_known_unfixed_gaps_do_not_silently_grow(self):
         """KNOWN_UNFIXED_GAPS에 적힌 패키지가 실제로 여전히 누락 상태인지 확인한다.

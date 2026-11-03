@@ -460,7 +460,7 @@ def _quote_fn(price: int = 70000, name: str = "삼성전자"):
 
 
 async def _ok_positions():
-    return {"success": True, "data": []}
+    return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
 
 async def _ok_warning(symbol):
@@ -534,7 +534,7 @@ class TestHandleTradeCommandMomentumWarning(unittest.IsolatedAsyncioTestCase):
         pool = OhFakePool(daily_closes={"005930": [100, 100, 100, 100, 100, 97]})
 
         async def positions():
-            return {"success": True, "data": [{"symbol": "005930", "qty": 5, "avg_price": 60000}]}
+            return {"success": True, "data": [{"symbol": "005930", "qty": 5, "avg_price": 60000}], "account": {"total_eval": 100_000_000}}
 
         kwargs = self._kwargs(pool=pool)
         kwargs["get_stock_positions_fn"] = positions
@@ -574,7 +574,7 @@ class TestHandleProposalResponseMomentumWarning(unittest.IsolatedAsyncioTestCase
             pass
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,
@@ -601,7 +601,7 @@ class TestHandleProposalResponseMomentumWarning(unittest.IsolatedAsyncioTestCase
             pass
 
         async def get_positions():
-            return {"success": True, "data": []}
+            return {"success": True, "data": [], "account": {"total_eval": 100_000_000}}
 
         reply = await order_handler.handle_proposal_response(
             "사자", redis=redis, kis_order_fn=kis_order, log_journal_fn=log_journal,

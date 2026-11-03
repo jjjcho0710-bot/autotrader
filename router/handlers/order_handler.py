@@ -37,6 +37,7 @@ from stark.execution_guard import (
     check_order_uncertain_block,
     get_held_qty,
     reconcile_uncertain_order,
+    resolve_single_stock_cap_qty,
 )
 
 logger = logging.getLogger("router.handlers.order")
@@ -134,6 +135,54 @@ async def _compute_single_stock_projected_pct(
         logger.warning(f"종목당 비중 상한: 총자산 0 이하(경고만, 통과) [{symbol}]")
         return {"pct": None, "fetch_failed": True}
     return {"pct": pct, "fetch_failed": False}
+
+
+async def _apply_manual_buy_cap(*, get_positions_fn, symbol: str, price: float, qty: int,
+                                max_pct: float) -> dict:
+    """수동 채팅 매수·제안승인 매수 공용 종목당 비중 상한 적용 ([AT] fix/manual-buy-cap, PM 지시).
+    기존 보유분을 포함한 예상 비중이 max_pct를 넘으면 차단하지 않고 수량을 한도 안으로 줄인다 —
+    자동 매수와 같은 규칙(stark.execution_guard.resolve_single_stock_cap_qty)을 그대로 재사용한다.
+    '강제매수' 같은 우회 키워드는 없다. 자동 매수와 달리 총자산 조회 실패는 fail-open이 아니라
+    보류(hold)다 — 수동 매수는 보수적으로 처리한다.
+
+    반환: {"status": "ok"|"reduced"|"blocked"|"hold", "qty": 최종 수량, "original_qty": 요청 수량,
+           "limit": max_pct, "projected_pct": 원래 수량 기준 예상 비중|None}
+      ok=한도 이내(수량 그대로) / reduced=수량 축소 / blocked=축소 결과 1주 미만 /
+      hold=총자산 조회 실패·stale·0 이하(주문 금지)"""
+    base = {"status": "hold", "qty": 0, "original_qty": qty, "limit": max_pct, "projected_pct": None}
+    if get_positions_fn is None:
+        logger.warning(f"종목당 비중 상한: 보유 조회 함수 없음 — 수동 매수 보류 [{symbol}]")
+        return base
+    try:
+        pos_res = await get_positions_fn()
+    except Exception as e:
+        logger.warning(f"종목당 비중 상한 확인 실패 — 수동 매수 보류 [{symbol}]: {e}")
+        return base
+    if (not isinstance(pos_res, dict) or not pos_res.get("success", False)
+            or pos_res.get("stale", False)
+            or float((pos_res.get("account") or {}).get("total_eval", 0) or 0) <= 0):
+        logger.warning(f"종목당 비중 상한: 총자산 조회 실패/stale/0 이하 — 수동 매수 보류 [{symbol}]")
+        return base
+
+    async def _same_result():  # 방금 조회한 결과를 재사용(조회 1회, 판정 중 값이 바뀌지 않게)
+        return pos_res
+
+    adj = await resolve_single_stock_cap_qty(
+        symbol, float(price), float(qty), get_positions_fn=_same_result, max_pct=max_pct)
+    if adj is None:
+        return {**base, "status": "ok", "qty": qty}
+    new_qty = int(adj["qty"])
+    out = {**base, "qty": new_qty, "projected_pct": adj["projected_pct"]}
+    out["status"] = "reduced" if new_qty >= 1 else "blocked"
+    return out
+
+
+def _cap_reduction_note(cap: dict) -> str:
+    return f"\n한도 {cap['limit']:g}% 적용 {cap['original_qty']}주→{cap['qty']}주"
+
+
+_CAP_HOLD_MSG = ("⚠️ 총자산 조회에 실패해 종목당 비중 한도를 확인할 수 없어 매수를 보류했습니다. "
+                 "잠시 후 다시 시도해 주세요.")
 
 
 def _fill_channel_summary(name: str, symbol: str, action_kr: str, qty, price: float,
@@ -243,33 +292,29 @@ async def handle_proposal_response(
                 await redis.delete(f"proposal:{symbol}")
                 return f"⛔ {position_blocked['reason']}"
 
-            # 종목당 비중 상한 ([AT] feat/single-stock-cap, PM 지시). 총자산 조회 실패 시
-            # 차단하지 않고 경고만 붙인다. 상한 초과 시에는 차단하되, '강제매수' 키워드가
-            # 포함되면 통과시킨다 — proposal을 지우지 않아 사용자가 같은 제안에
-            # "승인 강제매수"로 재승인할 수 있게 둔다(지우면 재승인 대상이 사라짐).
+            # 종목당 비중 상한 ([AT] fix/manual-buy-cap, PM 지시): 기존 보유분 포함 예상 비중이
+            # 상한을 넘으면 수량을 한도 안으로 줄인다('강제매수' 우회 없음). 총자산 조회 실패 시에는
+            # 보류한다(proposal 유지 — 잠시 후 다시 승인 가능).
             max_pct = _default_config.SINGLE_STOCK_MAX_PCT
             weight_note = ""
-            cap_info = await _compute_single_stock_projected_pct(
+            buy_qty = int(target["qty"])
+            cap = await _apply_manual_buy_cap(
                 get_positions_fn=get_positions_fn, symbol=symbol,
-                price=float(target["price"]), qty=float(target["qty"]),
-            )
-            if cap_info["fetch_failed"]:
-                weight_note = "\n⚠️ 종목당 비중 상한 확인 실패 — 한도 미적용"
-            elif cap_info["pct"] is not None and cap_info["pct"] > max_pct:
-                projected_pct = cap_info["pct"]
-                if "강제매수" in um:
-                    weight_note = (
-                        f"\n⚠️ 종목당 비중 상한 초과 — 강제매수 적용 "
-                        f"(예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%)"
-                    )
-                    logger.info(
-                        f"⚠️ 종목당 비중 상한 초과 강제매수 적용(제안승인) [{symbol}]: "
-                        f"예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%"
-                    )
-                else:
-                    return (f"⛔ {target['name']} 예상 비중 {projected_pct:.1f}% > "
-                            f"상한 {max_pct:.1f}%. 그래도 매수하려면 '강제매수' 포함해서 "
-                            f"다시 지시해주세요")
+                price=float(target["price"]), qty=buy_qty, max_pct=max_pct)
+            if cap["status"] == "hold":
+                return f"⛔ {target['name']} {_CAP_HOLD_MSG}"
+            if cap["status"] == "blocked":
+                await redis.delete(f"proposal:{symbol}")
+                return (f"⛔ {target['name']} 한도 {max_pct:g}% 적용 결과 {buy_qty}주→0주 "
+                        f"(기존 보유 포함 예상 비중 {cap['projected_pct']:.1f}%) — 1주도 매수할 수 없어 제안을 취소했습니다")
+            if cap["status"] == "reduced":
+                logger.info(f"종목당 비중 상한 수량 축소(제안승인) [{symbol}]: {buy_qty}주→{cap['qty']}주 "
+                            f"(예상 비중 {cap['projected_pct']:.1f}% > {max_pct:.1f}%)")
+                weight_note = _cap_reduction_note(cap)
+                buy_qty = cap["qty"]
+            if "강제매수" in um:
+                logger.info(f"'강제매수' 문구 무시(한도 우회 불가) [{symbol}]")
+                weight_note += "\n※ '강제매수'로는 한도를 넘길 수 없습니다"
 
             # 모멘텀 게이트 — 사용자가 승인한 제안 매수는 차단하지 않고 경고 문구만 첨부
             # ([AT] feat/momentum-gate).
@@ -278,9 +323,9 @@ async def handle_proposal_response(
 
             # 승인 → 실제 매수 (주문 전 보유 수량을 응답불명 시 체결 재확인용으로 미리 조회)
             pre_qty = await get_held_qty(symbol, get_positions_fn) if get_positions_fn else None
-            order = await kis_order_fn(symbol, int(target["price"]), int(target["qty"]), True)
+            order = await kis_order_fn(symbol, int(target["price"]), buy_qty, True)
             await redis.delete(f"proposal:{symbol}")
-            requested_qty = int(target["qty"])
+            requested_qty = buy_qty
             if order.get("success") and not order.get("fill_unconfirmed"):
                 filled_qty = resolve_filled_quantity(order, requested_qty)
                 fill_note = partial_fill_note(filled_qty, requested_qty)
@@ -339,11 +384,11 @@ async def handle_proposal_response(
                 recon = await reconcile_uncertain_order(
                     symbol, True, pre_qty=pre_qty, get_positions_fn=get_positions_fn, redis=redis,
                     invalidate_cache_fn=invalidate_cache_fn,
-                    bot="stock_trader", name=target["name"], qty=float(target["qty"]),
+                    bot="stock_trader", name=target["name"], qty=float(buy_qty),
                     price=float(target["price"]), strategy=target.get("strategy", "제안"),
                     reason=target.get("reason", ""), reply="주인 승인", order_no=order.get("order_no"))
                 if recon["status"] == "filled":
-                    diff_qty = int(round(recon.get("qty_diff") or target["qty"]))
+                    diff_qty = int(round(recon.get("qty_diff") or buy_qty))
                     if pool:
                         try:
                             async with pool.acquire() as conn:
@@ -381,7 +426,7 @@ async def handle_proposal_response(
                 await log_journal_fn("stock_trader", symbol, target["name"], "buy",
                                       target.get("strategy", "제안"), "주인 승인", "PROPOSE_APPROVED",
                                       target.get("reason", ""), True, False,
-                                      float(target["price"]), float(target["qty"]))
+                                      float(target["price"]), float(buy_qty))
                 return (f"⚠️ {target['name']} 주문 결과 불명 — 보유 수량 변화 없음. "
                         f"미체결일 수 있으니 포트폴리오에서 확인 후 재지시하세요")
 
@@ -563,34 +608,29 @@ async def handle_trade_command(
                                 f"1주도 매수 불가 — 고가 종목")
                     sizing_note = f"\n요청 {requested_qty}주 → 사이징 한도로 {qty}주로 조정"
 
-        # 종목당 비중 상한 ([AT] feat/single-stock-cap, PM 지시: 채팅 수동매수로 총자산의
-        # 약 59%를 담아 손절한 사고 재발 방지). 사이징 한도 적용 후 최종 qty로 검사한다.
-        # 총자산 조회 실패 시 차단하지 않고 경고만 붙인다. 상한 초과 시에는 차단하되,
-        # '강제매수' 키워드가 포함되면 통과시킨다("한도무시"는 사이징 금액 한도만 무시할 뿐
-        # 이 상한은 넘지 못한다 — 별도 키워드로 명시적 의도를 요구한다).
+        # 종목당 비중 상한 ([AT] fix/manual-buy-cap, PM 지시: 채팅 수동매수로 총자산의 약 57%를
+        # 담아 손절한 사고 재발 방지). 사이징 한도 적용 후 최종 qty로, 기존 보유분 포함 예상
+        # 비중이 상한을 넘으면 수량을 한도 안으로 줄인다. '강제매수'·'한도무시'로 우회할 수 없다.
+        # 총자산 조회 실패 시에는 보류한다(fail-open 금지).
         if is_buy:
             max_pct = getattr(config, "SINGLE_STOCK_MAX_PCT", None)
             if max_pct is not None:
-                cap_info = await _compute_single_stock_projected_pct(
+                cap = await _apply_manual_buy_cap(
                     get_positions_fn=get_stock_positions_fn, symbol=symbol, price=price, qty=qty,
-                )
-                if cap_info["fetch_failed"]:
-                    sizing_note += "\n⚠️ 종목당 비중 상한 확인 실패 — 한도 미적용"
-                elif cap_info["pct"] is not None and cap_info["pct"] > max_pct:
-                    projected_pct = cap_info["pct"]
-                    if "강제매수" in msg:
-                        sizing_note += (
-                            f"\n⚠️ 종목당 비중 상한 초과 — 강제매수 적용 "
-                            f"(예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%)"
-                        )
-                        logger.info(
-                            f"⚠️ 종목당 비중 상한 초과 강제매수 적용 [{symbol}]: "
-                            f"예상 비중 {projected_pct:.1f}% > 상한 {max_pct:.1f}%"
-                        )
-                    else:
-                        return (f"⛔ {name}({symbol}) 예상 비중 {projected_pct:.1f}% > "
-                                f"상한 {max_pct:.1f}%. 그래도 매수하려면 '강제매수' 포함해서 "
-                                f"다시 지시해주세요")
+                    max_pct=max_pct)
+                if cap["status"] == "hold":
+                    return _CAP_HOLD_MSG
+                if cap["status"] == "blocked":
+                    return (f"⛔ {name}({symbol}) 한도 {max_pct:g}% 적용 결과 {qty}주→0주 "
+                            f"(기존 보유 포함 예상 비중 {cap['projected_pct']:.1f}%) — 1주도 매수할 수 없어요")
+                if cap["status"] == "reduced":
+                    logger.info(f"종목당 비중 상한 수량 축소 [{symbol}]: {qty}주→{cap['qty']}주 "
+                                f"(예상 비중 {cap['projected_pct']:.1f}% > {max_pct:.1f}%)")
+                    sizing_note += _cap_reduction_note(cap)
+                    qty = cap["qty"]
+                if "강제매수" in msg:
+                    logger.info(f"'강제매수' 문구 무시(한도 우회 불가) [{symbol}]")
+                    sizing_note += "\n※ '강제매수'로는 한도를 넘길 수 없습니다"
 
         # 직전 같은 종목·같은 방향 주문이 응답불명으로 끝나 재확인 대기 중이면 중복 주문 차단
         if redis is not None and await check_order_uncertain_block(symbol, is_buy, redis):

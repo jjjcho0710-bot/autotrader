@@ -148,6 +148,11 @@ class TestStockBalanceCache(unittest.IsolatedAsyncioTestCase):
         dm._stock_positions_cache_ts = 0.0
         self._config_patch = patch.object(dm, "config", FakeBalanceConfig())
         self._config_patch.start()
+        # total은 inquire-balance(get_stock_positions)에서 읽는다([AT] fix/balance-fields)
+        self._pos_patch = patch.object(dm, "get_stock_positions", new=AsyncMock(
+            return_value={"success": True, "data": [], "account": {"total_eval": 5000000}}))
+        self._pos_patch.start()
+        self.addCleanup(self._pos_patch.stop)
         self.addCleanup(self._config_patch.stop)
 
     async def test_cache_hit_within_ttl_skips_kis_call(self):
@@ -337,7 +342,8 @@ class TestBalanceCacheEndToEndSizing(unittest.IsolatedAsyncioTestCase):
             patch.object(dm, "config", FakeSizingConfig()),
             patch.object(dm, "get_kis_token", new=AsyncMock(return_value="FAKE_TOKEN")),
             patch.object(dm, "_kis_stock_order", new=fake_kis_order),
-            patch.object(dm, "get_stock_positions", new=AsyncMock(return_value={"success": True, "data": []})),
+            patch.object(dm, "get_stock_positions", new=AsyncMock(
+                return_value={"success": True, "data": [], "account": {"total_eval": 10000000}})),
             patch.object(dm, "_send_telegram", new=AsyncMock()),
             patch.object(dm, "_log_journal", new=AsyncMock()),
             patch.object(dm, "_get_recent_daily_ohlcv_for_sizing", new=AsyncMock(return_value=[])),

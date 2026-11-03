@@ -400,6 +400,10 @@ async def handle_proposal_response(
         return None
 
 
+class TotalEquityUnavailable(Exception):
+    """사이징에 필요한 총자산을 알 수 없을 때 — 호출부는 매수를 보류해야 한다."""
+
+
 async def _compute_buy_sizing_cap(
     *, config: Any, get_balance_fn, get_recent_ohlcv_fn, symbol: str, cur_price: float,
 ) -> Optional[float]:
@@ -414,9 +418,10 @@ async def _compute_buy_sizing_cap(
     if risk_pct is None:
         return None
     balance = await get_balance_fn() or {}
-    equity = float(balance.get("total") or 0) or float(getattr(config, "INITIAL_SEED_KRW", 0) or 0)
+    # 총자산을 모르면(total=0) INITIAL_SEED_KRW로 추정하지 않고 매수를 보류한다([AT] fix/balance-fields)
+    equity = float(balance.get("total") or 0)
     if equity <= 0:
-        return None
+        raise TotalEquityUnavailable("총자산 조회 실패")
     base_amount = compute_base_amount(equity, DEFAULT_STOP_LOSS_PCT, risk_pct)
     atr_pct = None
     if get_recent_ohlcv_fn is not None:
@@ -542,6 +547,8 @@ async def handle_trade_command(
                         config=config, get_balance_fn=get_balance_fn,
                         get_recent_ohlcv_fn=get_recent_ohlcv_fn, symbol=symbol, cur_price=price,
                     )
+                except TotalEquityUnavailable:
+                    return "⚠️ 총자산 조회에 실패해 사이징 한도를 계산할 수 없어 매수를 보류했습니다. 잠시 후 다시 시도해 주세요."
                 except Exception as e:
                     # get_balance_fn 미주입(테스트 전용 분기)과 달리, 운영 경로에서 한도 계산이
                     # 예외로 실패하면 한도 없이 조용히 주문이 나가면 안 되므로 알려야 한다.

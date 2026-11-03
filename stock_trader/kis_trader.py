@@ -52,6 +52,7 @@ class KISTrader:
         # 이 값이 신선하면 재사용하고, 없으면 get_positions()를 1회 직접 호출한다([AT]
         # fix/balance-total-source — KIS 호출을 추가로 늘리지 않기 위한 재사용 캐시).
         self._last_total: int = 0
+        self._last_stock_eval = None  # inquire-balance scts_evlu_amt(주식평가금액), _last_total과 같은 시점 ([AT] fix/balance-fields)
         self._last_total_ts: float = 0.0
         self._last_total_ttl: float = 180.0
 
@@ -417,6 +418,9 @@ class KISTrader:
                 }
                 if total_stale:
                     res["stale"] = True
+                elif self._last_stock_eval is not None:
+                    # 주식평가금액(scts_evlu_amt) — balance_snapshot.eval_krw 소스
+                    res["stock_eval"] = self._last_stock_eval
                 self._balance_cache = dict(res)
                 self._balance_cache_ts = time.time()
                 return res
@@ -499,6 +503,7 @@ class KISTrader:
                     if total_eval > 0:
                         self._last_total = total_eval
                         self._last_total_ts = time.time()
+                        self._last_stock_eval = int(s.get("scts_evlu_amt", 0) or 0)
                 return positions
         raise RuntimeError("KIS 보유종목 조회 실패: 속도제한/토큰 재시도 초과")
 

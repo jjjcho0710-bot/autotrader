@@ -6445,14 +6445,25 @@ async def _get_stock_balance_raw():
                     err_msg = data.get("msg1") or data.get("msg_cd") or f"KIS 잔고 조회 실패 (HTTP {res.status})"
                     return {"success": False, "error": err_msg}
                 output = data.get("output", {})
+                # 총평가금액(tot_evlu_amt)은 inquire-psbl-order 응답에 없는 필드라 예전엔 항상 0이었다.
+                # inquire-balance(get_stock_positions의 account.total_eval)에서 읽는다. 조회 실패/stale이면
+                # total=0으로 두어 호출부(채팅 사이징)가 매수를 보류하게 한다([AT] fix/balance-fields).
+                total_eval = 0
+                try:
+                    _pos = await get_stock_positions()
+                    if (isinstance(_pos, dict) and _pos.get("success", False)
+                            and not _pos.get("stale", False)):
+                        total_eval = int((_pos.get("account") or {}).get("total_eval", 0) or 0)
+                except Exception as _pe:
+                    logger.warning(f"총평가금액 조회 실패(total=0 처리): {_pe}")
                 result = {
                     "success": True,
                     "data": {
                         "cash":  int(output.get("ord_psbl_cash", 0)),
-                        "total": int(output.get("tot_evlu_amt", 0)),
+                        "total": total_eval,
                     }
                 }
-                _stock_balance_cache = result
+                _stock_balance_cache = result  # total=0이어도 캐시(속도제한 보호). 호출부가 매수를 보류한다
                 _stock_balance_cache_ts = time.time()
                 return dict(result)
         except Exception as e:
@@ -7386,6 +7397,10 @@ def _apply_stock_confidence_sizing(signal: Dict[str, Any], is_small: bool) -> in
 
 @app.post("/api/jarvis/signal")
 async def jarvis_signal(request: Request):
+    return await _jarvis_signal_impl(request)
+
+
+async def _jarvis_signal_impl(request: Request):
     """
     stock-trader/crypto-trader가 매매 신호 발생시 Jarvis에게 전달
     Jarvis가 분석 후 자동 실행 + 텔레그램 보고
@@ -7423,6 +7438,19 @@ async def jarvis_signal(request: Request):
                 return {"success": False, "error": guard["error"]}
             if guard["blocked"] == "sell_fail_suppress":
                 return {"success": True, "executed": False, "suppressed": True}
+            if guard["blocked"] == "daily_stop_loss_limit":
+                # 서킷브레이커 차단을 stark_decisions에 SKIP + reason으로 남긴다. 기록 실패는 무시 —
+                # 차단 자체나 매매 흐름을 막지 않는다([AT] fix/balance-fields).
+                try:
+                    from stark.decision_logger import log_decision
+                    await log_decision(
+                        db_pool, symbol, "SKIP", name=name,
+                        reason="daily_stop_loss_limit: 당일 손절 2회 이상 — 신규 매수 차단(서킷브레이커)",
+                        rationale="실행 레이어 사전 안전장치(precheck): 서킷브레이커",
+                        strategy=strategy, source="execution_guard", executed=False,
+                        order_success=None, price=float(price or 0), quantity=float(qty or 0))
+                except Exception as _le:
+                    logger.warning(f"서킷브레이커 차단 기록 실패(무시) [{symbol}]: {_le}")
             return {"success": True, "executed": False, "blocked": guard["blocked"]}
 
         action_kr = "매수" if action == "buy" else "매도"

@@ -1794,7 +1794,12 @@ class StockTrader:
         if cash <= 0:
             logger.warning("⚠️ 잔고 조회 실패 → 이번 사이클 신규 매수 스킵 (다음 사이클 재시도)")
             return
-        equity = float(available_cash.get("total") or 0) or float(config.INITIAL_SEED_KRW)
+        equity = float(available_cash.get("total") or 0)
+        if equity <= 0:
+            # 총자산을 모르면 INITIAL_SEED_KRW로 대신 추정해 사이징하지 않고 이번 사이클 매수를 보류한다
+            # ([AT] fix/balance-fields)
+            logger.warning("⚠️ 총자산 조회 실패(total=0) → 이번 사이클 신규 매수 보류 (INITIAL_SEED_KRW 폴백 안 함)")
+            return
 
         for symbol in symbols:
             if symbol in self.positions:
@@ -2240,7 +2245,12 @@ class StockTrader:
         if acct.get("stale") or total <= 0:
             reason = acct.get("error") or ("total=0" if total <= 0 else "stale")
             return False, reason
-        eval_krw = total - cash
+        # eval_krw = KIS 주식평가금액(inquire-balance scts_evlu_amt). 예전에는 total - cash(주문가능
+        # 현금 기준)라 보유 0개인데도 예수금-주문가능현금 차액(약 4.6만원)이 찍혔다([AT]
+        # fix/balance-fields). 과거 행은 수정하지 않는다. 컬럼 구조 변경 없음.
+        eval_krw = acct.get("stock_eval")
+        if eval_krw is None:
+            return False, "stock_eval 미확인"
         await db.insert_balance_snapshot("stock_trader", total, cash, eval_krw)
         return True, ""
 

@@ -228,8 +228,8 @@ class TestDashboardAccountTotalPnl(unittest.IsolatedAsyncioTestCase):
         self.assertIn("+500,000원", sent[0])
         self.assertIn("+5.00%", sent[0])
         self.assertIn("총자산 10,500,000원", sent[0])
-        # 이전 balance_snapshot 기록이 없으므로(prev_total_krw 미지정) 추정값 없이 집계 시작 전 표시
-        self.assertIn("오늘 수익: 집계 시작 전", sent[0])
+        # 직전 거래일 balance_snapshot 기록이 없으므로(prev_total_krw 미지정) 기준 없음 + 실현손익 표시
+        self.assertIn("오늘 수익: 기준 총자산 없음", sent[0])
 
 
 def _stub_stock_trader_deps():

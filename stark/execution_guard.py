@@ -26,6 +26,7 @@ from common.fill_recording import partial_fill_note, resolve_fill_price, resolve
 from common.late_fill_tracker import register_partial_fill
 from common.market_calendar import is_trading_day
 from common.position_sizing import compute_projected_weight_pct, max_qty_within_cap
+from common import protective_rules
 
 logger = logging.getLogger("stark.execution_guard")
 
@@ -417,6 +418,68 @@ async def check_momentum(
         "shadow_threshold_pct": shadow_th,
         "stale_reason": stale_reason,
     }
+
+
+SURGE_BLOCK_BARS = 7  # 오늘 봉이 섞여 있어도 직전 5거래일 종가를 확보하기 위한 조회 개수
+
+
+async def _fetch_kis_bars_for_surge(symbol: str, limit: int) -> tuple:
+    """DB 일봉이 부족/stale일 때 KIS 일봉으로 (closes, latest_date) 대체 조회([AT] feat/protective-rules).
+    캐시를 쓰지 않는다(오늘 봉이 섞이면 장중 가격이 캐시에 굳으므로). 타임아웃 3초, 실패는 ([], None)."""
+    if not config.kis_app_key or not config.kis_app_secret:
+        return [], None
+    try:
+        from stock_trader.kis_trader import KISTrader
+
+        async def _fetch() -> list:
+            trader = KISTrader()
+            await trader._get_token()
+            if not trader.access_token:
+                raise RuntimeError("KIS 토큰 발급 실패")
+            today = datetime.now(KST).date()
+            start = today - timedelta(days=max(14, limit * 3))
+            return await trader.get_daily_ohlcv(
+                symbol, start.strftime("%Y%m%d"), today.strftime("%Y%m%d"))
+
+        candles = await asyncio.wait_for(_fetch(), timeout=MOMENTUM_GATE_KIS_TIMEOUT_SEC)
+        candles = sorted((c for c in candles if c.get("date") and c.get("close")), key=lambda c: c["date"])
+        candles = candles[-limit:]
+        closes = [float(c["close"]) for c in candles]
+        d = candles[-1]["date"] if candles else None
+        latest = datetime.strptime(str(d), "%Y%m%d").date() if d else None
+        return closes, latest
+    except Exception as e:
+        logger.warning(f"surge_block KIS 대체 조회 실패(fail-open) [{symbol}]: {e}")
+        return [], None
+
+
+async def check_surge_block(symbol: str, price: Any, *, pool: Any,
+                            th5: Optional[float] = None, th1: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """급등주 진입 차단 판정. 현재가(price)가 5거래일 전 종가 대비 +th5% 이상이거나 직전 거래일 종가 대비
+    +th1% 이상이면 {"blocked": "surge_block", ...}. 일봉이 없거나 부족/조회 실패면 None(fail-open).
+    오늘 날짜 봉(장중 수집분)은 제외하고 '직전까지 완성된 종가'만 기준으로 쓴다."""
+    try:
+        today = datetime.now(KST).date()
+        closes, latest = [], None
+        try:
+            closes, latest = await _fetch_recent_closes(pool, symbol, SURGE_BLOCK_BARS)
+            if latest is not None and not _is_recent_trading_bar(latest, today, MOMENTUM_GATE_STALE_TRADING_DAYS):
+                closes = []
+        except Exception as e:
+            logger.warning(f"surge_block 일봉 조회 실패(DB) [{symbol}]: {e}")
+            closes = []
+        base = protective_rules.prior_closes(closes, latest, today)
+        if len(base) < 5:
+            closes, latest = await _fetch_kis_bars_for_surge(symbol, SURGE_BLOCK_BARS)
+            base = protective_rules.prior_closes(closes, latest, today)
+        pct5, pct1 = protective_rules.surge_pcts(base, price)
+        res = protective_rules.evaluate_surge(pct5, pct1, th5, th1)
+        if res is None and pct5 is None and pct1 is None:
+            logger.info(f"surge_block: 일봉 데이터 없음, 차단 안 함(fail-open) [{symbol}]")
+        return res
+    except Exception as e:
+        logger.warning(f"surge_block 판정 오류(fail-open) [{symbol}]: {e}")
+        return None
 
 
 # 진입위험 관찰(shadow) 기준 — 차단 없음, 매수는 그대로 진행하고 trade_journal에 플래그만
@@ -972,6 +1035,46 @@ async def _finalize_filled_order(
     return result
 
 
+async def _alert_once_per_day(redis: Any, code: str, send_telegram_fn, text: str) -> None:
+    """보호 규칙 차단 텔레그램을 하루 1회만 보낸다(Redis 키, 실패해도 조용히 무시)."""
+    if redis is None or send_telegram_fn is None:
+        return
+    key = f"protective_alert:{code}:{datetime.now(timezone(timedelta(hours=9))).date().isoformat()}"
+    try:
+        if await redis.get(key):
+            return
+        await redis.setex(key, 36 * 3600, "1")
+        await send_telegram_fn(text)
+    except Exception as e:
+        logger.warning(f"보호 규칙 알림 실패(무시) [{code}]: {e}")
+
+
+async def _block_by_protective_rule(blocked: Dict[str, Any], *, signal: Dict[str, Any], decision: Dict[str, Any],
+                                    pool: Any, redis: Any, send_telegram_fn, log_journal_fn) -> Dict[str, Any]:
+    """daily_loss_limit / market_gate / surge_block 차단 공통 처리: stark_decisions + 매매일지 SKIP 기록, 텔레그램 1회/일."""
+    symbol = signal["symbol"]
+    name = signal.get("name") or symbol
+    bot, action = signal.get("bot", "stock_trader"), signal.get("action", "buy")
+    strategy, reason = signal.get("strategy", ""), signal.get("reason", "")
+    price, qty = signal.get("price", 0), signal.get("qty", 0)
+    reason_text = blocked["reason"]
+    logger.info(f"⏭️ {reason_text} — 매수 SKIP: {symbol} ({name})")
+    from stark.decision_logger import log_decision
+    await log_decision(
+        pool, symbol, "SKIP", name=name, confidence=decision.get("confidence", 0.0),
+        reason=reason_text, rationale=f"실행 레이어 보호 규칙: {blocked['blocked']}",
+        strategy=strategy, source="execution_guard", features=signal.get("shadow_features"),
+        executed=False, order_success=None, price=float(price), quantity=float(qty),
+    )
+    if log_journal_fn:
+        await log_journal_fn(bot, symbol, name, action, strategy, reason,
+                             "SKIP", reason_text, False, False, price, qty)
+    await _alert_once_per_day(redis, blocked["blocked"], send_telegram_fn,
+                              f"🛡 <b>보호 규칙 발동</b>\n{reason_text}\n(오늘 같은 규칙의 추가 차단은 알리지 않습니다)")
+    return {"success": True, "executed": False, "skipped": True, "blocked": blocked["blocked"],
+            "reason": reason_text, "jarvis_reply": decision.get("reply", "")}
+
+
 async def execute(
     signal: Dict[str, Any],
     decision: Dict[str, Any],
@@ -987,6 +1090,7 @@ async def execute(
     max_positions: Optional[int] = None,
     invalidate_cache_fn: Optional[Any] = None,
     send_channel_fn: Optional[Any] = None,
+    get_market_index_fn: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """decision_engine이 EXECUTE/EXECUTE_SMALL로 승인한 신호를 실제 KIS 주문으로 집행.
     signal["qty"]는 호출부가 이미 EXECUTE_SMALL 절반 수량 보정을 마친 값이어야 한다
@@ -1058,6 +1162,7 @@ async def execute(
                     rationale=rationale,
                     strategy=strategy,
                     source="execution_guard",
+                    features=signal.get("shadow_features"),
                     executed=False,
                     order_success=None,
                     price=float(price),
@@ -1076,6 +1181,24 @@ async def execute(
                     "reason": reason_text,
                     "jarvis_reply": reply,
                 }
+
+        # (1-0) 보호 규칙 ([AT] feat/protective-rules, PM 승인): 일일 손실 한도 -> 시장 게이트 -> 급등주 차단 순.
+        # 조회 실패는 모두 fail-open(차단 안 함) — protective_rules가 보장한다.
+        if is_buy and bot == "stock_trader":
+            for _check in (
+                lambda: protective_rules.check_daily_loss_limit(pool, get_positions_fn),
+                lambda: protective_rules.check_market_gate(get_market_index_fn),
+                lambda: check_surge_block(symbol, price, pool=pool),
+            ):
+                try:
+                    _blocked = await _check()
+                except Exception as e:
+                    logger.warning(f"보호 규칙 검사 오류(fail-open): {e}")
+                    _blocked = None
+                if _blocked:
+                    return await _block_by_protective_rule(
+                        _blocked, signal=signal, decision=decision, pool=pool, redis=redis,
+                        send_telegram_fn=send_telegram_fn, log_journal_fn=log_journal_fn)
 
         # (1a) 종목당 비중 상한 — 매수 후 예상 비중(기존 보유분 포함)이 상한을 넘으면 AI
         # 자동매수를 차단하지 않고 수량을 상한 안으로 줄여 진행한다([AT]
@@ -1103,6 +1226,7 @@ async def execute(
                     rationale="실행 레이어 안전장치: 종목당 비중 상한 초과분을 차단하지 않고 수량 축소",
                     strategy=strategy,
                     source="execution_guard",
+                    features=signal.get("shadow_features"),
                     executed=False,
                     order_success=None,
                     price=float(price),
@@ -1131,6 +1255,7 @@ async def execute(
                     ),
                     strategy=strategy,
                     source="execution_guard",
+                    features=signal.get("shadow_features"),
                     executed=False,
                     order_success=None,
                     price=float(price),
@@ -1177,6 +1302,7 @@ async def execute(
                     ),
                     strategy=strategy,
                     source="execution_guard",
+                    features=signal.get("shadow_features"),
                     executed=False,
                     order_success=None,
                     price=float(price),

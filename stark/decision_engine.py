@@ -15,7 +15,7 @@ STARK v2용 stark_decisions 테이블(EDITH가 만든 스키마)은 아무도 �
 """
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from stark.decision_logger import log_decision
 
@@ -30,7 +30,8 @@ _VERDICT_RE = re.compile(r"\b(EXECUTE_SMALL|EXECUTE|PROPOSE|SKIP)\b")
 _VERDICT_CONFIDENCE = {"EXECUTE": 0.85, "EXECUTE_SMALL": 0.65, "PROPOSE": 0.70, "SKIP": 0.30}
 
 
-async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any = None) -> Dict[str, Any]:
+async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any = None,
+                 features: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """AI 판단 1회 수행 + stark_decisions 기록. 실행 여부만 판단하고 실행은 하지 않는다.
 
     반환: {"verdict","should_execute","is_small","reply","ai_failed","source","confidence"}
@@ -82,6 +83,7 @@ async def decide(signal: Dict[str, Any], prompt: str, *, ask_llm_fn, pool: Any =
         rationale=(reply or "")[:500],
         strategy=signal.get("strategy"),
         source=source,
+        features=features,  # 섀도 기록(KST 시각대/지수/당일 pnl, BUY만) [AT] feat/protective-rules
         executed=False,  # 실행 여부는 execution_guard가 결정 후 별도로 기록하지 않음(이 레코드는 판단 시점 기록)
     )
 

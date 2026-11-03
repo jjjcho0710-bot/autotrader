@@ -13,6 +13,7 @@ from datetime import datetime, time, timezone, timedelta
 from common.config import config, compute_total_pnl
 from common.database import db, cache
 from common import position_sizing
+from common import protective_rules
 from common.fill_recording import resolve_fill_price
 from common.late_fill_tracker import register_partial_fill
 from common.market_calendar import is_trading_day, is_calendar_stale, CALENDAR_COVERS_THROUGH
@@ -138,6 +139,7 @@ class StockTrader:
         self._safety_net_holiday_date = None  # 안전망이 휴장으로 판정한 날짜 — 그날은 사이클 전체 스킵
         self._calendar_stale_warned_date = None  # 달력 커버 범위 초과 경고, 하루 1회만 로그
         self._positions_fail_count = 0  # 보유 포지션 조회 연속 실패 횟수 ([AT] fix/positions-fetch-failure)
+        self._eod_cut_date = None  # 마감 전 손실 정리를 시도한 날짜(하루 1회) [AT] feat/protective-rules
 
     # ── DB에서 전략 설정 로드 ────────────────────────────
     async def load_strategies(self):
@@ -1077,6 +1079,122 @@ class StockTrader:
             return False
 
     # ── 매매 사이클 ───────────────────────────────────────
+    _SELL_LABEL_TTL_SEC = 300
+
+    async def _sell_label_strategy(self, symbol: str, fallback: str) -> str:
+        """같은 종목 최근 BUY의 strategy(trade_history). 5분 캐시, 없거나 실패하면 fallback."""
+        cache_d = getattr(self, "_sell_label_cache", None)
+        if cache_d is None:
+            cache_d = self._sell_label_cache = {}
+        hit = cache_d.get(symbol)
+        now = _time.time()
+        if hit and now - hit[1] < self._SELL_LABEL_TTL_SEC:
+            return hit[0] or fallback
+        label = None
+        try:
+            async with db.pool.acquire() as conn:
+                label = await conn.fetchval("""
+                    SELECT strategy FROM trade_history
+                    WHERE bot='stock_trader' AND symbol=$1 AND side='BUY'
+                      AND strategy IS NOT NULL AND strategy <> ''
+                    ORDER BY ts DESC LIMIT 1
+                """, symbol)
+        except Exception as e:
+            logger.warning(f"직전 BUY 전략 조회 실패(기존 라벨 사용) [{symbol}]: {e}")
+        cache_d[symbol] = (label, now)
+        return label or fallback
+
+    # ── 마감 전 손실 정리 ([AT] feat/protective-rules, PM 승인) ──────────
+    async def _eod_loss_cut(self, now: datetime):
+        """EOD_CUT_TIME_HHMM(기본 15:20 KST) 이후 하루 1회: 매수 후 1거래일 이내이고 평가손익 <= EOD_CUT_PCT
+        (기본 -3.0%)인 보유 종목을 전량 시장가 매도한다(strategy='마감전손실정리').
+        기존 SELL 경로(KISTrader.sell -> insert_trade -> 부분체결 시 register_partial_fill, 미확정은 pending
+        재확인 루프)를 그대로 쓴다. 매도 실패는 텔레그램 알림만 하고 재시도하지 않는다.
+        마지막 매수 시각을 알 수 없으면(조회 실패/이력 없음) 그 종목은 건드리지 않는다."""
+        today = now.date()
+        if self._eod_cut_date == today or now.time().replace(tzinfo=None) < protective_rules.eod_cut_time():
+            return
+        done_key = f"eod_cut_done:{today.isoformat()}"
+        try:
+            if await cache.client.get(done_key):
+                self._eod_cut_date = today
+                return
+            await cache.client.setex(done_key, 36 * 3600, "1")
+        except Exception as e:
+            logger.warning(f"마감 전 손실 정리 완료 키 처리 실패(메모리 기준으로만 하루 1회 보장): {e}")
+        self._eod_cut_date = today
+        cut_pct = config.EOD_CUT_PCT
+        label = protective_rules.EOD_CUT_LABEL
+
+        for symbol, pos in list(self.positions.items()):
+            try:
+                cur_price, avg_price = pos["cur_price"], pos["avg_price"]
+                qty = pos.get("sellable_qty", pos.get("qty", 0))
+                if cur_price <= 0 or avg_price <= 0 or qty <= 0 or symbol in self._selling:
+                    continue
+                pnl_rate = (cur_price - avg_price) / avg_price * 100
+                if pnl_rate > cut_pct:
+                    continue
+                async with db.pool.acquire() as conn:
+                    last_buy = await conn.fetchval("""
+                        SELECT MAX(ts) FROM trade_history
+                        WHERE bot='stock_trader' AND symbol=$1 AND side='BUY'
+                    """, symbol)
+                if not protective_rules.bought_within_one_trading_day(last_buy, today):
+                    continue
+            except Exception as e:
+                logger.warning(f"마감 전 손실 정리 판정 오류(건너뜀) [{symbol}]: {e}")
+                continue
+
+            nm = pos.get("name", symbol)
+            self._selling.add(symbol)
+            try:
+                result = await self.trader.sell(symbol, cur_price, qty, strategy=label, avg_price=avg_price)
+                if result.get("success"):
+                    _fq = result.get("filled_qty", qty)
+                    _fill_price, _fb = resolve_fill_price(result.get("avg_fill_price"), cur_price)
+                    if _fb:
+                        logger.info(f"체결평균가 없음 — 주문가 대체 기록 [{symbol}] {_fill_price:,.0f}원")
+                    _fpnl = int((_fill_price - avg_price) * _fq)
+                    remain = qty - _fq
+                    await db.insert_trade(
+                        bot="stock_trader", asset_type="stock", symbol=symbol, side="SELL",
+                        price=_fill_price, quantity=_fq, amount=_fill_price * _fq,
+                        strategy=label, pnl=_fpnl)
+                    if remain > 0 and result.get("order_no"):
+                        await register_partial_fill(
+                            cache.client, order_no=result["order_no"], symbol=symbol,
+                            side="SELL", bot="stock_trader", requested_qty=qty, recorded_qty=_fq,
+                            strategy=label, price=_fill_price, cost_basis_avg_price=avg_price)
+                    await self._invalidate_position_cache()
+                    if remain > 0:
+                        pos["qty"] = remain
+                        pos["sellable_qty"] = remain
+                        self.positions[symbol] = pos
+                    else:
+                        self.positions.pop(symbol, None)
+                    from common.telegram import send_stock
+                    await send_stock(
+                        f"🧹 <b>{nm}({symbol}) 마감 전 손실 정리 {pnl_rate:+.1f}%</b>\n"
+                        f"{_fq}주 @ {_fill_price:,.0f}원 (손익 {_fpnl:+,}원, 기준 {cut_pct:+.1f}% 이하·매수 후 1거래일 이내)"
+                        + (f"\n⚠️ 잔여 {remain}주는 추가 체결 발생 시 자동 추적·기록합니다(재주문 없음)." if remain > 0 else ""))
+                    logger.info(f"🧹 마감 전 손실 정리 체결 [{symbol}] {pnl_rate:+.1f}% ({_fq}/{qty}주)")
+                elif result.get("pending"):
+                    logger.info(f"⏳ 마감 전 손실 정리 매도 체결 확인 대기 [{symbol}] (pending)")
+                else:
+                    raise RuntimeError(str(result.get("error", "알 수 없음")))
+            except Exception as e:
+                logger.warning(f"마감 전 손실 정리 매도 실패 [{symbol}]: {e}")
+                try:
+                    from common.telegram import send_stock
+                    await send_stock(
+                        f"⚠️ <b>{nm}({symbol}) 마감 전 손실 정리 매도 실패</b> {pnl_rate:+.1f}%\n"
+                        f"사유: {e} — 자동 재시도 없음, 직접 확인해 주세요.")
+                except Exception:
+                    pass
+            finally:
+                self._selling.discard(symbol)
+
     async def _run_cycle(self):
         active_strategies = self.get_all_active_strategies()
         if not active_strategies:
@@ -1107,6 +1225,9 @@ class StockTrader:
 
             pnl = (cur_price - avg_price) * qty
             pnl_rate = (cur_price - avg_price) / avg_price * 100
+            # 청산 SELL의 strategy 라벨 = 이 종목 직전 BUY의 strategy([AT] feat/protective-rules).
+            # 없거나 조회 실패면 기존 라벨(활성 전략명)을 쓴다.
+            sell_strat = await self._sell_label_strategy(symbol, strat_name)
 
             # 손절선(strategy_config.stop_loss) 도달 → 즉시 자동 매도 (주인 지시: 알아서 처리)
             if default_strategy.check_stop_loss(avg_price, cur_price):
@@ -1123,7 +1244,7 @@ class StockTrader:
                     # 속도제한(초당 거래건수 초과, EGW00201) 자동 재시도는
                     # KISTrader.sell() 내부에서 처리된다.
                     result = await self.trader.sell(
-                        symbol, cur_price, qty, strategy=f"{strat_name}_손절", avg_price=avg_price)
+                        symbol, cur_price, qty, strategy=f"{sell_strat}_손절", avg_price=avg_price)
                     if result.get("success"):
                         _fq = result.get("filled_qty", qty)
                         # trade_history.price는 체결평균가 기준으로 기록한다(주문가=cur_price는
@@ -1137,7 +1258,7 @@ class StockTrader:
                         await db.insert_trade(
                             bot="stock_trader", asset_type="stock",
                             symbol=symbol, side="SELL", price=_fill_price, quantity=_fq,
-                            amount=_fill_price * _fq, strategy=f"{strat_name}_손절", pnl=_fpnl,
+                            amount=_fill_price * _fq, strategy=f"{sell_strat}_손절", pnl=_fpnl,
                         )
                         if remain > 0 and result.get("order_no"):
                             # 재조회 윈도(1.5+3+7초) 안에 KIS가 전량 체결을 아직 반영하지
@@ -1149,7 +1270,7 @@ class StockTrader:
                             await register_partial_fill(
                                 cache.client, order_no=result["order_no"], symbol=symbol,
                                 side="SELL", bot="stock_trader", requested_qty=qty, recorded_qty=_fq,
-                                strategy=f"{strat_name}_손절", price=_fill_price,
+                                strategy=f"{sell_strat}_손절", price=_fill_price,
                                 cost_basis_avg_price=avg_price,
                             )
                         await self._invalidate_position_cache()
@@ -1242,7 +1363,7 @@ class StockTrader:
                     requested_half_qty = half_qty
                     result = await self.trader.sell(
                         symbol, cur_price, half_qty,
-                        strategy=f"{strat_name}_급등절반익절", avg_price=avg_price)
+                        strategy=f"{sell_strat}_급등절반익절", avg_price=avg_price)
                     if result["success"]:
                         half_qty = result.get("filled_qty", half_qty)
                         _fill_price, _used_fallback = resolve_fill_price(
@@ -1255,13 +1376,13 @@ class StockTrader:
                             symbol=symbol, side="SELL",
                             price=_fill_price, quantity=half_qty,
                             amount=_fill_price * half_qty,
-                            strategy=f"{strat_name}_급등절반익절", pnl=half_pnl,
+                            strategy=f"{sell_strat}_급등절반익절", pnl=half_pnl,
                         )
                         if half_qty < requested_half_qty and result.get("order_no"):
                             await register_partial_fill(
                                 cache.client, order_no=result["order_no"], symbol=symbol,
                                 side="SELL", bot="stock_trader", requested_qty=requested_half_qty,
-                                recorded_qty=half_qty, strategy=f"{strat_name}_급등절반익절",
+                                recorded_qty=half_qty, strategy=f"{sell_strat}_급등절반익절",
                                 price=_fill_price, cost_basis_avg_price=avg_price,
                             )
                         await self._invalidate_position_cache()
@@ -1299,7 +1420,7 @@ class StockTrader:
                     if sig == "SELL":
                         result = await self.trader.sell(
                             symbol, cur_price, qty,
-                            strategy=f"{strat_name}_구간익절_신호소멸", avg_price=avg_price)
+                            strategy=f"{sell_strat}_구간익절_신호소멸", avg_price=avg_price)
                         if result.get("success"):
                             sold_qty = result.get("filled_qty", qty)
                             _fill_price, _used_fallback = resolve_fill_price(
@@ -1313,13 +1434,13 @@ class StockTrader:
                                 symbol=symbol, side="SELL",
                                 price=_fill_price, quantity=sold_qty,
                                 amount=_fill_price * sold_qty,
-                                strategy=f"{strat_name}_구간익절_신호소멸", pnl=s_pnl,
+                                strategy=f"{sell_strat}_구간익절_신호소멸", pnl=s_pnl,
                             )
                             if remain > 0 and result.get("order_no"):
                                 await register_partial_fill(
                                     cache.client, order_no=result["order_no"], symbol=symbol,
                                     side="SELL", bot="stock_trader", requested_qty=qty,
-                                    recorded_qty=sold_qty, strategy=f"{strat_name}_구간익절_신호소멸",
+                                    recorded_qty=sold_qty, strategy=f"{sell_strat}_구간익절_신호소멸",
                                     price=_fill_price, cost_basis_avg_price=avg_price,
                                 )
                             await self._invalidate_position_cache()
@@ -1396,7 +1517,7 @@ class StockTrader:
                             try:
                                 result = await self.trader.sell(
                                     symbol, cur_price, sell_qty,
-                                    strategy=f"{strat_name}_AI익절{decision}", avg_price=avg_price)
+                                    strategy=f"{sell_strat}_AI익절{decision}", avg_price=avg_price)
                             finally:
                                 self._selling.discard(symbol)
                             if result.get("success"):
@@ -1411,13 +1532,13 @@ class StockTrader:
                                     symbol=symbol, side="SELL",
                                     price=_fill_price, quantity=sell_qty,
                                     amount=_fill_price * sell_qty,
-                                    strategy=f"{strat_name}_AI익절{decision}", pnl=s_pnl,
+                                    strategy=f"{sell_strat}_AI익절{decision}", pnl=s_pnl,
                                 )
                                 if sell_qty < requested_sell_qty and result.get("order_no"):
                                     await register_partial_fill(
                                         cache.client, order_no=result["order_no"], symbol=symbol,
                                         side="SELL", bot="stock_trader", requested_qty=requested_sell_qty,
-                                        recorded_qty=sell_qty, strategy=f"{strat_name}_AI익절{decision}",
+                                        recorded_qty=sell_qty, strategy=f"{sell_strat}_AI익절{decision}",
                                         price=_fill_price, cost_basis_avg_price=avg_price,
                                     )
                                 await self._invalidate_position_cache()
@@ -1495,7 +1616,7 @@ class StockTrader:
                         try:
                             result = await self.trader.sell(
                                 symbol, cur_price, half_qty,
-                                strategy=f"{strat_name}_절반확정", avg_price=avg_price)
+                                strategy=f"{sell_strat}_절반확정", avg_price=avg_price)
                         finally:
                             self._selling.discard(symbol)
                         if result.get("success"):
@@ -1511,13 +1632,13 @@ class StockTrader:
                                 symbol=symbol, side="SELL",
                                 price=_fill_price, quantity=sold_qty,
                                 amount=_fill_price * sold_qty,
-                                strategy=f"{strat_name}_절반확정", pnl=s_pnl,
+                                strategy=f"{sell_strat}_절반확정", pnl=s_pnl,
                             )
                             if remain > 0 and result.get("order_no"):
                                 await register_partial_fill(
                                     cache.client, order_no=result["order_no"], symbol=symbol,
                                     side="SELL", bot="stock_trader", requested_qty=half_qty,
-                                    recorded_qty=sold_qty, strategy=f"{strat_name}_절반확정",
+                                    recorded_qty=sold_qty, strategy=f"{sell_strat}_절반확정",
                                     price=_fill_price, cost_basis_avg_price=avg_price,
                                 )
                             await self._invalidate_position_cache()
@@ -1559,7 +1680,7 @@ class StockTrader:
                             try:
                                 result = await self.trader.sell(
                                     symbol, cur_price, qty,
-                                    strategy=f"{strat_name}_트레일링스탑", avg_price=avg_price)
+                                    strategy=f"{sell_strat}_트레일링스탑", avg_price=avg_price)
                             finally:
                                 self._selling.discard(symbol)
                             if result.get("success"):
@@ -1575,13 +1696,13 @@ class StockTrader:
                                     symbol=symbol, side="SELL",
                                     price=_fill_price, quantity=sold_qty,
                                     amount=_fill_price * sold_qty,
-                                    strategy=f"{strat_name}_트레일링스탑", pnl=s_pnl,
+                                    strategy=f"{sell_strat}_트레일링스탑", pnl=s_pnl,
                                 )
                                 if remain > 0 and result.get("order_no"):
                                     await register_partial_fill(
                                         cache.client, order_no=result["order_no"], symbol=symbol,
                                         side="SELL", bot="stock_trader", requested_qty=qty,
-                                        recorded_qty=sold_qty, strategy=f"{strat_name}_트레일링스탑",
+                                        recorded_qty=sold_qty, strategy=f"{sell_strat}_트레일링스탑",
                                         price=_fill_price, cost_basis_avg_price=avg_price,
                                     )
                                 await self._invalidate_position_cache()
@@ -1625,6 +1746,13 @@ class StockTrader:
                                 logger.warning(f"트레일링 스탑 매도 실패 [{symbol}]: {result.get('error')}")
                 except Exception as e:
                     logger.warning(f"절반확정/트레일링 처리 오류 [{symbol}]: {e}")
+
+        # 마감 전 손실 정리(15:20 KST~, 하루 1회) — 보유 조회가 성공한 사이클에서만. 오류가 사이클을 막지 않게 격리.
+        if positions_ok and config.EOD_CUT_ENABLED:
+            try:
+                await self._eod_loss_cut(datetime.now(KST))
+            except Exception as e:
+                logger.warning(f"마감 전 손실 정리 오류(무시): {e}")
 
         if not positions_ok:
             return

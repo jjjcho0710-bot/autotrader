@@ -241,11 +241,13 @@ class TestClosingReportChannel(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"종목{i}", msg)
 
     async def test_today_profit_shows_not_started_when_no_prior_snapshot(self):
-        """이전 balance_snapshot 기록이 없으면(예: 10/1 첫 기록) 추정값 없이 집계 시작 전으로 표시한다."""
+        """직전 거래일 balance_snapshot이 없으면 이틀 전 값으로 대신하지 않고 '기준 총자산 없음'과
+        오늘 실현손익을 표시한다([AT] fix/daily-pnl-baseline)."""
         dm = _load_dashboard_main()
         pos_res = {"success": True, "data": [], "account": {"total_eval": 10_500_000}}
         sent = await self._run(dm, trades=[], pos_res=pos_res, prev_total_krw=None)
-        self.assertIn("오늘 수익: 집계 시작 전", sent[0]["text"])
+        self.assertIn("오늘 수익: 기준 총자산 없음", sent[0]["text"])
+        self.assertIn("오늘 실현손익", sent[0]["text"])
 
     async def test_today_profit_computed_from_prior_day_snapshot(self):
         """전일 balance_snapshot(total_krw)과 오늘 총자산을 비교해 오늘 수익을 계산한다."""

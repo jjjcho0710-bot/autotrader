@@ -1275,27 +1275,43 @@ async def _trigger_ohlcv_collect():
         logger.warning(f"OHLCV 수집 트리거 실패: {e}")
 
 
-async def _closing_report_today_profit_line(real_account: dict, valid_today: bool) -> str:
+async def _closing_report_today_profit_line(real_account: dict, valid_today: bool,
+                                            today: Optional[date] = None) -> str:
     """마감 결산 채널 블록의 "오늘 수익" 줄 계산.
-    balance_snapshot에서 "오늘(KST) 이전 날짜 중 가장 최근" 기록의 total_krw와 오늘 총자산을
-    비교한다. 일별 기록 코루틴이 15:35 이후 오늘 치를 먼저 기록할 수 있어 오늘 날짜 행을
-    비교 대상으로 쓰면 항상 0이 되므로 반드시 날짜 < 오늘 조건을 쓴다. 비교할 이전 기록이
-    없거나 오늘 총자산 조회가 stale/0이면 추정값 없이 "집계 시작 전"으로 표시한다."""
+    기준값은 "직전 거래일(common.protective_rules.prev_trading_day, 주말·휴장일 건너뜀)"의 마감
+    balance_snapshot.total_krw 하나뿐이다. 그 날짜 행이 없으면 더 이전 행(이틀 전 등)으로 대신하지
+    않는다 — 11/2 스냅샷이 빠진 날 10/30 값과 비교해 두 거래일 치 손익(-75,176원)이 "오늘 수익"으로
+    표시된 사고([AT] fix/daily-pnl-baseline). 기준 행이 없으면 오늘 trade_history 실현손익 합계를
+    "기준 총자산 없음"과 함께 표시한다. 오늘 날짜 행은 비교 대상이 아니다(15:35 이후 먼저 기록되면
+    항상 0이 되므로). 오늘 총자산이 stale/0이면 "집계 시작 전"."""
     if not valid_today or not db_pool:
         return "📅 오늘 수익: 집계 시작 전"
+    today = today or datetime.now(KST).date()
+    base_date = protective_rules.prev_trading_day(today)
+    prev_total = None
+    realized = None
     try:
         async with db_pool.acquire() as conn:
             prev_total = await conn.fetchval("""
                 SELECT total_krw FROM balance_snapshot
                 WHERE bot='stock_trader'
-                  AND (ts AT TIME ZONE 'Asia/Seoul')::date < (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                  AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1
                 ORDER BY ts DESC LIMIT 1
-            """)
+            """, base_date)
+            if not prev_total or float(prev_total) <= 0:
+                prev_total = None
+                realized = await conn.fetchval("""
+                    SELECT COALESCE(SUM(pnl), 0) FROM trade_history
+                    WHERE asset_type='stock' AND side='SELL' AND pnl IS NOT NULL
+                      AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1
+                """, today)
     except Exception as e:
-        logger.warning(f"오늘 수익 비교용 이전 총자산 조회 실패: {e}")
+        logger.warning(f"오늘 수익 비교용 직전 거래일 총자산 조회 실패: {e}")
         return "📅 오늘 수익: 집계 시작 전"
-    if not prev_total or float(prev_total) <= 0:
-        return "📅 오늘 수익: 집계 시작 전"
+    if prev_total is None:
+        logger.warning(f"오늘 수익: 직전 거래일({base_date}) 마감 스냅샷 없음 — 실현손익으로 대체 표시")
+        return (f"📅 오늘 수익: 기준 총자산 없음 (직전 거래일 {base_date.strftime('%m/%d')} 스냅샷 미기록) · "
+                f"오늘 실현손익 {float(realized or 0):+,.0f}원")
     prev_total = float(prev_total)
     today_eval = float(real_account.get("total_eval", 0) or 0)
     today_profit = today_eval - prev_total

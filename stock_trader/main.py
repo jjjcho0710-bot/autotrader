@@ -2222,18 +2222,6 @@ class StockTrader:
             second=0, microsecond=0,
         )
 
-    async def _has_trading_activity_today(self, now: datetime) -> bool:
-        """오늘(KST) 장이 실제로 열렸는지를 1분봉(stock_ohlcv) 갱신 여부로 확인한다.
-        stock_daily_ohlcv는 16:00 이후에만 채워지므로 15:35~16:30 판단 창에는 항상 비어
-        있어 기준으로 쓸 수 없다. 조회 자체가 실패하면 예외를 그대로 전파해 호출부가
-        휴장일로 단정하지 않고 재시도하게 한다."""
-        today = now.date()
-        async with db.pool.acquire() as conn:
-            has_intraday = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM stock_ohlcv WHERE ts::date = $1)", today
-            )
-        return bool(has_intraday)
-
     async def _try_record_balance_snapshot(self) -> tuple:
         """오늘 치 일별 총자산 기록을 1회 시도한다. 반환: (기록 성공 여부, 실패 시 사유).
         get_balance()가 stale이거나 total=0(조회 실패)이면 기록하지 않고 (False, 사유)를
@@ -2254,16 +2242,32 @@ class StockTrader:
         await db.insert_balance_snapshot("stock_trader", total, cash, eval_krw)
         return True, ""
 
+    async def _warn_balance_snapshot_failed(self, day, reason: str):
+        """창(15:35~16:30) 안에서 총자산 조회/기록이 끝까지 실패한 날 텔레그램 경고를 일 1회 보낸다."""
+        if getattr(self, "_balance_snapshot_warned_for", None) == day:
+            return
+        self._balance_snapshot_warned_for = day
+        try:
+            from common.telegram import send_stock
+            await send_stock(
+                f"⚠️ {day:%Y-%m-%d} 일별 총자산 기록 실패 — 15:35~16:30 창 안에서 끝까지 조회하지 못했습니다 "
+                f"(사유: {reason or '사유 미상'}). 해당 일자 스냅샷은 추정값으로 채우지 않고 비워 둡니다."
+            )
+        except Exception as e:
+            logger.warning(f"일별 총자산 실패 경고 전송 실패(무시): {e}")
+
     async def _daily_balance_snapshot(self):
-        """평일 15:35~16:30 KST 사이, 매매 사이클(_run_cycle)과 독립적으로 일별 총자산을 1회 기록한다.
-        주말은 기록하지 않는다. 평일이라도 오늘 1분봉(stock_ohlcv) 갱신이 창이 끝날 때까지 전혀
-        없으면 휴장일로 보수적으로 판단해 기록을 생략한다. 조회 예외는 휴장일로 단정하지 않고
-        1분 뒤 재시도한다."""
+        """거래일(common.market_calendar.is_trading_day) 15:35~16:30 KST 사이, 매매 사이클(_run_cycle)과
+        독립적으로 일별 총자산을 1회 기록한다. 기록 조건은 '오늘이 거래일이고 KIS 총자산 조회 성공'
+        뿐이다(1분봉 존재 여부와 무관 — 분봉 수집이 멈춰도 기록한다). 주말·휴장일은 기록하지 않는다.
+        조회 실패 시 창 안에서 1분 간격으로 재시도하고, 창이 끝날 때까지 실패하면 텔레그램 경고를
+        일 1회 보낸다(추정값 기록 없음). 재시작 등으로 창에 늦게 들어온 날은 시도 자체가 없으므로
+        경고하지 않는다."""
         while self.running:
             try:
                 now = datetime.now(KST)
 
-                if now.weekday() >= 5:
+                if not is_trading_day(now.date()):
                     await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
                     continue
 
@@ -2280,24 +2284,13 @@ class StockTrader:
                     await asyncio.sleep((window_start - now).total_seconds())
                     continue
                 if now > window_end:
-                    # 창 안에서 이미 5분마다 실패 사유를 남겼으므로(아래) 여기선 상태만 기록한다
-                    # ([AT] fix/balance-total-source).
                     if getattr(self, "_balance_snapshot_handled_for", None) != now.date():
                         self._balance_snapshot_handled_for = now.date()
+                        # 창 안에서 시도했으나 실패한 날만 경고한다(기록 성공 시 failed_for가 None).
+                        if getattr(self, "_balance_snapshot_failed_for", None) == now.date():
+                            await self._warn_balance_snapshot_failed(
+                                now.date(), getattr(self, "_balance_snapshot_last_fail_reason", ""))
                     await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
-                    continue
-
-                try:
-                    has_activity = await self._has_trading_activity_today(now)
-                except Exception as e:
-                    logger.warning(f"거래일 판단 조회 실패(무시, 재시도): {e}")
-                    await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
-                    continue
-
-                if not has_activity:
-                    # 아직 창(~16:30) 안이므로 포기하지 않고 다음 시도로 넘긴다.
-                    # 창이 끝날 때까지 계속 없으면 위 window_end 분기에서 그날 기록을 생략한다.
-                    await asyncio.sleep(BALANCE_SNAPSHOT_RETRY_SEC)
                     continue
 
                 try:
@@ -2308,10 +2301,12 @@ class StockTrader:
 
                 if recorded:
                     self._balance_snapshot_handled_for = now.date()
+                    self._balance_snapshot_failed_for = None
                     await asyncio.sleep((self._next_balance_snapshot_window_start(now) - now).total_seconds())
                 else:
-                    # 원인을 알 수 있도록 5분마다 한 번만 WARNING을 남긴다(스팸 방지,
-                    # [AT] fix/balance-total-source — 예전엔 창이 끝날 때만 사유 없이 남겼음)
+                    self._balance_snapshot_failed_for = now.date()
+                    self._balance_snapshot_last_fail_reason = fail_reason
+                    # 원인을 알 수 있도록 5분마다 한 번만 WARNING을 남긴다(스팸 방지)
                     last_warn_ts = getattr(self, "_balance_snapshot_last_warn_ts", 0.0)
                     now_ts = _time.time()
                     if now_ts - last_warn_ts >= 300:

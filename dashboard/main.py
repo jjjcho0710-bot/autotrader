@@ -1125,13 +1125,17 @@ async def _jarvis_stock_scanner():
             # 일봉 수집을 끊어버리는 사고를 막는다([AT] fix/holdings-daily-collect,
             # 000270/249420 사례).
             deactivated = 0
-            if positions_ok:
+            # [AT] fix/post-exit-collect: 최근 10거래일 거래 종목도 보호한다(청산 직후 수집 중단 방지).
+            # 조회 실패(None)면 비활성화 블록 전체를 건너뛴다.
+            recent_symbols = await _recently_traded_symbols(conn) if positions_ok else None
+            if positions_ok and recent_symbols is not None:
                 old_scanner = await conn.fetch(
                     "SELECT symbol FROM watchlist WHERE is_active=TRUE AND added_by='jarvis_scanner'"
                 )
                 for r in old_scanner:
                     sym = r["symbol"]
-                    if sym not in today_symbols and sym not in held_symbols:
+                    if (sym not in today_symbols and sym not in held_symbols
+                            and sym not in recent_symbols):
                         await conn.execute(
                             "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", sym
                         )
@@ -3309,6 +3313,36 @@ async def shutdown():
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+POST_EXIT_COLLECT_TRADING_DAYS = 10
+
+
+def _post_exit_cutoff_date(today: date, n: int = POST_EXIT_COLLECT_TRADING_DAYS) -> date:
+    """today 포함 n거래일 전 날짜(주말·휴장일 건너뜀). 이 날짜(KST) 이후 거래가 있으면 '최근 거래'."""
+    d = today
+    for _ in range(n):
+        d = protective_rules.prev_trading_day(d)
+    return d
+
+
+async def _recently_traded_symbols(conn, n: int = POST_EXIT_COLLECT_TRADING_DAYS,
+                                   today: Optional[date] = None) -> Optional[set]:
+    """최근 n거래일 안에 stock_trader가 거래(BUY/SELL)한 종목 집합([AT] fix/post-exit-collect).
+    청산해 '보유 중'이 아니게 된 종목도 일봉 수집을 n거래일 더 유지하기 위한 보호 대상이다.
+    조회 실패 시 None — 호출부는 반드시 비활성화를 건너뛰어야 한다(실패를 '최근 거래 없음'으로
+    오판하면 수집이 끊긴다)."""
+    try:
+        cutoff = _post_exit_cutoff_date(today or datetime.now(KST).date(), n)
+        rows = await conn.fetch("""
+            SELECT DISTINCT symbol FROM trade_history
+            WHERE bot='stock_trader' AND asset_type='stock'
+              AND (ts AT TIME ZONE 'Asia/Seoul')::date >= $1
+        """, cutoff)
+        return {r["symbol"] for r in rows if r["symbol"]}
+    except Exception as e:
+        logger.warning(f"최근 거래 종목 조회 실패 — 감시종목 비활성화 건너뜀(보수적 처리): {e}")
+        return None
+
+
 async def _cleanup_scanner_watchlist() -> int:
     """스캐너가 넣은 종목 중 보유하지 않은 것 비활성화. 반환: 해제 수"""
     held = set()
@@ -3319,12 +3353,16 @@ async def _cleanup_scanner_watchlist() -> int:
     except Exception:
         pass
     async with db_pool.acquire() as conn:
+        # 최근 10거래일 거래 종목은 청산했어도 유지한다. 조회 실패(None)면 아무것도 해제하지 않는다.
+        recent = await _recently_traded_symbols(conn)
+        if recent is None:
+            return 0
         rows = await conn.fetch(
             "SELECT symbol FROM watchlist WHERE is_active=TRUE AND added_by='jarvis_scanner'"
         )
         n = 0
         for r in rows:
-            if r["symbol"] not in held:
+            if r["symbol"] not in held and r["symbol"] not in recent:
                 await conn.execute(
                     "UPDATE watchlist SET is_active=FALSE, updated_at=NOW() WHERE symbol=$1", r["symbol"]
                 )

@@ -4254,6 +4254,36 @@ async def health():
     return {"status": "ok", "ts": datetime.now().isoformat()}
 
 
+def _age_seconds(now_kst: datetime, dt) -> float:
+    """timestamptz/naive 어느 쪽이 오든 now_kst(aware)와 안전하게 뺀다. naive는 KST 벽시계로 본다."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    return (now_kst - dt).total_seconds()
+
+
+def _ohlcv_market_open(now_kst: datetime) -> bool:
+    """data-collector 수집 창(평일 거래일 08:55~15:35 KST)과 같은 기준."""
+    return is_trading_day(now_kst.date()) and dtime(8, 55) <= now_kst.time() <= dtime(15, 35)
+
+
+async def _stock_ohlcv_freshness_check(now_kst: datetime) -> dict:
+    """stock_ohlcv 최신 created_at(실제 insert 시각, 정상 timestamptz) 지연을 본다.
+    ts 컬럼은 KST 벽시계가 UTC 라벨로 저장돼 있어 지연 계산에 쓰지 않는다."""
+    try:
+        async with db_pool.acquire() as conn:
+            last = await conn.fetchval("SELECT MAX(created_at) FROM stock_ohlcv")
+        if last is None:
+            return {"status": "error", "error": "stock_ohlcv 데이터 없음"}
+        lag = int(_age_seconds(now_kst, last))
+        info = {"last_created_at": last.astimezone(KST).isoformat(), "lag_seconds": lag}
+        if not _ohlcv_market_open(now_kst):
+            return {"status": "ok", "market_hours": False, **info}
+        status = "ok" if lag < 300 else "warning" if lag < 600 else "error"
+        return {"status": status, "market_hours": True, **info}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 @app.get("/api/health/full")
 async def full_health_check():
     """전체 시스템 상태 점검"""
@@ -4375,6 +4405,9 @@ async def full_health_check():
         }
     except Exception as e:
         result["checks"]["today_trades"] = {"status": "error", "error": str(e)}
+
+    # 7-1. 분봉 수집(stock_ohlcv) — [AT] fix/collector-observability
+    result["checks"]["stock_ohlcv"] = await _stock_ohlcv_freshness_check(now)
 
     # 8. KIS 토큰
     try:
@@ -4632,7 +4665,11 @@ score는 -2~+2, signal은 BUY/SELL/NEUTRAL"""
 
 @app.get("/api/market/checklist")
 async def market_checklist():
-    """장중 테스트 체크리스트"""
+    return await _market_checklist_raw()
+
+
+async def _market_checklist_raw():
+    """장중 테스트 체크리스트 (본체 — 데코레이터와 분리해 단위 테스트 가능)"""
     from datetime import time as dtime
     now = datetime.now(KST)
     cur_time = now.time()
@@ -4644,10 +4681,14 @@ async def market_checklist():
     try:
         async with db_pool.acquire() as conn:
             latest = await conn.fetchrow(
-                "SELECT ts, close FROM stock_ohlcv ORDER BY ts DESC LIMIT 1"
+                "SELECT ts, created_at, close FROM stock_ohlcv ORDER BY ts DESC LIMIT 1"
             )
         if latest:
-            ts_diff = (now - latest["ts"].replace(tzinfo=None)).total_seconds()
+            # [AT] fix/collector-observability: now는 aware(KST)인데 ts.replace(tzinfo=None)은 naive라
+            # "can't subtract offset-naive and offset-aware datetimes"로 항상 실패했다.
+            # 지연은 실제 insert 시각(created_at, 정상 timestamptz)으로 계산하고, ts는 표시에만 쓴다
+            # (ts는 KST 벽시계가 UTC 라벨로 저장돼 있어 strftime이 그대로 KST 시각).
+            ts_diff = _age_seconds(now, latest["created_at"] or latest["ts"].replace(tzinfo=None))
             checks["kis_realtime"] = {
                 "ok": ts_diff < 300,
                 "msg": f"최근 시세: {latest['ts'].strftime('%H:%M:%S')} ({int(ts_diff)}초 전)"
@@ -4681,7 +4722,15 @@ async def market_checklist():
 
     # 4. 봇 상태
     try:
-        bot_status = await cache.get_all_bot_status()
+        # [AT] fix/collector-observability: dashboard에는 `cache`가 없어 NameError였다 → redis_client로 직접 읽는다.
+        _raw_bots = await redis_client.hgetall("bot:status")
+        bot_status = {}
+        for _k, _v in (_raw_bots or {}).items():
+            _k = _k.decode() if isinstance(_k, bytes) else _k
+            try:
+                bot_status[_k] = json.loads(_v)
+            except Exception:
+                bot_status[_k] = {}
         checks["bots"] = {
             "ok": len(bot_status) > 0,
             "msg": ", ".join([f"{k}:{v.get('status','?')}" for k, v in bot_status.items()])

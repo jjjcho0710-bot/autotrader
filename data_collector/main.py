@@ -25,6 +25,11 @@ COLLECT_WINDOW_START = time(8, 55)
 COLLECT_WINDOW_END = time(15, 35)
 
 
+# [AT] fix/collector-observability
+CYCLE_TIMEOUT_SEC = 180          # 수집 사이클 1회 상한(종목 44개 정상 소요 약 40초) — 초과 시 취소 후 다음 사이클
+INSERT_STALL_ALERT_SEC = 600     # 장중 이 시간 동안 insert 0건이면 텔레그램 경보(일 1회)
+
+
 def _in_collect_window(now_kst: datetime) -> bool:
     """now_kst: KST 기준 timezone-aware datetime. 휴장일이 아닌 평일(월~금)
     COLLECT_WINDOW_START~END(양끝 포함) 사이인지 여부."""
@@ -58,6 +63,9 @@ class DataCollector:
         self.last_daily_collect = None
         self._last_should_collect = None  # 장중/장외 전환 로그를 1줄만 남기기 위한 이전 상태
         self._calendar_stale_warned_date = None  # 달력 커버 범위 초과 경고, 하루 1회만 로그
+        self._last_insert_kst = None        # 마지막으로 분봉 insert가 1건 이상 성공한 시각(KST) 또는 오늘 장중 첫 사이클 시각
+        self._stall_baseline_date = None    # _last_insert_kst 기준일(날짜가 바뀌면 새 기준)
+        self._stall_alerted_date = None     # 경보를 보낸 날짜(일 1회)
 
     async def collect_supply_dart(self):
         """수급 + 공시 수동 수집"""
@@ -86,6 +94,31 @@ class DataCollector:
 
         except Exception as e:
             logger.error(f"수급/공시 수집 전체 오류: {e}")
+
+    async def _check_insert_stall(self, now_kst: datetime, inserted: int):
+        """장중 최근 INSERT_STALL_ALERT_SEC 동안 분봉 insert가 0건이면 텔레그램 경보(일 1회).
+        기준 시각은 마지막 insert 성공 시각, 없으면 오늘 첫 장중 사이클 시각이다."""
+        today = now_kst.date()
+        if self._stall_baseline_date != today:
+            self._stall_baseline_date = today
+            self._last_insert_kst = now_kst
+        if inserted > 0:
+            self._last_insert_kst = now_kst
+            return
+        idle = (now_kst - self._last_insert_kst).total_seconds()
+        if idle < INSERT_STALL_ALERT_SEC or self._stall_alerted_date == today:
+            return
+        self._stall_alerted_date = today
+        msg = (
+            f"🚨 data-collector 분봉 수집 중단 의심 — 장중 {int(idle // 60)}분 동안 stock_ohlcv insert 0건 "
+            f"({now_kst.strftime('%Y-%m-%d %H:%M')} KST). 로그의 'KIS 현재가 오류' 줄(rt_cd/msg_cd)을 확인하세요."
+        )
+        logger.error(msg)
+        try:
+            from common.telegram import send_stock
+            await send_stock(msg)
+        except Exception as e:
+            logger.warning(f"분봉 중단 경보 전송 실패(무시): {e}")
 
     async def start(self):
         logger.info("=" * 50)
@@ -142,11 +175,18 @@ class DataCollector:
             try:
                 if should_collect:
                     logger.info(f"🔄 수집 사이클 시작 [{now_kst.strftime('%H:%M:%S')} KST]")
-                    # 주식 + 코인 동시 수집
-                    await asyncio.gather(
-                        self.kis.collect_all(),
-                        return_exceptions=True,
-                    )
+                    inserted = 0
+                    try:
+                        # 한 사이클이 멈춰도(네트워크 hang 등) 루프 전체가 묶이지 않도록 상한을 둔다
+                        result = await asyncio.wait_for(self.kis.collect_all(), timeout=CYCLE_TIMEOUT_SEC)
+                        inserted = result if isinstance(result, int) and not isinstance(result, bool) else 0
+                    except asyncio.TimeoutError:
+                        logger.error(f"❌ 수집 사이클 타임아웃 ({CYCLE_TIMEOUT_SEC}초 초과) — 취소하고 다음 사이클로")
+                    except Exception as e:
+                        logger.error(f"❌ 수집 사이클 예외: {e}")
+                    # 장중(창 안)에만 중단 감시한다. COLLECT_ALWAYS로 장외에 돌 때는 제외.
+                    if _in_collect_window(now_kst):
+                        await self._check_insert_stall(now_kst, inserted)
 
                 # 일봉 수집 (하루 1번 서버 시간 16:00 이후) — 장 시간 검사와 무관하게 동작.
                 # 서버 TZ가 UTC면 이 조건은 KST 01:00에 동작한다(이번 수정 범위 밖, 변경 없음).
